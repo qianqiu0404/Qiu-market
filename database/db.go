@@ -3,9 +3,10 @@ package database
 import (
 	"context"
 	"fmt"
-	"gorm.io/gorm"
 	"os"
 	"path/filepath"
+
+	"gorm.io/gorm"
 
 	"github.com/pkg/errors"
 	"gorm.io/driver/postgres"
@@ -15,7 +16,16 @@ import (
 )
 
 type DB struct {
-	gorm *gorm.DB
+	gorm                *gorm.DB
+	Asset               AssetDB
+	Currency            CurrencyDB
+	Exchange            ExchangeDB
+	ExchangeSymbol      ExchangeSymbolDB
+	ExchangeSymbolKline ExchangeSymbolKlineDB
+	Symbol              SymbolDB
+	SymbolKline         SymbolKlineDB
+	SymbolMarket        SymbolMarketDB
+	SymbolMarketCurrey  SymbolMarketCurreyDB
 }
 
 func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
@@ -49,7 +59,16 @@ func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
 	}
 
 	db := &DB{
-		gorm: gorm,
+		gorm:                gorm,
+		Asset:               NewAssetDB(gorm),
+		Currency:            NewCurrencyDB(gorm),
+		Exchange:            NewExchangeDB(gorm),
+		ExchangeSymbol:      NewExchangeSymbolDB(gorm),
+		ExchangeSymbolKline: NewExchangeSymbolKlineDB(gorm),
+		Symbol:              NewSymbolDB(gorm),
+		SymbolKline:         NewSymbolKlineDB(gorm),
+		SymbolMarket:        NewSymbolMarketDB(gorm),
+		SymbolMarketCurrey:  NewSymbolMarketCurreyDB(gorm),
 	}
 	return db, nil
 }
@@ -57,7 +76,16 @@ func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
 func (db *DB) Transaction(fn func(db *DB) error) error {
 	return db.gorm.Transaction(func(tx *gorm.DB) error {
 		txDB := &DB{
-			gorm: tx,
+			gorm:                tx,
+			Asset:               NewAssetDB(tx),
+			Currency:            NewCurrencyDB(tx),
+			Exchange:            NewExchangeDB(tx),
+			ExchangeSymbol:      NewExchangeSymbolDB(tx),
+			ExchangeSymbolKline: NewExchangeSymbolKlineDB(tx),
+			Symbol:              NewSymbolDB(tx),
+			SymbolKline:         NewSymbolKlineDB(tx),
+			SymbolMarket:        NewSymbolMarketDB(tx),
+			SymbolMarketCurrey:  NewSymbolMarketCurreyDB(tx),
 		}
 		return fn(txDB)
 	})

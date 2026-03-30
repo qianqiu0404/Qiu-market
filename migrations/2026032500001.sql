@@ -25,8 +25,8 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" CASCADE;
 -- ============================================
 CREATE TABLE IF NOT EXISTS asset (
     guid                 TEXT PRIMARY KEY DEFAULT replace(uuid_generate_v4()::text, '-', ''),  -- 主键：资产唯一标识
-    asset_name           VARCHAR(100) NOT NULL DEFAULT 'Dollar',  -- 资产名称（如：Dollar、Bitcoin）
-    asset_symbol         VARCHAR(20)  NOT NULL DEFAULT 'USD',     -- 资产符号（如：USD、BTC、ETH）
+    asset_name           VARCHAR(100) NOT NULL DEFAULT 'Tether USDT',  -- 资产名称（如：Tether USDT）
+    asset_symbol         VARCHAR(20)  NOT NULL DEFAULT 'USDT',     -- 资产符号（如：USD、BTC、ETH）
     asset_logo           VARCHAR(500) NOT NULL,                   -- 资产图标 URL
     is_active            BOOLEAN NOT NULL DEFAULT TRUE,           -- 是否启用（新增字段）
     created_at           TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,  -- 创建时间
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS exchange_symbol_kline(
     open_price         NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (open_price >= 0),
     close_price        NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (close_price >= 0),
     high_price         NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (high_price >= 0),
-    low_active         NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (low_active >= 0),
+    low_price         NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (low_price >= 0),
     volume             UINT256 NOT NULL,
     market_cap         UINT256 NOT NULL,
     is_active          BOOLEAN NOT NULL DEFAULT TRUE,
