@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/ethereum/go-ethereum/log"
+	rest "github.com/the-web3/s78-market-services/services/http"
 	"github.com/urfave/cli/v2"
 
 	"github.com/the-web3/s78-market-services/common/cliapp"
@@ -52,8 +52,8 @@ func runMigrations(ctx *cli.Context) error {
 }
 
 func runRestApi(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
-	fmt.Println("running rest api...")
-	return nil, nil
+	cfg := config.NewConfig(ctx)
+	return rest.NewApi(context.Background(), &cfg)
 }
 
 func NewCli(GitCommit string, GitData string) *cli.App {
@@ -75,6 +75,12 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 				Flags:       flags,
 				Description: "Run rpc services",
 				Action:      cliapp.LifecycleCmd(runRpc),
+			},
+			{
+				Name:        "api",
+				Flags:       flags,
+				Description: "Run rpc services",
+				Action:      cliapp.LifecycleCmd(runRestApi),
 			},
 			{
 				Name:        "version",

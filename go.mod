@@ -4,6 +4,7 @@ go 1.24.10
 
 require (
 	github.com/ethereum/go-ethereum v1.17.1
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/pkg/errors v0.9.1
 	github.com/urfave/cli/v2 v2.27.7
 	google.golang.org/grpc v1.77.0
