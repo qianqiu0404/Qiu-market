@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+option go_package = "./services/grpc/proto";
+option java_package = "xyz.dapplink";
+package dapplink.xyz;
+
+message AssetItem {
+  string guid = 1;
+  string asset_name = 2;
+  string asset_symbol = 3;
+  string asset_logo = 4;
+}
+
+message SupportAssetRequest {
+  string consumer_token = 1;
+}
+
+message SupportAssetResponse {
+  uint64 return_code =1;
+  string message = 2;
+  repeated AssetItem asset = 3;
+}
+
+service MarketServices {
+  rpc getSupportAsset(SupportAssetRequest) returns (SupportAssetResponse) {}
+}
