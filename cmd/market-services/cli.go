@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/the-web3/s78-market-services/crawler"
 	rest "github.com/the-web3/s78-market-services/services/http"
 	"github.com/urfave/cli/v2"
 
@@ -56,6 +57,17 @@ func runRestApi(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 	return rest.NewApi(context.Background(), &cfg)
 }
 
+func runCrawler(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
+	log.Info("run orderbook crawler...")
+	cfg := config.NewConfig(ctx)
+	db, err := database.NewDB(ctx.Context, cfg.MasterDB)
+	if err != nil {
+		log.Error("failed to connect to database", "err", err)
+		return nil, err
+	}
+	return crawler.NewCrawler(db, shutdown)
+}
+
 func NewCli(GitCommit string, GitData string) *cli.App {
 	flags := flags2.Flags
 
@@ -81,6 +93,12 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 				Flags:       flags,
 				Description: "Run rpc services",
 				Action:      cliapp.LifecycleCmd(runRestApi),
+			},
+			{
+				Name:        "crawler",
+				Flags:       flags,
+				Description: "Run crawler services",
+				Action:      cliapp.LifecycleCmd(runCrawler),
 			},
 			{
 				Name:        "version",
