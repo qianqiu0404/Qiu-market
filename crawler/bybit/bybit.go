@@ -25,7 +25,7 @@ func NewBybitCrawler(db *database.DB, shutdown context.CancelCauseFunc) (*BybitC
 		resourceCtx:    resourceCtx,
 		resourceCancel: resourceCancel,
 		tasks: tasks.Group{HandleCrit: func(err error) {
-			shutdown(fmt.Errorf("BybitCrawler critical error: %v", err))
+			shutdown(fmt.Errorf("Bybit crawler critical error: %v", err))
 		}},
 	}, nil
 }
