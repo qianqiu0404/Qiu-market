@@ -22,7 +22,7 @@ type BybitCrawler struct {
 }
 
 func NewBybitCrawler(db *database.DB, redisClient *redis.Client, shutdown context.CancelCauseFunc) (*BybitCrawler, error) {
-	bybitCient, err := NewBybitClient()
+	bybitCient, err := NewBybitClient("socks5://127.0.0.1:7890/", "socks5")
 	if err != nil {
 		log.Error("Failed to create Bybit client")
 		return nil, err
