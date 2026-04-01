@@ -115,6 +115,25 @@ var (
 		EnvVars:  prefixEnvVars("METRIC_PORT"),
 		Required: true,
 	}
+
+	RedisAddressFlag = &cli.StringFlag{
+		Name:     "redis-address",
+		Usage:    "The address of the redis",
+		EnvVars:  prefixEnvVars("REDIS_ADDRESS"),
+		Required: true,
+	}
+	RedisPasswordFlag = &cli.StringFlag{
+		Name:     "redis-password",
+		Usage:    "The password of the redis",
+		EnvVars:  prefixEnvVars("REDIS_PASSWORD"),
+		Required: true,
+	}
+	RedisDbIndexFlag = &cli.IntFlag{
+		Name:     "redis-db-index",
+		Usage:    "The DB index of the redis",
+		EnvVars:  prefixEnvVars("Redis_DB_INDEX"),
+		Required: true,
+	}
 )
 
 var requireFlags = []cli.Flag{
@@ -128,6 +147,9 @@ var requireFlags = []cli.Flag{
 	MasterDbUserFlag,
 	MasterDbPasswordFlag,
 	MasterDbNameFlag,
+	RedisAddressFlag,
+	RedisPasswordFlag,
+	RedisDbIndexFlag,
 }
 
 var optionalFlags = []cli.Flag{

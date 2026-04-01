@@ -9,19 +9,22 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/the-web3/s78-market-services/common/tasks"
 	"github.com/the-web3/s78-market-services/database"
+	"github.com/the-web3/s78-market-services/redis"
 )
 
 type OkxCrawler struct {
 	db             *database.DB
+	redisCli       *redis.Client
 	resourceCtx    context.Context
 	resourceCancel context.CancelFunc
 	tasks          tasks.Group
 }
 
-func NewOkxCrawler(db *database.DB, shutdown context.CancelCauseFunc) (*OkxCrawler, error) {
+func NewOkxCrawler(db *database.DB, redisCli *redis.Client, shutdown context.CancelCauseFunc) (*OkxCrawler, error) {
 	resourceCtx, resourceCancel := context.WithCancel(context.Background())
 	return &OkxCrawler{
 		db:             db,
+		redisCli:       redisCli,
 		resourceCtx:    resourceCtx,
 		resourceCancel: resourceCancel,
 		tasks: tasks.Group{HandleCrit: func(err error) {

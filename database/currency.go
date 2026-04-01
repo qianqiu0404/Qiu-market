@@ -25,6 +25,7 @@ func (Currency) TableName() string {
 
 type CurrencyView interface {
 	QueryCurrencyList(page, pageSize int64) ([]*Currency, int64, error)
+	QueryActiveCurrency() ([]*Currency, error)
 }
 
 type CurrencyDB interface {
@@ -40,6 +41,15 @@ type currencyDB struct {
 
 func NewCurrencyDB(db *gorm.DB) CurrencyDB {
 	return &currencyDB{gorm: db}
+}
+
+func (c *currencyDB) QueryActiveCurrency() ([]*Currency, error) {
+	var currencies []*Currency
+	if err := c.gorm.Table("currency").Where("is_active = ?", false).Find(&currencies).Error; err != nil {
+		log.Error("failed to query active currency", "error", err)
+		return nil, err
+	}
+	return currencies, nil
 }
 
 func (c *currencyDB) QueryCurrencyList(page, pageSize int64) ([]*Currency, int64, error) {

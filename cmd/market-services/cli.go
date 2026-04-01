@@ -13,6 +13,7 @@ import (
 	"github.com/the-web3/s78-market-services/config"
 	"github.com/the-web3/s78-market-services/database"
 	flags2 "github.com/the-web3/s78-market-services/flags"
+	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/grpc"
 )
 
@@ -65,7 +66,20 @@ func runCrawler(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 		log.Error("failed to connect to database", "err", err)
 		return nil, err
 	}
-	return crawler.NewCrawler(db, shutdown)
+
+	redisConfig := redis.Config{
+		Address:  cfg.RedisConfig.Addr,
+		Password: cfg.RedisConfig.Password,
+		DB:       cfg.RedisConfig.DB,
+	}
+
+	redisClient, err := redis.New(redisConfig)
+	if err != nil {
+		log.Error("fail to connect to redis", "err", err)
+		return nil, err
+	}
+
+	return crawler.NewCrawler(db, redisClient, shutdown)
 }
 
 func NewCli(GitCommit string, GitData string) *cli.App {

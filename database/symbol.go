@@ -24,6 +24,7 @@ func (Symbol) TableName() string {
 
 type SymbolView interface {
 	QuerySymbolList(page, pageSize int64) ([]*Symbol, int64, error)
+	QuerySymbols() ([]*Symbol, error)
 }
 
 type SymbolDB interface {
@@ -39,6 +40,15 @@ type symbolDB struct {
 
 func NewSymbolDB(db *gorm.DB) SymbolDB {
 	return &symbolDB{gorm: db}
+}
+
+func (s *symbolDB) QuerySymbols() ([]*Symbol, error) {
+	var symbols []*Symbol
+	if err := s.gorm.Find(&symbols).Error; err != nil {
+		log.Error("Query symbols failed", "err", err)
+		return nil, err
+	}
+	return symbols, nil
 }
 
 func (s *symbolDB) QuerySymbolList(page, pageSize int64) ([]*Symbol, int64, error) {
