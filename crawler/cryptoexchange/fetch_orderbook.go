@@ -53,13 +53,14 @@ func (bc *ExchangeOrderbook) Start() error {
 			defer tickerOperator.Stop()
 			select {
 			case <-tickerOperator.C:
+				log.Debug("Fetching order book start")
 				err := bc.syncOrderBookData()
 				if err != nil {
 					log.Error("sync order book data fail", "error", err)
 					return err
 				}
 			case <-bc.resourceCtx.Done():
-				log.Info("exchange crawler shutting down")
+				log.Info("exchange fetch orderbook shutting down")
 				return errors.New("exchange stopped")
 			}
 		}
@@ -74,6 +75,7 @@ func (bc *ExchangeOrderbook) syncOrderBookData() error {
 		return err
 	}
 	for _, exchange := range exchangeList {
+		log.Info("exchange", "exchange", exchange.Name)
 		exchangeSymbols, err := bc.db.ExchangeSymbol.QuerySymbolsByExchangeId(exchange.Guid)
 		if err != nil {
 			return err
@@ -84,6 +86,7 @@ func (bc *ExchangeOrderbook) syncOrderBookData() error {
 				log.Error("Query symbol fail", "error", err)
 				return err
 			}
+			log.Info("symbol", "symbolName", symbol.SymbolName)
 
 			orderBook, err := bc.exchangeClient.FetchOrderBook(exchange.Name, symbol.SymbolName)
 			if err != nil {
@@ -94,6 +97,9 @@ func (bc *ExchangeOrderbook) syncOrderBookData() error {
 			bidPrice := orderBook.Bids[0][0]
 			avgPrice := (askPrice + bidPrice) / 2
 			key := exchange.Guid + "%" + exchange.Name + "%" + symbol.Guid + "%" + symbol.SymbolName
+
+			log.Info("Fetch orderbook success", "key", key, "askPrice", askPrice, "bidPrice", bidPrice, "avgPrice", avgPrice)
+
 			err = bc.redisCli.Set(bc.resourceCtx, key, avgPrice, time.Second*600)
 			if err != nil {
 				log.Error("Set avgPrice fail", "symbol", symbol.SymbolName, "error", err)

@@ -32,6 +32,7 @@ func NewExchangeClient(proxy string, proxyType string) (*ExchangeClient, error) 
 		log.Error("bybit load markets error", "proxyType", proxyType, "proxy", proxy, "error", err)
 		return nil, err
 	}
+	log.Info("bybit create success", "proxyType", proxyType, "proxy", proxy)
 
 	okxCli := ccxt.NewOkx(cfg)
 	_, err = okxCli.LoadMarkets()
@@ -39,6 +40,7 @@ func NewExchangeClient(proxy string, proxyType string) (*ExchangeClient, error) 
 		log.Error("okx load markets error", "proxyType", proxyType, "proxy", proxy, "error", err)
 		return nil, err
 	}
+	log.Info("oxk create success", "proxyType", proxyType, "proxy", proxy)
 
 	binanceCli := ccxt.NewBinance(cfg)
 	_, err = binanceCli.LoadMarkets()
@@ -46,6 +48,7 @@ func NewExchangeClient(proxy string, proxyType string) (*ExchangeClient, error) 
 		log.Error("binance load markets error", "proxyType", proxyType, "proxy", proxy, "error", err)
 		return nil, err
 	}
+	log.Info("binance create success", "proxyType", proxyType, "proxy", proxy)
 
 	return &ExchangeClient{
 		BybitClient:   bybitCli,
@@ -58,19 +61,19 @@ func (ec *ExchangeClient) FetchOrderBook(exchangeName, symbol string) (*ccxt.Ord
 	var orderBook ccxt.OrderBook
 	var err error
 	switch exchangeName {
-	case "binance":
+	case "Binance":
 		orderBook, err = ec.BinanceClient.FetchOrderBook(symbol)
 		if err != nil {
 			log.Error("binance fetch order book error", "exchangeName", exchangeName, "symbol", symbol, "error", err)
 			return nil, err
 		}
-	case "okx":
+	case "Okx":
 		orderBook, err = ec.OxkClient.FetchOrderBook(symbol)
 		if err != nil {
 			log.Error("binance fetch order book error", "exchangeName", exchangeName, "symbol", symbol, "error", err)
 			return nil, err
 		}
-	case "bybit":
+	case "Bybit":
 		orderBook, err = ec.BybitClient.FetchOrderBook(symbol)
 		if err != nil {
 			log.Error("binance fetch order book error", "exchangeName", exchangeName, "symbol", symbol, "error", err)

@@ -11,11 +11,12 @@ func TestFetchOrderBook(t *testing.T) {
 		t.Fatal("err====", err)
 	}
 
-	book, err := client.FetchOrderBook("binance", "BTC/USDT")
+	book, err := client.FetchOrderBook("Bybit", "BTC/USDT")
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(book)
+	fmt.Println(book.Bids[0][0])
+	fmt.Println(book.Asks[0][0])
 	fmt.Println("bids:", len(book.Bids))
 	fmt.Println("asks:", len(book.Asks))
 }
