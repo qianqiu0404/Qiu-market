@@ -1,4 +1,4 @@
-package bybit
+package cryptoexchange
 
 import (
 	"fmt"
@@ -6,12 +6,12 @@ import (
 )
 
 func TestFetchOrderBook(t *testing.T) {
-	client, err := NewBybitClient("http://127.0.0.1:7890", "http")
+	client, err := NewExchangeClient("http://127.0.0.1:7890", "http")
 	if err != nil {
-		panic(err)
+		t.Fatal("err====", err)
 	}
 
-	book, err := client.FetchOrderBook("BTC/USDT")
+	book, err := client.FetchOrderBook("binance", "BTC/USDT")
 	if err != nil {
 		panic(err)
 	}

@@ -131,7 +131,7 @@ var (
 	RedisDbIndexFlag = &cli.IntFlag{
 		Name:     "redis-db-index",
 		Usage:    "The DB index of the redis",
-		EnvVars:  prefixEnvVars("Redis_DB_INDEX"),
+		EnvVars:  prefixEnvVars("REDIS_DB_INDEX"),
 		Required: true,
 	}
 )

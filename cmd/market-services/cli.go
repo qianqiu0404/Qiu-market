@@ -4,17 +4,18 @@ import (
 	"context"
 
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/the-web3/s78-market-services/crawler"
-	rest "github.com/the-web3/s78-market-services/services/http"
 	"github.com/urfave/cli/v2"
 
 	"github.com/the-web3/s78-market-services/common/cliapp"
 	"github.com/the-web3/s78-market-services/common/opio"
 	"github.com/the-web3/s78-market-services/config"
+	"github.com/the-web3/s78-market-services/crawler"
 	"github.com/the-web3/s78-market-services/database"
 	flags2 "github.com/the-web3/s78-market-services/flags"
 	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/grpc"
+	rest "github.com/the-web3/s78-market-services/services/http"
+	"github.com/the-web3/s78-market-services/worker"
 )
 
 func runRpc(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
@@ -78,8 +79,30 @@ func runCrawler(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 		log.Error("fail to connect to redis", "err", err)
 		return nil, err
 	}
+	return crawler.NewCrawler(db, redisClient, &cfg, shutdown)
+}
 
-	return crawler.NewCrawler(db, redisClient, shutdown)
+func runWorker(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
+	log.Info("run worker...")
+	cfg := config.NewConfig(ctx)
+	db, err := database.NewDB(ctx.Context, cfg.MasterDB)
+	if err != nil {
+		log.Error("failed to connect to database", "err", err)
+		return nil, err
+	}
+
+	redisConfig := redis.Config{
+		Address:  cfg.RedisConfig.Addr,
+		Password: cfg.RedisConfig.Password,
+		DB:       cfg.RedisConfig.DB,
+	}
+
+	redisClient, err := redis.New(redisConfig)
+	if err != nil {
+		log.Error("fail to connect to redis", "err", err)
+		return nil, err
+	}
+	return worker.NewWorker(db, redisClient, &cfg, shutdown)
 }
 
 func NewCli(GitCommit string, GitData string) *cli.App {
@@ -113,6 +136,12 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 				Flags:       flags,
 				Description: "Run crawler services",
 				Action:      cliapp.LifecycleCmd(runCrawler),
+			},
+			{
+				Name:        "worker",
+				Flags:       flags,
+				Description: "Run worker business",
+				Action:      cliapp.LifecycleCmd(runWorker),
 			},
 			{
 				Name:        "version",
