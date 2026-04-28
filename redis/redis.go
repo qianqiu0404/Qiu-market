@@ -28,7 +28,11 @@ func New(cfg Config) (*Client, error) {
 		ReadTimeout:  3 * time.Second,
 		WriteTimeout: 3 * time.Second,
 	})
+
+	//  真正启动前先确认 Redis 可连通。
+	//如果连不上，整个服务就不会继续。
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		return nil, err

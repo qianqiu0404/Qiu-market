@@ -20,7 +20,7 @@ import (
 
 func runRpc(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
 	ctx.Context = opio.CancelOnInterrupt(ctx.Context)
-	log.Info("running migrations...")
+	log.Info("running rpc service...")
 	cfg := config.NewConfig(ctx)
 	db, err := database.NewDB(ctx.Context, cfg.MasterDB)
 	if err != nil {

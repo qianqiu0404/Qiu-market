@@ -70,7 +70,7 @@ func (a *assetDB) QueryAssets() ([]*Asset, error) {
 	var list []*Asset
 	if err := a.gorm.Table("asset").Find(&list).Error; err != nil {
 		log.Error("Failed to query assets", "error", err)
-		return nil, nil
+		return nil, err
 	}
 	return list, nil
 }
