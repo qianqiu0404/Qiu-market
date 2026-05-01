@@ -30,3 +30,24 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# Local env
+.env
+env.sh
+
+# Build binaries
+market-services
+market-services-bin
+market-services-test
+
+# Vite cache
+frontend/node_modules/.vite/

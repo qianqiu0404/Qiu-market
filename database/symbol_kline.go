@@ -76,7 +76,7 @@ func (s *symbolKlineDB) QuerySymbolKlineList(page, pageSize int64) ([]*SymbolKli
 
 func (s *symbolKlineDB) StoreSymbolKlines(list []SymbolKline) error {
 	if err := s.gorm.Table("symbol_kline").
-		CreateInBatches(&list, len(list)).Error; err != nil {
+		Save(&list).Error; err != nil {
 		log.Error("Failed to store symbol_kline list", "error", err)
 		return err
 	}
@@ -85,7 +85,7 @@ func (s *symbolKlineDB) StoreSymbolKlines(list []SymbolKline) error {
 
 func (s *symbolKlineDB) StoreSymbolKline(data *SymbolKline) error {
 	if err := s.gorm.Table("symbol_kline").
-		Create(&data).Error; err != nil {
+		Save(data).Error; err != nil {
 		log.Error("Failed to store symbol_kline", "error", err)
 		return err
 	}

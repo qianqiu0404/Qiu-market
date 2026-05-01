@@ -35,6 +35,9 @@ type SymbolMarketDB interface {
 
 	StoreSymbolMarkets([]SymbolMarket) error
 	StoreSymbolMarket(*SymbolMarket) error
+	UpdateSymbolMarketTicker(symbolGuid, price, volume string) error
+	UpdateSymbolMarketTickerWithChange(symbolGuid, price, volume, change string) error
+	UpdateSymbolMarketFull(symbolGuid, marketCap string) error
 }
 
 type symbolMarketDB struct {
@@ -105,6 +108,45 @@ func (s *symbolMarketDB) StoreSymbolMarket(data *SymbolMarket) error {
 	if err := s.gorm.Table("symbol_market").
 		Create(&data).Error; err != nil {
 		log.Error("Failed to store symbol_market", "error", err)
+		return err
+	}
+	return nil
+}
+
+func (s *symbolMarketDB) UpdateSymbolMarketTicker(symbolGuid, price, volume string) error {
+	if err := s.gorm.Table("symbol_market").
+		Where("symbol_guid = ?", symbolGuid).
+		Updates(map[string]interface{}{
+			"price":  price,
+			"volume": volume,
+		}).Error; err != nil {
+		log.Error("Failed to update symbol_market ticker", "symbol_guid", symbolGuid, "error", err)
+		return err
+	}
+	return nil
+}
+
+func (s *symbolMarketDB) UpdateSymbolMarketTickerWithChange(symbolGuid, price, volume, change string) error {
+	if err := s.gorm.Table("symbol_market").
+		Where("symbol_guid = ?", symbolGuid).
+		Updates(map[string]interface{}{
+			"price":  price,
+			"volume": volume,
+			"radio":  change,
+		}).Error; err != nil {
+		log.Error("Failed to update symbol_market ticker with change", "symbol_guid", symbolGuid, "error", err)
+		return err
+	}
+	return nil
+}
+
+func (s *symbolMarketDB) UpdateSymbolMarketFull(symbolGuid, marketCap string) error {
+	if err := s.gorm.Table("symbol_market").
+		Where("symbol_guid = ?", symbolGuid).
+		Updates(map[string]interface{}{
+			"market_cap": marketCap,
+		}).Error; err != nil {
+		log.Error("Failed to update symbol_market full", "symbol_guid", symbolGuid, "error", err)
 		return err
 	}
 	return nil

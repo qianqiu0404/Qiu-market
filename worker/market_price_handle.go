@@ -9,22 +9,25 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/google/uuid"
+	"github.com/the-web3/s78-market-services/common/marketkey"
 	"github.com/the-web3/s78-market-services/common/tasks"
 	"github.com/the-web3/s78-market-services/database"
-	"github.com/the-web3/s78-market-services/redis"
 )
+
+type MarketPriceStore interface {
+	Get(ctx context.Context, key string) (string, error)
+}
 
 type MarketPriceHandle struct {
 	db             *database.DB
-	redisCli       *redis.Client
+	redisCli       MarketPriceStore
 	resourceCtx    context.Context
 	resourceCancel context.CancelFunc
 	tasks          tasks.Group
 }
 
-func NewMarketPriceHandle(db *database.DB, redisClient *redis.Client, shutdown context.CancelCauseFunc) (*MarketPriceHandle, error) {
+func NewMarketPriceHandle(db *database.DB, redisClient MarketPriceStore, shutdown context.CancelCauseFunc) (*MarketPriceHandle, error) {
 	resourceCtx, resourceCancel := context.WithCancel(context.Background())
-	defer resourceCancel()
 	return &MarketPriceHandle{
 		db:             db,
 		redisCli:       redisClient,
@@ -43,15 +46,14 @@ func (mph *MarketPriceHandle) Close() error {
 
 func (mph *MarketPriceHandle) Start() error {
 	mph.tasks.Go(func() error {
+		tickerOperator := time.NewTicker(time.Second * 5)
+		defer tickerOperator.Stop()
 		for {
-			tickerOperator := time.NewTicker(time.Second * 5)
-			defer tickerOperator.Stop()
 			select {
 			case <-tickerOperator.C:
 				err := mph.onPriceData()
 				if err != nil {
 					log.Error("market price handle fail", "error", err)
-					return err
 				}
 			case <-mph.resourceCtx.Done():
 				log.Info("market price handle shutting down")
@@ -80,22 +82,32 @@ func (mph *MarketPriceHandle) onPriceData() error {
 				return err
 			}
 
-			key := exchange.Guid + "%" + exchange.Name + "%" + symbol.Guid + "%" + symbol.SymbolName
-			avgPrice, _ := mph.redisCli.Get(mph.resourceCtx, key)
-			askPriceKey := key + "askPrice"
-			askPrice, _ := mph.redisCli.Get(mph.resourceCtx, askPriceKey)
-			bidPriceKey := key + "bidPrice"
-			bidPrice, _ := mph.redisCli.Get(mph.resourceCtx, bidPriceKey)
+			key := marketkey.Build(exchange.Guid, exchange.Name, symbol.Guid, symbol.SymbolName)
+			
+			avgPrice, err := mph.redisCli.Get(mph.resourceCtx, key)
+			if err != nil {
+				log.Debug("Get avgPrice fail", "key", key, "error", err)
+				continue
+			}
+			
+			askPrice, _ := mph.redisCli.Get(mph.resourceCtx, key+"askPrice")
+			bidPrice, _ := mph.redisCli.Get(mph.resourceCtx, key+"bidPrice")
+			volume, _ := mph.redisCli.Get(mph.resourceCtx, key+"volume")
+			if volume == "" {
+				volume = "0"
+			}
+
 			guid, _ := uuid.NewUUID()
-			radio := strconv.FormatFloat(mph.calcRate(avgPrice), 'f', 2, 64)
+			radio := strconv.FormatFloat(mph.calcRate(avgPrice), 'f', 4, 64)
+			
 			dataSymbolMk := &database.SymbolMarket{
 				Guid:       guid.String(),
 				SymbolGuid: symbol.Guid,
 				Price:      avgPrice,
 				AskPrice:   askPrice,
 				BidPrice:   bidPrice,
-				Volume:     "10000",
-				MarketCap:  "10000",
+				Volume:     volume,
+				MarketCap:  "0", // Simplified
 				Radio:      radio,
 				IsActive:   true,
 				CreatedAt:  time.Now(),
@@ -112,21 +124,21 @@ func (mph *MarketPriceHandle) onPriceData() error {
 	return nil
 }
 
-func (mph *MarketPriceHandle) calcRate(askPrice string) float64 {
+func (mph *MarketPriceHandle) calcRate(currentPriceStr string) float64 {
 	marketDataPrice, err := mph.db.SymbolMarket.QuerySymbolMarketTodayFirstData()
 	if err != nil {
-		log.Error("Query symbol market data fail", "error", err)
+		// If no data today, rate is 0
 		return 0
 	}
-	startOfDayPrice := marketDataPrice.Price
-	currentPrice, _ := strconv.ParseFloat(askPrice, 64)
-	fistPrice, _ := strconv.ParseFloat(startOfDayPrice, 64)
-	radio := currentPrice - fistPrice/fistPrice
-	return radio
-}
-
-func StringToFloat64(s string) (float64, error) {
-	return strconv.ParseFloat(s, 64)
+	
+	startOfDayPrice, _ := strconv.ParseFloat(marketDataPrice.Price, 64)
+	currentPrice, _ := strconv.ParseFloat(currentPriceStr, 64)
+	
+	if startOfDayPrice == 0 {
+		return 0
+	}
+	
+	return (currentPrice - startOfDayPrice) / startOfDayPrice
 }
 
 func (mph *MarketPriceHandle) Stop() error {

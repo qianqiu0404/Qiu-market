@@ -21,8 +21,14 @@ import (
 )
 
 const (
-	HealthPath       = "healthz"
-	SupportAssetPath = "/api/v1/get_support_assets"
+	HealthPath          = "healthz"
+	SupportAssetPath    = "/api/v1/get_support_assets"
+	MarketDashboardPath = "/api/v1/get_market_dashboard"
+	ExchangePath        = "/api/v1/get_exchanges"
+	SymbolPath          = "/api/v1/get_symbols"
+	KlinePath           = "/api/v1/get_klines"
+	SystemOverviewPath  = "/api/v1/get_system_overview"
+	FiatRatePath        = "/api/v1/get_fiat_rates"
 )
 
 type ApiConfig struct {
@@ -58,7 +64,7 @@ func (a *API) initFromConfig(ctx context.Context, cfg *config.Config) error {
 
 func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 
-	svc := service.NewHandleSvc(a.db.Asset)
+	svc := service.NewHandleSvc(a.db.Asset, a.db.Symbol, a.db.SymbolMarket, a.db.Exchange, a.db.SymbolKline)
 	apiRouter := chi.NewRouter()
 	h := routes.NewRoutes(apiRouter, svc)
 
@@ -68,6 +74,12 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 	apiRouter.Use(middleware.Heartbeat(HealthPath))
 
 	apiRouter.Post(fmt.Sprintf(SupportAssetPath), h.GetSupportAssets)
+	apiRouter.Post(fmt.Sprintf(MarketDashboardPath), h.GetMarketDashboard)
+	apiRouter.Post(fmt.Sprintf(ExchangePath), h.GetExchanges)
+	apiRouter.Post(fmt.Sprintf(SymbolPath), h.GetSymbols)
+	apiRouter.Post(fmt.Sprintf(KlinePath), h.GetKlines)
+	apiRouter.Post(fmt.Sprintf(SystemOverviewPath), h.GetSystemOverview)
+	apiRouter.Post(fmt.Sprintf(FiatRatePath), h.GetFiatRates)
 
 	a.router = apiRouter
 }

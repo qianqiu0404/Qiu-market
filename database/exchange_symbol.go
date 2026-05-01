@@ -43,7 +43,7 @@ type exchangeSymbolDB struct {
 
 func (e *exchangeSymbolDB) QuerySymbolsByExchangeId(exchangeGuid string) ([]*ExchangeSymbol, error) {
 	var symbols []*ExchangeSymbol
-	if err := e.gorm.Table("exchange_symbol").Where("exchange_guid = ? and is_active = ?", exchangeGuid, true).Find(symbols).Error; err != nil {
+	if err := e.gorm.Table("exchange_symbol").Where("exchange_guid = ? and is_active = ?", exchangeGuid, true).Find(&symbols).Error; err != nil {
 		log.Error("Query exchange symbol fail:", err)
 		return nil, err
 	}

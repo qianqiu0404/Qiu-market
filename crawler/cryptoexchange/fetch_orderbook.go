@@ -5,30 +5,40 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ccxt/ccxt/go/v4"
 	"github.com/cockroachdb/errors"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/the-web3/s78-market-services/common/marketkey"
 	"github.com/the-web3/s78-market-services/common/tasks"
 	"github.com/the-web3/s78-market-services/database"
 	"github.com/the-web3/s78-market-services/redis"
 )
 
+type ExchangeMarketClient interface {
+	FetchOrderBook(exchangeName, symbol string) (*ccxt.OrderBook, error)
+	FetchTicker(exchangeName, symbol string) (*ccxt.Ticker, error)
+}
+
 type ExchangeOrderbook struct {
 	db             *database.DB
 	redisCli       *redis.Client
-	exchangeClient *ExchangeClient
+	exchangeClient ExchangeMarketClient
 	resourceCtx    context.Context
 	resourceCancel context.CancelFunc
 	tasks          tasks.Group
 }
 
 func NewExchangeOrderbook(db *database.DB, redisClient *redis.Client, shutdown context.CancelCauseFunc) (*ExchangeOrderbook, error) {
-	exchangeClient, err := NewExchangeClient("http://127.0.0.1:7890", "http")
+	exchangeClient, err := NewExchangeClient("", "")
 	if err != nil {
 		log.Error("Failed to create exchange client")
 		return nil, err
 	}
+	return NewExchangeOrderbookWithClient(db, redisClient, exchangeClient, shutdown)
+}
+
+func NewExchangeOrderbookWithClient(db *database.DB, redisClient *redis.Client, exchangeClient ExchangeMarketClient, shutdown context.CancelCauseFunc) (*ExchangeOrderbook, error) {
 	resourceCtx, resourceCancel := context.WithCancel(context.Background())
-	defer resourceCancel()
 	return &ExchangeOrderbook{
 		db:             db,
 		redisCli:       redisClient,
@@ -48,19 +58,18 @@ func (bc *ExchangeOrderbook) Close() error {
 
 func (bc *ExchangeOrderbook) Start() error {
 	bc.tasks.Go(func() error {
+		tickerOperator := time.NewTicker(time.Second * 5)
+		defer tickerOperator.Stop()
 		for {
-			tickerOperator := time.NewTicker(time.Second * 5)
-			defer tickerOperator.Stop()
 			select {
 			case <-tickerOperator.C:
-				log.Debug("Fetching order book start")
-				err := bc.syncOrderBookData()
+				log.Debug("Fetching market data start")
+				err := bc.syncMarketData()
 				if err != nil {
-					log.Error("sync order book data fail", "error", err)
-					return err
+					log.Error("sync market data fail", "error", err)
 				}
 			case <-bc.resourceCtx.Done():
-				log.Info("exchange fetch orderbook shutting down")
+				log.Info("exchange fetcher shutting down")
 				return errors.New("exchange stopped")
 			}
 		}
@@ -68,14 +77,13 @@ func (bc *ExchangeOrderbook) Start() error {
 	return nil
 }
 
-func (bc *ExchangeOrderbook) syncOrderBookData() error {
+func (bc *ExchangeOrderbook) syncMarketData() error {
 	exchangeList, err := bc.db.Exchange.QueryExchanges()
 	if err != nil {
 		log.Error("Query exchanges fail", "error", err)
 		return err
 	}
 	for _, exchange := range exchangeList {
-		log.Info("exchange", "exchange", exchange.Name)
 		exchangeSymbols, err := bc.db.ExchangeSymbol.QuerySymbolsByExchangeId(exchange.Guid)
 		if err != nil {
 			return err
@@ -86,37 +94,28 @@ func (bc *ExchangeOrderbook) syncOrderBookData() error {
 				log.Error("Query symbol fail", "error", err)
 				return err
 			}
-			log.Info("symbol", "symbolName", symbol.SymbolName)
 
-			orderBook, err := bc.exchangeClient.FetchOrderBook(exchange.Name, symbol.SymbolName)
+			ticker, err := bc.exchangeClient.FetchTicker(exchange.Name, symbol.SymbolName)
 			if err != nil {
-				log.Error("Fetch order book fail", "symbol", symbol.SymbolName, "error", err)
-				return err
+				log.Error("Fetch ticker fail", "symbol", symbol.SymbolName, "error", err)
+				continue
 			}
-			askPrice := orderBook.Asks[0][0]
-			bidPrice := orderBook.Bids[0][0]
-			avgPrice := (askPrice + bidPrice) / 2
-			key := exchange.Guid + "%" + exchange.Name + "%" + symbol.Guid + "%" + symbol.SymbolName
 
-			log.Info("Fetch orderbook success", "key", key, "askPrice", askPrice, "bidPrice", bidPrice, "avgPrice", avgPrice)
+			lastPrice := ticker.Last
+			volume := ticker.BaseVolume
+			askPrice := ticker.Ask
+			bidPrice := ticker.Bid
 
-			err = bc.redisCli.Set(bc.resourceCtx, key, avgPrice, time.Second*600)
+			key := marketkey.Build(exchange.Guid, exchange.Name, symbol.Guid, symbol.SymbolName)
+			log.Info("Fetch ticker success", "key", key, "price", lastPrice, "volume", volume)
+
+			err = bc.redisCli.Set(bc.resourceCtx, key, fmt.Sprintf("%f", lastPrice), time.Second*600)
 			if err != nil {
-				log.Error("Set avgPrice fail", "symbol", symbol.SymbolName, "error", err)
-				return err
+				log.Error("Set lastPrice fail", "symbol", symbol.SymbolName, "error", err)
 			}
-			askPriceKey := key + "askPrice"
-			err = bc.redisCli.Set(bc.resourceCtx, askPriceKey, askPrice, time.Second*600)
-			if err != nil {
-				log.Error("Set askPrice fail", "symbol", symbol.SymbolName, "error", err)
-				return err
-			}
-			bidPriceKey := key + "bidPrice"
-			err = bc.redisCli.Set(bc.resourceCtx, bidPriceKey, bidPrice, time.Second*600)
-			if err != nil {
-				log.Error("Set askPrice fail", "symbol", symbol.SymbolName, "error", err)
-				return err
-			}
+			bc.redisCli.Set(bc.resourceCtx, key+"askPrice", fmt.Sprintf("%f", askPrice), time.Second*600)
+			bc.redisCli.Set(bc.resourceCtx, key+"bidPrice", fmt.Sprintf("%f", bidPrice), time.Second*600)
+			bc.redisCli.Set(bc.resourceCtx, key+"volume", fmt.Sprintf("%f", volume), time.Second*600)
 		}
 	}
 	return nil
