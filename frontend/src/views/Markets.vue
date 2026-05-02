@@ -1,68 +1,95 @@
 <template>
   <div class="page">
     <div class="header">
-      <h1>Market Prices</h1>
+      <div>
+        <h1>Market Prices</h1>
+        <div class="header-desc">Real-time cryptocurrency prices</div>
+      </div>
       <div class="controls">
         <div class="fiat-group">
           <button v-for="f in fiatList" :key="f"
             :class="['fiat-btn', { active: selectedFiat === f }]"
             @click="selectedFiat = f">{{ f }}</button>
         </div>
-        <span :class="['badge', source.toLowerCase().replace(' ', '-')]">{{ source }}</span>
+        <span :class="['badge', sourceClass]">
+          <span class="dot" :class="sourceClass === 'connected' ? 'on' : 'off'"></span>
+          {{ sourceText }}
+        </span>
       </div>
     </div>
-    <div class="table-container">
+
+    <!-- Loading -->
+    <div v-if="loading" class="empty-state">Loading market data...</div>
+
+    <!-- Error -->
+    <div v-else-if="markets.length === 0 && sourceClass !== 'connected'" class="empty-state">
+      Unable to load market data. The API may be unreachable.
+    </div>
+
+    <!-- Table -->
+    <div v-else class="table-container">
       <table>
         <thead>
           <tr>
-            <th>ASSET</th>
-            <th>SYMBOL</th>
-            <th>PRICE</th>
-            <th>24H CHANGE</th>
-            <th>VOLUME (24H)</th>
-            <th>MARKET CAP</th>
+            <th style="width:36px">#</th>
+            <th>Asset</th>
+            <th style="text-align:right">Price</th>
+            <th style="text-align:right">24h %</th>
+            <th style="text-align:right">Volume (24h)</th>
+            <th style="text-align:right">Market Cap</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="m in markets" :key="m.symbol">
+          <tr v-for="(m, i) in markets" :key="m.symbol">
+            <td class="rank mono">{{ i + 1 }}</td>
             <td>
               <div class="asset-cell">
                 <div class="logo-wrapper">
                   <img :src="m.logo" class="tiny-logo" v-if="m.logo" @error="handleImgError($event, m)">
                   <div class="logo-placeholder" v-else>{{ getInitial(m) }}</div>
                 </div>
-                <span>{{ m.name || 'Unknown' }}</span>
+                <div>
+                  <div class="asset-name">{{ m.name || 'Unknown' }}</div>
+                  <div class="asset-symbol">{{ m.symbol }}</div>
+                </div>
               </div>
             </td>
-            <td>{{ m.symbol }}</td>
-            <td class="price">{{ formatFiat(m.price, true) }}</td>
-            <td :class="['change', getChangeClass(m.change24h)]">
-              {{ formatChange(m.change24h) }}%
+            <td class="price" style="text-align:right">{{ formatFiat(m.price, true) }}</td>
+            <td :class="['change', getChangeClass(m.change24h)]" style="text-align:right">
+              {{ formatChange(m.change24h) }}
             </td>
-            <td>{{ formatFiat(m.volume) }}</td>
-            <td>{{ formatFiat(m.market_cap) }}</td>
+            <td style="text-align:right" class="mono">{{ formatFiat(m.volume) }}</td>
+            <td style="text-align:right" class="mono">{{ formatFiat(m.market_cap) }}</td>
           </tr>
         </tbody>
       </table>
-      <div v-if="markets.length === 0" class="empty-state">
-        No market data available.
-      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { request } from '../api/common'
 
 const markets = ref([])
 const source = ref('Loading...')
+const loading = ref(true)
 const selectedFiat = ref('USD')
 const fiatList = ['USD', 'CNY', 'HKD']
 
 const fiatRates = ref({ USD: 1, CNY: 7.2, HKD: 7.8 })
-const fiatSource = ref('')
 const fiatSymbols = { USD: '$', CNY: '¥', HKD: 'HK$' }
+
+const sourceClass = computed(() => {
+  const s = source.value.toLowerCase()
+  if (s === 'loading...') return ''
+  if (s === 'connected') return 'connected'
+  return 'error'
+})
+const sourceText = computed(() => {
+  if (source.value === 'Loading...' || source.value === 'Connected') return 'Live'
+  return 'Offline'
+})
 
 const getFiatRate = () => fiatRates.value[selectedFiat.value] || 1
 const getFiatSymbol = () => fiatSymbols[selectedFiat.value] || '$'
@@ -90,14 +117,13 @@ const formatFiat = (val, isPrice = false) => {
   const converted = num * getFiatRate()
   const sym = getFiatSymbol()
   if (isPrice) {
-    // Price: 2-6 decimal places, keep small coins visible
-    if (converted < 0.01) return sym + converted.toFixed(8)
+    if (converted < 0.00001) return sym + converted.toExponential(2)
+    if (converted < 0.01) return sym + converted.toFixed(6)
     if (converted < 1) return sym + converted.toFixed(4)
+    if (converted < 1000) return sym + converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     return sym + converted.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
-  // Volume / Market cap: abbreviated
-  const abbr = formatAbbr(converted)
-  return sym + abbr
+  return sym + formatAbbr(converted)
 }
 
 const formatAbbr = (num) => {
@@ -105,13 +131,14 @@ const formatAbbr = (num) => {
   if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B'
   if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M'
   if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K'
-  return num.toFixed(2)
+  return num.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
 const formatChange = (c) => {
   const num = parseFloat(c)
-  if (isNaN(num)) return '0.00'
-  return (num > 0 ? '+' : '') + num.toFixed(2)
+  if (isNaN(num)) return '0.00%'
+  const sign = num > 0 ? '+' : ''
+  return `${sign}${num.toFixed(2)}%`
 }
 
 const getChangeClass = (c) => {
@@ -121,49 +148,35 @@ const getChangeClass = (c) => {
 }
 
 onMounted(async () => {
-  // Fetch fiat rates from backend
   try {
     const fr = await request('/api/v1/get_fiat_rates')
     if (fr.source === 'Connected' && fr.data && fr.data.rates) {
       fiatRates.value = { ...fiatRates.value, ...fr.data.rates }
-      fiatSource.value = fr.data.source || ''
     }
-  } catch (e) {
-    // Keep fallback rates
-    fiatSource.value = 'fallback'
-  }
+  } catch (e) {}
 
   const res = await request('/api/v1/get_market_dashboard')
-  source.value = res.source
-  markets.value = Array.isArray(res.data) ? res.data : []
+  loading.value = false
+  if (res.data) {
+    markets.value = Array.isArray(res.data) ? res.data : []
+    source.value = res.source
+  } else {
+    source.value = 'Error'
+  }
 })
 </script>
 
 <style scoped>
-.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-.controls { display: flex; align-items: center; gap: 12px; }
-.fiat-group { display: flex; gap: 2px; background: #0f172a; border-radius: 6px; padding: 2px; }
-.fiat-btn { background: transparent; color: #94a3b8; border: none; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
-.fiat-btn:hover { color: #e2e8f0; }
-.fiat-btn.active { background: #334155; color: #f8fafc; }
-.table-container { margin-top: 24px; background: #1e293b; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
-table { width: 100%; border-collapse: collapse; text-align: left; }
-th { background: #0f172a; padding: 16px; color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; }
-td { padding: 16px; border-top: 1px solid #334155; }
+.rank { color: var(--text-muted); text-align: center; font-size: 0.75rem; }
 .asset-cell { display: flex; align-items: center; gap: 12px; }
-.logo-wrapper { width: 24px; height: 24px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-.tiny-logo { width: 24px; height: 24px; border-radius: 50%; object-fit: contain; }
-:deep(.logo-placeholder) { 
-  width: 24px; height: 24px; background: #334155; border-radius: 50%; 
-  display: flex; align-items: center; justify-content: center; 
-  font-size: 10px; font-weight: bold; color: #94a3b8;
+.logo-wrapper { width: 28px; height: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.tiny-logo { width: 28px; height: 28px; border-radius: 50%; object-fit: contain; }
+.logo-placeholder {
+  width: 28px; height: 28px; background: var(--border); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: var(--text-muted);
 }
-.price { color: #f8fafc; font-weight: bold; font-family: monospace; }
-.change { font-family: monospace; font-weight: bold; }
-.pos { color: #10b981; }
-.neg { color: #ef4444; }
-.badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
-.badge.connected { background: #065f46; color: #34d399; }
-.badge.error { background: #7f1d1d; color: #fca5a5; }
-.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
+.asset-name { font-size: 0.88rem; font-weight: 600; }
+.asset-symbol { font-size: 0.72rem; color: var(--text-muted); }
+.change { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-weight: 600; }
 </style>
