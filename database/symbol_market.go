@@ -49,7 +49,7 @@ func NewSymbolMarketDB(db *gorm.DB) SymbolMarketDB {
 }
 
 func (s *symbolMarketDB) QuerySymbolMarketTodayFirstData() (*SymbolMarket, error) {
-	var symbolMarket *SymbolMarket
+	var symbolMarket SymbolMarket
 	now := time.Now().UTC()
 	utcStartOfDay := time.Date(
 		now.Year(),
@@ -58,11 +58,14 @@ func (s *symbolMarketDB) QuerySymbolMarketTodayFirstData() (*SymbolMarket, error
 		0, 0, 0, 0,
 		time.UTC,
 	)
-	if err := s.gorm.Table("symbol_market").Where("created_at >=", utcStartOfDay).First(symbolMarket).Error; err != nil {
+	if err := s.gorm.Table("symbol_market").
+		Where("created_at >= ?", utcStartOfDay).
+		Order("created_at ASC").
+		First(&symbolMarket).Error; err != nil {
 		log.Error("QuerySymbolMarketTodayFirstData err:", err)
 		return nil, err
 	}
-	return symbolMarket, nil
+	return &symbolMarket, nil
 }
 
 func (s *symbolMarketDB) QuerySymbolMarketList(page, pageSize int64) ([]*SymbolMarket, int64, error) {

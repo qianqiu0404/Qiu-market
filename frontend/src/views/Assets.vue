@@ -4,7 +4,8 @@
       <h1>Assets</h1>
       <span :class="['badge', source.toLowerCase()]">{{ source }}</span>
     </div>
-    <div class="card-grid">
+    <div v-if="source === 'Error'" class="empty-state">Unable to load assets. The API may be unreachable.</div>
+    <div v-else class="card-grid">
       <div v-for="a in assets" :key="a.guid" class="asset-card">
         <img :src="a.asset_logo" class="logo">
         <div class="info">
@@ -29,11 +30,8 @@ onMounted(async () => {
     assets.value = res.data
     source.value = res.source
   } else {
-    source.value = 'Mock fallback'
-    assets.value = [
-      { guid: '1', asset_symbol: 'BTC', asset_name: 'Bitcoin', asset_logo: '' },
-      { guid: '2', asset_symbol: 'ETH', asset_name: 'Ethereum', asset_logo: '' }
-    ]
+    source.value = 'Error'
+    assets.value = []
   }
 })
 </script>
@@ -46,5 +44,6 @@ onMounted(async () => {
 .name { color: #94a3b8; font-size: 0.875rem; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
 .badge.connected { background: #065f46; color: #34d399; }
-.badge.mock { background: #7c2d12; color: #fb923c; }
+.badge.error { background: #7f1d1d; color: #fecaca; }
+.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
 </style>

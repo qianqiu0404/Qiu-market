@@ -4,7 +4,8 @@
       <h1>Exchanges</h1>
       <span :class="['badge', source.toLowerCase()]">{{ source }}</span>
     </div>
-    <div class="card-grid">
+    <div v-if="source === 'Error'" class="empty-state">Unable to load exchanges. The API may be unreachable.</div>
+    <div v-else class="card-grid">
       <div v-for="e in exchanges" :key="e.guid" class="exchange-card">
         <div class="logo-container">
           <img v-if="e.logo" :src="e.logo" class="logo" @error="(err) => { err.target.style.display='none'; err.target.nextElementSibling.style.display='flex' }">
@@ -29,11 +30,8 @@ onMounted(async () => {
     exchanges.value = res.data
     source.value = res.source
   } else {
-    source.value = 'Mock fallback'
-    exchanges.value = [
-      { guid: '1', name: 'Binance', logo: '' },
-      { guid: '2', name: 'OKX', logo: '' }
-    ]
+    source.value = 'Error'
+    exchanges.value = []
   }
 })
 </script>
@@ -51,5 +49,6 @@ onMounted(async () => {
 .name { font-weight: bold; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
 .badge.connected { background: #065f46; color: #34d399; }
-.badge.mock { background: #7c2d12; color: #fb923c; }
+.badge.error { background: #7f1d1d; color: #fecaca; }
+.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
 </style>

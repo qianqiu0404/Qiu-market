@@ -9,13 +9,18 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
 const source = ref('')
+const error = ref('')
 
 const loadData = async () => {
   loading.value = true
+  error.value = ''
   const res = await fetchMarkets(page.value, pageSize.value)
   markets.value = res.items
   total.value = res.total
   source.value = res.source
+  if (res.source === 'Error') {
+    error.value = res.error || 'Unable to load market data. The API may be unreachable.'
+  }
   loading.value = false
 }
 
@@ -30,6 +35,7 @@ onMounted(async () => {
        <span v-if="source" :class="['badge', source.toLowerCase().replace(' ', '-')]">{{ source }}</span>
     </div>
     <div v-if="loading" class="loading">Loading market data...</div>
+    <div v-else-if="error" class="error-state">{{ error }}</div>
     <div v-else>
       <table class="market-table">
         <thead>
@@ -46,8 +52,8 @@ onMounted(async () => {
             <td>
               <div class="asset-info">
                 <div class="logo-wrapper">
-                  <img v-if=\"m.logo\" :src=\"m.logo\" class=\"asset-logo\" @error=\"(e: any) => { e.target.style.display='none'; e.target.nextElementSibling.style.display='flex' }\" />
-                  <div class=\"logo-placeholder\" :style=\"{ display: m.logo ? 'none' : 'flex' }\">{{ m.name?.charAt(0) || m.symbol?.charAt(0) }}</div>
+                  <img v-if="m.logo" :src="m.logo" class="asset-logo" @error="(e: any) => { e.target.style.display='none'; e.target.nextElementSibling.style.display='flex' }" />
+                  <div class="logo-placeholder" :style="{ display: m.logo ? 'none' : 'flex' }">{{ m.name?.charAt(0) || m.symbol?.charAt(0) }}</div>
                 </div>
                 <span>{{ m.name || 'Unknown' }}</span>
               </div>
@@ -72,6 +78,7 @@ onMounted(async () => {
 .market-table-container { background: #1e1e1e; border-radius: 8px; overflow: hidden; }
 .table-header { padding: 8px 16px; display: flex; justify-content: flex-end; }
 .loading { padding: 2rem; text-align: center; }
+.error-state { padding: 2rem; text-align: center; color: #ff8a80; }
 .market-table { width: 100%; border-collapse: collapse; }
 th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #333; }
 th { background: #252525; color: #888; font-size: 0.85rem; text-transform: uppercase; }
@@ -91,7 +98,7 @@ tr:hover { background: #2a2a2a; }
 
 .badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; }
 .badge.connected { background: #1b5e20; color: #81c784; }
-.badge.mock-fallback { background: #bf360c; color: #ffab91; }
+.badge.error { background: #7f1d1d; color: #fecaca; }
 
 .pagination { padding: 1rem; border-top: 1px solid #333; color: #888; font-size: 0.9rem; }
 </style>

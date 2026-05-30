@@ -4,7 +4,8 @@
       <h1>Symbols</h1>
       <span :class="['badge', source.toLowerCase()]">{{ source }}</span>
     </div>
-    <div class="table-container">
+    <div v-if="source === 'Error'" class="empty-state">Unable to load symbols. The API may be unreachable.</div>
+    <div v-else class="table-container">
       <table>
         <thead>
           <tr>
@@ -40,11 +41,8 @@ onMounted(async () => {
     symbols.value = res.data
     source.value = res.source
   } else {
-    source.value = 'Mock fallback'
-    symbols.value = [
-      { guid: 's1', symbol_name: 'BTC/USDT', base_asset: 'BTC', quote_asset: 'USDT' },
-      { guid: 's2', symbol_name: 'ETH/USDT', base_asset: 'ETH', quote_asset: 'USDT' }
-    ]
+    source.value = 'Error'
+    symbols.value = []
   }
 })
 </script>
@@ -57,5 +55,6 @@ td { padding: 16px; border-top: 1px solid #334155; }
 .guid { font-family: monospace; color: #64748b; font-size: 0.75rem; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
 .badge.connected { background: #065f46; color: #34d399; }
-.badge.mock { background: #7c2d12; color: #fb923c; }
+.badge.error { background: #7f1d1d; color: #fecaca; }
+.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
 </style>

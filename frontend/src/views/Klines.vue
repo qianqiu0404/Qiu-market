@@ -17,7 +17,9 @@
       </div>
     </div>
 
-    <div class="chart-container" ref="chartRef"></div>
+    <div class="chart-container" ref="chartRef">
+      <div v-if="error" class="chart-error">{{ error }}</div>
+    </div>
 
     <div class="table-container">
       <div class="table-title">Recent Klines (Debug - last 20)</div>
@@ -60,6 +62,7 @@ const selectedInterval = ref('1m')
 const intervals = ['1m', '15m', '1h', '1d']
 const klines = ref([])
 const source = ref('Loading...')
+const error = ref('')
 const chartRef = ref(null)
 let chartInstance = null
 
@@ -91,7 +94,10 @@ const changeInterval = (iv) => {
 
 const updateChart = (data) => {
   if (!chartInstance) return
-  if (data.length === 0) return
+  if (data.length === 0) {
+    chartInstance.clear()
+    return
+  }
 
   const now = Date.now()
   const minValid = new Date('2020-01-01').getTime()
@@ -248,6 +254,7 @@ const updateChart = (data) => {
 
 const fetchKlines = async () => {
   try {
+    error.value = ''
     const body = {
       symbol_guid: selectedSymbol.value,
       limit: 100
@@ -265,27 +272,13 @@ const fetchKlines = async () => {
       source.value = 'Connected'
       updateChart(klines.value)
     } else {
-      throw new Error('Not connected')
+      throw new Error(res.error || 'Unable to load kline data')
     }
   } catch (err) {
-    source.value = 'Mock fallback'
-    const now = Date.now()
-    const mock = []
-    let base = 70000
-    const count = selectedInterval.value === '1m' ? 100 : 60
-    for(let i=0; i<count; i++) {
-        base += (Math.random() - 0.5) * 100
-        mock.push({
-            timestamp: now - (count - i) * 60000,
-            open: base,
-            high: base + 20,
-            low: base - 20,
-            close: base + (Math.random() - 0.5) * 50,
-            volume: Math.random() * 1000
-        })
-    }
-    klines.value = mock
-    updateChart(mock)
+    source.value = 'Error'
+    error.value = err instanceof Error ? err.message : 'Unable to load kline data. The API may be unreachable.'
+    klines.value = []
+    updateChart([])
   }
 }
 
@@ -310,6 +303,7 @@ onUnmounted(() => {
 .interval-btn:hover { color: #e2e8f0; }
 .interval-btn.active { background: #334155; color: #f8fafc; }
 .chart-container { width: 100%; height: 520px; background: #1e293b; border-radius: 12px; margin-bottom: 24px; border: 1px solid #334155; }
+.chart-error { height: 100%; display: flex; align-items: center; justify-content: center; color: #fecaca; text-align: center; padding: 24px; }
 .table-container { background: #1e293b; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
 .table-title { padding: 12px 16px; background: #0f172a; border-bottom: 1px solid #334155; font-size: 0.875rem; color: #94a3b8; font-weight: bold; }
 table { width: 100%; border-collapse: collapse; text-align: left; }
@@ -318,6 +312,6 @@ td { padding: 12px 16px; border-top: 1px solid #334155; color: #e2e8f0; font-siz
 .mono { font-family: monospace; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
 .badge.connected { background: #065f46; color: #34d399; }
-.badge.mock-fallback { background: #7c2d12; color: #fb923c; }
+.badge.error { background: #7f1d1d; color: #fecaca; }
 .empty-state { padding: 40px; text-align: center; color: #94a3b8; }
 </style>

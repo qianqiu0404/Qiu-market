@@ -109,16 +109,23 @@ func (bc *ExchangeOrderbook) syncMarketData() error {
 			key := marketkey.Build(exchange.Guid, exchange.Name, symbol.Guid, symbol.SymbolName)
 			log.Info("Fetch ticker success", "key", key, "price", lastPrice, "volume", volume)
 
-			err = bc.redisCli.Set(bc.resourceCtx, key, fmt.Sprintf("%f", lastPrice), time.Second*600)
+			err = bc.redisCli.Set(bc.resourceCtx, key, formatOptionalFloat(lastPrice), time.Second*600)
 			if err != nil {
 				log.Error("Set lastPrice fail", "symbol", symbol.SymbolName, "error", err)
 			}
-			bc.redisCli.Set(bc.resourceCtx, key+"askPrice", fmt.Sprintf("%f", askPrice), time.Second*600)
-			bc.redisCli.Set(bc.resourceCtx, key+"bidPrice", fmt.Sprintf("%f", bidPrice), time.Second*600)
-			bc.redisCli.Set(bc.resourceCtx, key+"volume", fmt.Sprintf("%f", volume), time.Second*600)
+			bc.redisCli.Set(bc.resourceCtx, key+"askPrice", formatOptionalFloat(askPrice), time.Second*600)
+			bc.redisCli.Set(bc.resourceCtx, key+"bidPrice", formatOptionalFloat(bidPrice), time.Second*600)
+			bc.redisCli.Set(bc.resourceCtx, key+"volume", formatOptionalFloat(volume), time.Second*600)
 		}
 	}
 	return nil
+}
+
+func formatOptionalFloat(value *float64) string {
+	if value == nil {
+		return "0"
+	}
+	return fmt.Sprintf("%f", *value)
 }
 
 func (bc *ExchangeOrderbook) Stop() error {

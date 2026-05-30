@@ -22,11 +22,11 @@ type Crawler struct {
 
 func NewCrawler(db *database.DB, redisClient *redis.Client, config *config.Config, shutdown context.CancelCauseFunc) (*Crawler, error) {
 	/*
-	exchangeOrderbook, err := cryptoexchange.NewExchangeOrderbook(db, redisClient, shutdown)
-	if err != nil {
-		log.Error("Crawler NewBinanceCrawler error", err)
-		return nil, err
-	}
+		exchangeOrderbook, err := cryptoexchange.NewExchangeOrderbook(db, redisClient, shutdown)
+		if err != nil {
+			log.Error("Crawler NewBinanceCrawler error", err)
+			return nil, err
+		}
 	*/
 
 	fiatCurrencyCrawler, err := fiatcurrency.NewFiatCurrencyCrawler(db, config, shutdown)
@@ -46,39 +46,51 @@ func NewCrawler(db *database.DB, redisClient *redis.Client, config *config.Confi
 
 func (cl *Crawler) Start(ctx context.Context) error {
 	/*
-	err := cl.ExchangeOrderbook.Start()
-	if err != nil {
-		log.Error("Crawler ExchangeOrderbook Start error", err)
-		return err
-	}
+		err := cl.ExchangeOrderbook.Start()
+		if err != nil {
+			log.Error("Crawler ExchangeOrderbook Start error", err)
+			return err
+		}
 	*/
-	err := cl.FiatCurrencyCrawler.Start()
-	if err != nil {
-		log.Error("Crawler FiatCurrencyCrawler error", err)
-		return err
+	if cl.FiatCurrencyCrawler != nil {
+		if err := cl.FiatCurrencyCrawler.Start(); err != nil {
+			log.Error("Crawler FiatCurrencyCrawler error", err)
+			return err
+		}
 	}
-	err = cl.BinanceTicker.Start()
-	if err != nil {
-		log.Error("Crawler BinanceTicker Start error", err)
-		return err
+	if cl.BinanceTicker != nil {
+		if err := cl.BinanceTicker.Start(); err != nil {
+			log.Error("Crawler BinanceTicker Start error", err)
+			return err
+		}
 	}
 	return nil
 }
 
 func (cl *Crawler) Stop(ctx context.Context) error {
-	if err := cl.ExchangeOrderbook.Close(); err != nil {
-		log.Error("Crawler ExchangeOrderbook Stop error", err)
-		return err
+	if cl.stopped.Swap(true) {
+		return nil
 	}
 
-	if err := cl.FiatCurrencyCrawler.Close(); err != nil {
-		log.Error("Crawler FiatCurrencyCrawler error", err)
-		return err
+	if cl.ExchangeOrderbook != nil {
+		if err := cl.ExchangeOrderbook.Close(); err != nil {
+			log.Error("Crawler ExchangeOrderbook Stop error", err)
+			return err
+		}
 	}
 
-	if err := cl.BinanceTicker.Stop(); err != nil {
-		log.Error("Crawler BinanceTicker Stop error", err)
-		return err
+	if cl.FiatCurrencyCrawler != nil {
+		if err := cl.FiatCurrencyCrawler.Close(); err != nil {
+			log.Error("Crawler FiatCurrencyCrawler error", err)
+			return err
+		}
+	}
+
+	if cl.BinanceTicker != nil {
+		if err := cl.BinanceTicker.Stop(); err != nil {
+			log.Error("Crawler BinanceTicker Stop error", err)
+			return err
+		}
 	}
 	return nil
 }

@@ -51,3 +51,11 @@ market-services-test
 
 # Vite cache
 frontend/node_modules/.vite/
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Personal interview notes kept outside engineering commits
+docs/Golang_interview.txt
+docs/project-go-interview-bagua.md
