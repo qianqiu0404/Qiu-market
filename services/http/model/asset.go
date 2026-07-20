@@ -30,13 +30,15 @@ type MarketDashboardRequest struct {
 }
 
 type MarketDashboardItem struct {
-	Symbol    string `json:"symbol"`
-	Price     string `json:"price"`
-	Change24h string `json:"change24h"`
-	Volume    string `json:"volume"`
-	MarketCap string `json:"market_cap"`
-	Name      string `json:"name"`
-	Logo      string `json:"logo"`
+	Symbol           string `json:"symbol"`
+	Price            string `json:"price"`
+	Change24h        string `json:"change24h"`
+	Volume           string `json:"volume"`
+	MarketCap        string `json:"market_cap"`
+	Name             string `json:"name"`
+	Logo             string `json:"logo"`
+	UpdatedAt        int64  `json:"updated_at"`
+	DataDelaySeconds int64  `json:"data_delay_seconds"`
 }
 
 type MarketDashboardResponse struct {

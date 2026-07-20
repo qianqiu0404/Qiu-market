@@ -12,7 +12,7 @@ func (h Routes) GetSystemOverview(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	res, err := h.srv.GetSystemOverview(&req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		jsonErrorResponse(w, InternalErrorCode, "query system overview failed", http.StatusInternalServerError)
 		return
 	}
 	_ = jsonResponse(w, res, http.StatusOK)

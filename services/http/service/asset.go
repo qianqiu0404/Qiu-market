@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/the-web3/s78-market-services/database"
@@ -69,11 +70,13 @@ func (h HandleSvc) GetMarketDashboard(request *model.MarketDashboardRequest) (*m
 		marketCap := unscaleString(m.MarketCap, 8)
 
 		item := model.MarketDashboardItem{
-			Symbol:    m.SymbolGuid,
-			Price:     price,
-			Volume:    volume,
-			Change24h: m.Radio,
-			MarketCap: marketCap,
+			Symbol:           m.SymbolGuid,
+			Price:            price,
+			Volume:           volume,
+			Change24h:        m.Radio,
+			MarketCap:        marketCap,
+			UpdatedAt:        m.UpdatedAt.UnixMilli(),
+			DataDelaySeconds: marketDataDelaySeconds(m.UpdatedAt),
 		}
 
 		if s, ok := symbolMap[m.SymbolGuid]; ok {
@@ -96,6 +99,17 @@ func (h HandleSvc) GetMarketDashboard(request *model.MarketDashboardRequest) (*m
 		Result:  result,
 		Total:   total,
 	}, nil
+}
+
+func marketDataDelaySeconds(updatedAt time.Time) int64 {
+	if updatedAt.IsZero() {
+		return -1
+	}
+	delay := time.Since(updatedAt)
+	if delay < 0 {
+		return 0
+	}
+	return int64(delay.Seconds())
 }
 
 func unscaleString(valStr string, decimals int) string {
@@ -131,14 +145,14 @@ func unscaleBigIntString(valStr string, decimals int) string {
 	if !ok {
 		return valStr
 	}
-	
+
 	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-	
+
 	bf := new(big.Float).SetInt(bi)
 	bm := new(big.Float).SetInt(multiplier)
-	
+
 	res := new(big.Float).Quo(bf, bm)
-	
+
 	out := fmt.Sprintf("%.8f", res)
 	out = strings.TrimRight(out, "0")
 	out = strings.TrimRight(out, ".")

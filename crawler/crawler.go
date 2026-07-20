@@ -35,7 +35,7 @@ func NewCrawler(db *database.DB, redisClient *redis.Client, config *config.Confi
 		return nil, err
 	}
 
-	binanceTicker := NewBinanceTickerCrawler(db)
+	binanceTicker := NewBinanceTickerCrawler(db, redisClient)
 
 	return &Crawler{
 		// ExchangeOrderbook:   exchangeOrderbook,

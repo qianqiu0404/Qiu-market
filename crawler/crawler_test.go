@@ -14,3 +14,9 @@ func TestCrawlerStopAllowsNilOptionalComponents(t *testing.T) {
 	require.True(t, cl.Stopped())
 	require.NoError(t, cl.Stop(context.Background()))
 }
+
+func TestBinanceSymbolToPair(t *testing.T) {
+	require.Equal(t, "BTC/USDT", binanceSymbolToPair("BTCUSDT"))
+	require.Equal(t, "ETH/USDT", binanceSymbolToPair("ETHUSDT"))
+	require.Equal(t, "BTC/USDC", binanceSymbolToPair("BTC/USDC"))
+}

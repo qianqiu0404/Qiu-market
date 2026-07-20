@@ -48,13 +48,13 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.table-container { margin-top: 24px; background: #1e293b; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
+.table-container { margin-top: 24px; background: var(--bg-card); border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow); }
 table { width: 100%; border-collapse: collapse; text-align: left; }
-th { background: #0f172a; padding: 16px; color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; }
-td { padding: 16px; border-top: 1px solid #334155; }
-.guid { font-family: monospace; color: #64748b; font-size: 0.75rem; }
+th { background: #f8fafc; padding: 16px; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
+td { padding: 16px; border-top: 1px solid var(--border); }
+.guid { font-family: monospace; color: var(--text-muted); font-size: 0.75rem; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-.badge.connected { background: #065f46; color: #34d399; }
-.badge.error { background: #7f1d1d; color: #fecaca; }
-.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
+.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
+.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
+.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
 </style>

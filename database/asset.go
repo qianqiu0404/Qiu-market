@@ -59,7 +59,7 @@ func (a *assetDB) QueryAssetList(page, pageSize int64) ([]*Asset, int64, error) 
 		log.Error("Failed to query asset list count", "error", err)
 		return nil, 0, err
 	}
-	if err := query.Order("timestamp DESC").Limit(int(pageSize)).Offset(int(offset)).Find(&list).Error; err != nil {
+	if err := query.Order("created_at DESC").Limit(int(pageSize)).Offset(int(offset)).Find(&list).Error; err != nil {
 		log.Error("Failed to query asset list by page and pageSize", "error", err)
 		return nil, 0, err
 	}

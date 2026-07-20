@@ -1,10 +1,13 @@
 <template>
   <div class="page">
     <div class="header">
-      <div>
-        <h1>Market Prices</h1>
-        <div class="header-desc">Real-time cryptocurrency prices</div>
-      </div>
+        <div>
+          <h1>Market Prices</h1>
+          <div class="header-desc">
+            Real-time cryptocurrency prices
+            <span v-if="latestUpdatedAt"> · Last updated {{ formatDateTime(latestUpdatedAt) }} · Delay {{ formatDelay(latestDelaySeconds) }}</span>
+          </div>
+        </div>
       <div class="controls">
         <div class="fiat-group">
           <button v-for="f in fiatList" :key="f"
@@ -37,6 +40,7 @@
             <th style="text-align:right">24h %</th>
             <th style="text-align:right">Volume (24h)</th>
             <th style="text-align:right">Market Cap</th>
+            <th style="text-align:right">Freshness</th>
           </tr>
         </thead>
         <tbody>
@@ -60,6 +64,11 @@
             </td>
             <td style="text-align:right" class="mono">{{ formatFiat(m.volume) }}</td>
             <td style="text-align:right" class="mono">{{ formatFiat(m.market_cap) }}</td>
+            <td style="text-align:right" class="mono">
+              <span :class="['freshness', getFreshnessClass(m.data_delay_seconds)]">
+                {{ formatDelay(m.data_delay_seconds) }}
+              </span>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -89,6 +98,16 @@ const sourceClass = computed(() => {
 const sourceText = computed(() => {
   if (source.value === 'Loading...' || source.value === 'Connected') return 'Live'
   return 'Offline'
+})
+const latestUpdatedAt = computed(() => {
+  const times = markets.value.map(m => Number(m.updated_at || 0)).filter(t => t > 0)
+  if (times.length === 0) return 0
+  return Math.max(...times)
+})
+const latestDelaySeconds = computed(() => {
+  const delays = markets.value.map(m => Number(m.data_delay_seconds)).filter(d => d >= 0)
+  if (delays.length === 0) return -1
+  return Math.min(...delays)
 })
 
 const getFiatRate = () => fiatRates.value[selectedFiat.value] || 1
@@ -141,6 +160,28 @@ const formatChange = (c) => {
   return `${sign}${num.toFixed(2)}%`
 }
 
+const formatDateTime = (ts) => {
+  if (!ts) return 'Unknown'
+  return new Date(ts).toLocaleString()
+}
+
+const formatDelay = (seconds) => {
+  const n = Number(seconds)
+  if (!Number.isFinite(n) || n < 0) return 'Unknown'
+  if (n < 60) return `${Math.round(n)}s`
+  if (n < 3600) return `${Math.round(n / 60)}m`
+  if (n < 86400) return `${Math.round(n / 3600)}h`
+  return `${Math.round(n / 86400)}d`
+}
+
+const getFreshnessClass = (seconds) => {
+  const n = Number(seconds)
+  if (!Number.isFinite(n) || n < 0) return 'unknown'
+  if (n <= 300) return 'fresh'
+  if (n <= 1800) return 'delayed'
+  return 'stale'
+}
+
 const getChangeClass = (c) => {
   const num = parseFloat(c)
   if (isNaN(num) || num === 0) return ''
@@ -179,4 +220,8 @@ onMounted(async () => {
 .asset-name { font-size: 0.88rem; font-weight: 600; }
 .asset-symbol { font-size: 0.72rem; color: var(--text-muted); }
 .change { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-weight: 600; }
+.freshness { font-size: 0.75rem; font-weight: 700; }
+.freshness.fresh { color: #34d399; }
+.freshness.delayed { color: #facc15; }
+.freshness.stale, .freshness.unknown { color: #f87171; }
 </style>

@@ -38,17 +38,17 @@ onMounted(async () => {
 
 <style scoped>
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 24px; }
-.exchange-card { background: #1e293b; padding: 24px; border-radius: 12px; text-align: center; border: 1px solid #334155; }
+.exchange-card { background: var(--bg-card); padding: 24px; border-radius: 12px; text-align: center; border: 1px solid var(--border); box-shadow: var(--shadow); }
 .logo-container { display: flex; justify-content: center; margin-bottom: 12px; }
 .logo { width: 48px; height: 48px; border-radius: 8px; object-fit: contain; }
 .logo-placeholder { 
-  width: 48px; height: 48px; background: #334155; border-radius: 8px;
+  width: 48px; height: 48px; background: #eef2ff; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 20px; font-weight: bold; color: #94a3b8;
+  font-size: 20px; font-weight: bold; color: var(--accent-blue);
 }
 .name { font-weight: bold; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-.badge.connected { background: #065f46; color: #34d399; }
-.badge.error { background: #7f1d1d; color: #fecaca; }
-.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
+.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
+.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
+.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
 </style>

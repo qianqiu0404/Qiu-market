@@ -83,7 +83,7 @@ const formatNum = (val) => {
 const initChart = () => {
   if (chartRef.value) {
     if (chartInstance) chartInstance.dispose()
-    chartInstance = echarts.init(chartRef.value, 'dark')
+    chartInstance = echarts.init(chartRef.value)
   }
 }
 
@@ -297,21 +297,21 @@ onUnmounted(() => {
 <style scoped>
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
 .controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.symbol-select { background: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 6px 12px; border-radius: 6px; outline: none; }
-.interval-group { display: flex; gap: 2px; background: #0f172a; border-radius: 6px; padding: 2px; }
-.interval-btn { background: transparent; color: #94a3b8; border: none; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
-.interval-btn:hover { color: #e2e8f0; }
-.interval-btn.active { background: #334155; color: #f8fafc; }
-.chart-container { width: 100%; height: 520px; background: #1e293b; border-radius: 12px; margin-bottom: 24px; border: 1px solid #334155; }
-.chart-error { height: 100%; display: flex; align-items: center; justify-content: center; color: #fecaca; text-align: center; padding: 24px; }
-.table-container { background: #1e293b; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
-.table-title { padding: 12px 16px; background: #0f172a; border-bottom: 1px solid #334155; font-size: 0.875rem; color: #94a3b8; font-weight: bold; }
+.symbol-select { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; outline: none; }
+.interval-group { display: flex; gap: 2px; background: #f1f5f9; border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
+.interval-btn { background: transparent; color: var(--text-muted); border: none; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
+.interval-btn:hover { color: var(--text-primary); }
+.interval-btn.active { background: var(--accent-blue); color: #fff; }
+.chart-container { width: 100%; height: 520px; background: var(--bg-card); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--border); box-shadow: var(--shadow); }
+.chart-error { height: 100%; display: flex; align-items: center; justify-content: center; color: var(--accent-red); text-align: center; padding: 24px; }
+.table-container { background: var(--bg-card); border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow); }
+.table-title { padding: 12px 16px; background: #f8fafc; border-bottom: 1px solid var(--border); font-size: 0.875rem; color: var(--text-muted); font-weight: bold; }
 table { width: 100%; border-collapse: collapse; text-align: left; }
-th { background: #0f172a; padding: 12px 16px; color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; }
-td { padding: 12px 16px; border-top: 1px solid #334155; color: #e2e8f0; font-size: 0.875rem; }
+th { background: #f8fafc; padding: 12px 16px; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
+td { padding: 12px 16px; border-top: 1px solid var(--border); color: var(--text-primary); font-size: 0.875rem; }
 .mono { font-family: monospace; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
-.badge.connected { background: #065f46; color: #34d399; }
-.badge.error { background: #7f1d1d; color: #fecaca; }
-.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
+.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
+.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
+.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
 </style>

@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	HealthPath          = "healthz"
+	HealthPath          = "/healthz"
 	SupportAssetPath    = "/api/v1/get_support_assets"
 	MarketDashboardPath = "/api/v1/get_market_dashboard"
 	ExchangePath        = "/api/v1/get_exchanges"
@@ -87,7 +87,7 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 func (a *API) initDB(ctx context.Context, cfg *config.Config) error {
 	initDb, err := database.NewDB(ctx, cfg.MasterDB)
 	if err != nil {
-		log.Error("failed to connect to slave database", "err", err)
+		log.Error("failed to connect to master database", "err", err)
 		return err
 	}
 	a.db = initDb

@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS exchange_symbol(
     ask_price          NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (ask_price >= 0),
     bid_price          NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (bid_price >= 0),
     volume             UINT256 NOT NULL,
-    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (radio >= 0),
+    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0,
     is_active          BOOLEAN NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS symbol_market(
     bid_price          NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (bid_price >= 0),
     volume             UINT256 NOT NULL,
     market_cap         UINT256 NOT NULL,
-    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (radio >= 0),
+    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0,
     is_active          BOOLEAN NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP
@@ -186,3 +186,7 @@ CREATE TABLE IF NOT EXISTS symbol_kline(
 CREATE INDEX IF NOT EXISTS idx_symbol_kline_guid ON symbol_kline (guid);
 CREATE INDEX IF NOT EXISTS idx_symbol_kline_is_active ON symbol_kline (is_active);
 CREATE INDEX IF NOT EXISTS idx_symbol_kline_created_at ON symbol_kline (created_at);
+
+-- 24h change/radio can be negative in real market data.
+ALTER TABLE IF EXISTS exchange_symbol DROP CONSTRAINT IF EXISTS exchange_symbol_radio_check;
+ALTER TABLE IF EXISTS symbol_market DROP CONSTRAINT IF EXISTS symbol_market_radio_check;

@@ -75,30 +75,30 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.market-table-container { background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+.market-table-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); }
 .table-header { padding: 8px 16px; display: flex; justify-content: flex-end; }
 .loading { padding: 2rem; text-align: center; }
-.error-state { padding: 2rem; text-align: center; color: #ff8a80; }
+.error-state { padding: 2rem; text-align: center; color: var(--accent-red); }
 .market-table { width: 100%; border-collapse: collapse; }
-th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #333; }
-th { background: #252525; color: #888; font-size: 0.85rem; text-transform: uppercase; }
+th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+th { background: #f8fafc; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; }
 .price-cell { font-family: monospace; font-weight: bold; }
-.pos { color: #4caf50; }
-.neg { color: #f44336; }
-tr:hover { background: #2a2a2a; }
+.pos { color: var(--accent-green); }
+.neg { color: var(--accent-red); }
+tr:hover { background: #f8fafc; }
 
 .asset-info { display: flex; align-items: center; gap: 10px; }
 .logo-wrapper { width: 24px; height: 24px; flex-shrink: 0; }
-.asset-logo { width: 24px; height: 24px; border-radius: 50%; background: #333; object-fit: contain; }
-.logo-placeholder { 
-  width: 24px; height: 24px; background: #333; border-radius: 50%; 
-  display: flex; align-items: center; justify-content: center; 
-  font-size: 10px; font-weight: bold; color: #888;
+.asset-logo { width: 24px; height: 24px; border-radius: 50%; background: #f1f5f9; object-fit: contain; }
+.logo-placeholder {
+  width: 24px; height: 24px; background: #eef2ff; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: bold; color: var(--accent-blue);
 }
 
 .badge { padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; font-weight: bold; }
-.badge.connected { background: #1b5e20; color: #81c784; }
-.badge.error { background: #7f1d1d; color: #fecaca; }
+.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
+.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
 
-.pagination { padding: 1rem; border-top: 1px solid #333; color: #888; font-size: 0.9rem; }
+.pagination { padding: 1rem; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 0.9rem; }
 </style>

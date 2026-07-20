@@ -33,7 +33,12 @@ func (h HandleSvc) GetSystemOverview(request *model.CommonRequest) (*model.Syste
 	// Compute total market_cap and volume (1e8 scaled)
 	totalMC := new(big.Int)
 	totalVol := new(big.Int)
+	var latestMarketUpdatedAt time.Time
 	for _, m := range markets {
+		if m.UpdatedAt.After(latestMarketUpdatedAt) {
+			latestMarketUpdatedAt = m.UpdatedAt
+		}
+
 		// Parse market_cap (numeric(65,18) → big.Int)
 		mcStr := m.MarketCap
 		if idx := strings.Index(mcStr, "."); idx >= 0 {
@@ -55,7 +60,12 @@ func (h HandleSvc) GetSystemOverview(request *model.CommonRequest) (*model.Syste
 
 	overview.TotalMarketCap = unscaleString(totalMC.String(), 8)
 	overview.TotalVolume = unscaleString(totalVol.String(), 8)
-	overview.UpdatedAt = time.Now().UnixMilli()
+	overview.UpdatedAt = latestMarketUpdatedAt.UnixMilli()
+	overview.DataDelaySeconds = marketDataDelaySeconds(latestMarketUpdatedAt)
+	if latestMarketUpdatedAt.IsZero() {
+		overview.UpdatedAt = 0
+		overview.DataDelaySeconds = -1
+	}
 
 	return &model.SystemOverviewResponse{
 		Code:    2000,

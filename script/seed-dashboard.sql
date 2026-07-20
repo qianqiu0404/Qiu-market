@@ -1,5 +1,6 @@
 -- Clean existing data first
 DELETE FROM symbol_market;
+DELETE FROM exchange_symbol;
 DELETE FROM symbol;
 DELETE FROM exchange;
 DELETE FROM asset;
@@ -39,15 +40,26 @@ ON CONFLICT (guid) DO UPDATE SET
     qoute_asset_guid = EXCLUDED.qoute_asset_guid,
     symbol_name = EXCLUDED.symbol_name;
 
+-- Link Binance to all demo symbols so worker can read Redis ticker keys and write market rows.
+INSERT INTO exchange_symbol (guid, exchange_guid, symbol_guid, volume) VALUES
+('es1', 'e1', 's1', 0),
+('es2', 'e1', 's2', 0),
+('es3', 'e1', 's3', 0),
+('es4', 'e1', 's4', 0),
+('es5', 'e1', 's5', 0),
+('es6', 'e1', 's6', 0)
+ON CONFLICT (guid) DO UPDATE SET
+    exchange_guid = EXCLUDED.exchange_guid,
+    symbol_guid = EXCLUDED.symbol_guid;
+
 -- Insert Market Data (6)
--- Radio MUST BE >= 0 according to symbol_market_radio_check
 INSERT INTO symbol_market (guid, symbol_guid, price, volume, market_cap, radio) VALUES
-('m1', 's1', '77000', 1000, 77000000, 1.68),
-('m2', 's2', '2300', 5000, 11500000, 2.21),
-('m3', 's3', '84.94', 20000, 1698800, 1.39),
-('m4', 's4', '580.5', 8000, 4644000, 0.86),
-('m5', 's5', '0.62', 500000, 310000, 1.25),
-('m6', 's6', '0.16', 1000000, 160000, 2.34)
+('m1', 's1', '7700000000000', 100000000000, 7700000000000000, 1.68),
+('m2', 's2', '230000000000', 500000000000, 1150000000000000, 2.21),
+('m3', 's3', '8494000000', 2000000000000, 169880000000000, 1.39),
+('m4', 's4', '58050000000', 800000000000, 464400000000000, 0.86),
+('m5', 's5', '62000000', 50000000000000, 31000000000000, 1.25),
+('m6', 's6', '16000000', 100000000000000, 16000000000000, 2.34)
 ON CONFLICT (guid) DO UPDATE SET
     price = EXCLUDED.price,
     volume = EXCLUDED.volume,

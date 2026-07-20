@@ -44,11 +44,11 @@
 </template>
 
 <style scoped>
-.pipeline-container { display: flex; align-items: center; justify-content: space-between; margin-top: 60px; padding: 40px; background: #1e293b; border-radius: 16px; }
-.step { flex: 1; text-align: center; padding: 20px; border: 2px solid #334155; border-radius: 12px; background: #0f172a; }
-.step.active { border-color: #38bdf8; box-shadow: 0 0 15px rgba(56, 189, 248, 0.3); }
+.pipeline-container { display: flex; align-items: center; justify-content: space-between; margin-top: 60px; padding: 40px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); }
+.step { flex: 1; text-align: center; padding: 20px; border: 2px solid var(--border); border-radius: 12px; background: #f8fafc; }
+.step.active { border-color: var(--accent-blue); box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.08); }
 .icon { font-size: 2.5rem; margin-bottom: 12px; }
 .label { font-weight: bold; margin-bottom: 4px; }
-.desc { font-size: 0.75rem; color: #94a3b8; }
-.arrow { font-size: 1.5rem; color: #475569; margin: 0 10px; }
+.desc { font-size: 0.75rem; color: var(--text-muted); }
+.arrow { font-size: 1.5rem; color: var(--text-muted); margin: 0 10px; }
 </style>

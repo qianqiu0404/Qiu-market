@@ -45,7 +45,7 @@ func NewSymbolDB(db *gorm.DB) SymbolDB {
 
 func (s *symbolDB) QuerySymbolByGuid(symbolGuid string) (*Symbol, error) {
 	var symbol Symbol
-	if err := s.gorm.Table("symbols").Where("guid = ?", symbolGuid).First(&symbol).Error; err != nil {
+	if err := s.gorm.Table("symbol").Where("guid = ?", symbolGuid).First(&symbol).Error; err != nil {
 		log.Error("Symbol query by guid err: ", err)
 		return nil, err
 	}

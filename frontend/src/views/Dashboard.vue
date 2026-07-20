@@ -3,7 +3,9 @@
     <div class="header">
       <div>
         <h1>Dashboard</h1>
-        <div class="header-desc" v-if="overview">Updated {{ formatTime(overview.updated_at) }}</div>
+        <div class="header-desc" v-if="overview">
+          Last updated {{ formatTime(overview.updated_at) }} · Delay {{ formatDelay(overview.data_delay_seconds) }}
+        </div>
       </div>
       <div class="controls">
         <span :class="['badge', sourceClass]">
@@ -47,6 +49,12 @@
         <div class="stat-label">Exchanges</div>
         <div class="stat-value stat-num">{{ overview.exchange_count }}</div>
       </div>
+      <div class="stat-card">
+        <div class="stat-label">Data Freshness</div>
+        <div :class="['stat-value', 'stat-num', getDelayClass(overview.data_delay_seconds)]">
+          {{ formatDelay(overview.data_delay_seconds) }}
+        </div>
+      </div>
     </div>
 
     <!-- Top Assets Trend -->
@@ -85,7 +93,9 @@
             <div class="source-name">Binance</div>
             <div class="source-desc">Prices &amp; Klines</div>
           </div>
-          <span class="source-status up">Running</span>
+          <span :class="['source-status', getDelayClass(overview.data_delay_seconds)]">
+            {{ getDelayStatus(overview.data_delay_seconds) }}
+          </span>
         </div>
         <div class="source-item">
           <span class="dot on"></span>
@@ -153,8 +163,33 @@ const formatAbbr = (val) => {
 }
 
 const formatTime = (ts) => {
-  if (!ts) return ''
+  if (!ts) return 'Unknown'
   return new Date(ts).toLocaleString()
+}
+
+const formatDelay = (seconds) => {
+  const n = Number(seconds)
+  if (!Number.isFinite(n) || n < 0) return 'Unknown'
+  if (n < 60) return `${Math.round(n)}s`
+  if (n < 3600) return `${Math.round(n / 60)}m`
+  if (n < 86400) return `${Math.round(n / 3600)}h`
+  return `${Math.round(n / 86400)}d`
+}
+
+const getDelayClass = (seconds) => {
+  const n = Number(seconds)
+  if (!Number.isFinite(n) || n < 0) return 'stale'
+  if (n <= 300) return 'up'
+  if (n <= 1800) return 'delayed'
+  return 'stale'
+}
+
+const getDelayStatus = (seconds) => {
+  const n = Number(seconds)
+  if (!Number.isFinite(n) || n < 0) return 'Unknown'
+  if (n <= 300) return 'Fresh'
+  if (n <= 1800) return 'Delayed'
+  return 'Stale'
 }
 
 const formatPrice = (p) => {
@@ -223,7 +258,7 @@ onMounted(async () => {
   border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow);
 }
 .stat-card.stat-primary {
-  background: linear-gradient(135deg, var(--bg-card) 0%, #0f1d3d 100%);
+  background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
   border-color: var(--border-light);
 }
 .stat-primary .stat-value { font-size: 1.6rem; color: var(--accent-cyan); }
@@ -243,6 +278,8 @@ onMounted(async () => {
 .source-desc { font-size: 0.72rem; color: var(--text-muted); margin-top: 1px; }
 .source-status { margin-left: auto; font-size: 0.72rem; font-weight: 600; }
 .source-status.up { color: var(--accent-green); }
+.source-status.delayed, .stat-value.delayed { color: #facc15; }
+.source-status.stale, .stat-value.stale { color: #f87171; }
 
 .trend-section { margin-top: 40px; }
 .trend-section h2 { font-size: 1rem; font-weight: 600; margin-bottom: 16px; color: var(--text-secondary); }

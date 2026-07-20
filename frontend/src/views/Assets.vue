@@ -38,12 +38,12 @@ onMounted(async () => {
 
 <style scoped>
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 24px; }
-.asset-card { background: #1e293b; padding: 20px; border-radius: 12px; display: flex; align-items: center; border: 1px solid #334155; }
+.asset-card { background: var(--bg-card); padding: 20px; border-radius: 12px; display: flex; align-items: center; border: 1px solid var(--border); box-shadow: var(--shadow); }
 .logo { width: 32px; height: 32px; margin-right: 16px; }
 .symbol { font-weight: bold; font-size: 1.1rem; }
-.name { color: #94a3b8; font-size: 0.875rem; }
+.name { color: var(--text-muted); font-size: 0.875rem; }
 .badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-.badge.connected { background: #065f46; color: #34d399; }
-.badge.error { background: #7f1d1d; color: #fecaca; }
-.empty-state { padding: 40px; text-align: center; color: #94a3b8; }
+.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
+.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
+.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
 </style>

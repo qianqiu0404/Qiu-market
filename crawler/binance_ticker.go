@@ -11,13 +11,17 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/the-web3/s78-market-services/common/marketkey"
 	"github.com/the-web3/s78-market-services/database"
+	"github.com/the-web3/s78-market-services/redis"
 )
 
 // Binance 24hr ticker 响应字段
 type binanceTicker struct {
 	Symbol      string `json:"symbol"`
 	LastPrice   string `json:"lastPrice"`
+	BidPrice    string `json:"bidPrice"`
+	AskPrice    string `json:"askPrice"`
 	PriceChange string `json:"priceChangePercent"`
 	Volume      string `json:"volume"`
 	QuoteVolume string `json:"quoteVolume"`
@@ -25,10 +29,10 @@ type binanceTicker struct {
 
 // CoinGecko 价格响应
 type coingeckoPriceResponse map[string]struct {
-	Usd            float64 `json:"usd"`
-	UsdMarketCap   float64 `json:"usd_market_cap"`
-	Usd24hVol      float64 `json:"usd_24h_vol"`
-	Usd24hChange   float64 `json:"usd_24h_change"`
+	Usd          float64 `json:"usd"`
+	UsdMarketCap float64 `json:"usd_market_cap"`
+	Usd24hVol    float64 `json:"usd_24h_vol"`
+	Usd24hChange float64 `json:"usd_24h_change"`
 }
 
 // symbol_guid 到 CoinGecko coin id 映射
@@ -43,11 +47,11 @@ var coingeckoIDMap = map[string]string{
 
 // symbol 到 symbol_guid 映射
 var symbolGuidMap = map[string]string{
-	"BTCUSDT": "s1",
-	"ETHUSDT": "s2",
-	"SOLUSDT": "s3",
-	"BNBUSDT": "s4",
-	"XRPUSDT": "s5",
+	"BTCUSDT":  "s1",
+	"ETHUSDT":  "s2",
+	"SOLUSDT":  "s3",
+	"BNBUSDT":  "s4",
+	"XRPUSDT":  "s5",
 	"DOGEUSDT": "s6",
 }
 
@@ -56,15 +60,17 @@ var tickerSymbols = []string{"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSD
 
 type BinanceTickerCrawler struct {
 	db       *database.DB
+	redisCli *redis.Client
 	stopped  atomic.Bool
 	cancel   context.CancelFunc
 	// CoinGecko 调用节流
 	lastCGTime time.Time
 }
 
-func NewBinanceTickerCrawler(db *database.DB) *BinanceTickerCrawler {
+func NewBinanceTickerCrawler(db *database.DB, redisClient *redis.Client) *BinanceTickerCrawler {
 	return &BinanceTickerCrawler{
-		db: db,
+		db:       db,
+		redisCli: redisClient,
 	}
 }
 
@@ -164,17 +170,61 @@ func (b *BinanceTickerCrawler) fetchAndStore() {
 			log.Error("BinanceTickerCrawler scale volume failed", "symbol", symbol, "volume", volString, "error", err)
 			continue
 		}
+		askPrice := fallbackString(ticker.AskPrice, ticker.LastPrice)
+		bidPrice := fallbackString(ticker.BidPrice, ticker.LastPrice)
+		scaledAskPrice, err := decimalStringToUint256String(askPrice, 8)
+		if err != nil {
+			log.Error("BinanceTickerCrawler scale ask price failed", "symbol", symbol, "askPrice", askPrice, "error", err)
+			continue
+		}
+		scaledBidPrice, err := decimalStringToUint256String(bidPrice, 8)
+		if err != nil {
+			log.Error("BinanceTickerCrawler scale bid price failed", "symbol", symbol, "bidPrice", bidPrice, "error", err)
+			continue
+		}
 
 		if err := b.db.SymbolMarket.UpdateSymbolMarketTickerWithChange(guid, scaledPrice, scaledVolume, ticker.PriceChange); err != nil {
 			log.Error("BinanceTickerCrawler DB update failed", "symbol", symbol, "guid", guid, "error", err)
 			continue
 		}
+		b.cacheTicker(guid, symbol, scaledPrice, scaledAskPrice, scaledBidPrice, scaledVolume)
 
 		// 最小 K线闭环
 		b.fetchAndStoreKline(symbol, guid)
 
 		log.Info("BinanceTickerCrawler updated", "symbol", symbol, "guid", guid, "price", scaledPrice, "volume", scaledVolume)
 	}
+}
+
+func (b *BinanceTickerCrawler) cacheTicker(symbolGuid, binanceSymbol, price, askPrice, bidPrice, volume string) {
+	if b.redisCli == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	symbolName := binanceSymbolToPair(binanceSymbol)
+	key := marketkey.Build("e1", "Binance", symbolGuid, symbolName)
+	if err := b.redisCli.Set(ctx, key, price, 10*time.Minute); err != nil {
+		log.Error("BinanceTickerCrawler cache price failed", "key", key, "error", err)
+	}
+	_ = b.redisCli.Set(ctx, key+"askPrice", askPrice, 10*time.Minute)
+	_ = b.redisCli.Set(ctx, key+"bidPrice", bidPrice, 10*time.Minute)
+	_ = b.redisCli.Set(ctx, key+"volume", volume, 10*time.Minute)
+}
+
+func fallbackString(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func binanceSymbolToPair(symbol string) string {
+	if len(symbol) > 4 && symbol[len(symbol)-4:] == "USDT" {
+		return symbol[:len(symbol)-4] + "/USDT"
+	}
+	return symbol
 }
 
 // fetchAndStoreMarketCap 从 CoinGecko 获取市值数据并写入 DB

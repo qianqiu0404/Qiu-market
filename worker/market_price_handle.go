@@ -83,23 +83,29 @@ func (mph *MarketPriceHandle) onPriceData() error {
 			}
 
 			key := marketkey.Build(exchange.Guid, exchange.Name, symbol.Guid, symbol.SymbolName)
-			
+
 			avgPrice, err := mph.redisCli.Get(mph.resourceCtx, key)
 			if err != nil {
 				log.Debug("Get avgPrice fail", "key", key, "error", err)
 				continue
 			}
-			
+
 			askPrice, _ := mph.redisCli.Get(mph.resourceCtx, key+"askPrice")
 			bidPrice, _ := mph.redisCli.Get(mph.resourceCtx, key+"bidPrice")
 			volume, _ := mph.redisCli.Get(mph.resourceCtx, key+"volume")
+			if askPrice == "" {
+				askPrice = avgPrice
+			}
+			if bidPrice == "" {
+				bidPrice = avgPrice
+			}
 			if volume == "" {
 				volume = "0"
 			}
 
 			guid, _ := uuid.NewUUID()
-			radio := strconv.FormatFloat(mph.calcRate(avgPrice), 'f', 4, 64)
-			
+			radio := strconv.FormatFloat(mph.calcRate(symbol.Guid, avgPrice), 'f', 4, 64)
+
 			dataSymbolMk := &database.SymbolMarket{
 				Guid:       guid.String(),
 				SymbolGuid: symbol.Guid,
@@ -107,16 +113,16 @@ func (mph *MarketPriceHandle) onPriceData() error {
 				AskPrice:   askPrice,
 				BidPrice:   bidPrice,
 				Volume:     volume,
-				MarketCap:  "0", // Simplified
+				MarketCap:  "0",
 				Radio:      radio,
 				IsActive:   true,
 				CreatedAt:  time.Now(),
 				UpdatedAt:  time.Now(),
 			}
 
-			err = mph.db.SymbolMarket.StoreSymbolMarket(dataSymbolMk)
+			err = mph.db.SymbolMarket.UpsertSymbolMarketTicker(dataSymbolMk)
 			if err != nil {
-				log.Error("Store symbol market fail", "error", err)
+				log.Error("Upsert symbol market fail", "error", err)
 				return err
 			}
 		}
@@ -124,20 +130,20 @@ func (mph *MarketPriceHandle) onPriceData() error {
 	return nil
 }
 
-func (mph *MarketPriceHandle) calcRate(currentPriceStr string) float64 {
-	marketDataPrice, err := mph.db.SymbolMarket.QuerySymbolMarketTodayFirstData()
+func (mph *MarketPriceHandle) calcRate(symbolGuid string, currentPriceStr string) float64 {
+	marketDataPrice, err := mph.db.SymbolMarket.QuerySymbolMarketTodayFirstDataBySymbol(symbolGuid)
 	if err != nil {
 		// If no data today, rate is 0
 		return 0
 	}
-	
+
 	startOfDayPrice, _ := strconv.ParseFloat(marketDataPrice.Price, 64)
 	currentPrice, _ := strconv.ParseFloat(currentPriceStr, 64)
-	
+
 	if startOfDayPrice == 0 {
 		return 0
 	}
-	
+
 	return (currentPrice - startOfDayPrice) / startOfDayPrice
 }
 

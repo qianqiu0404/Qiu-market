@@ -28,6 +28,7 @@ func (SymbolMarket) TableName() string {
 type SymbolMarketView interface {
 	QuerySymbolMarketList(page, pageSize int64) ([]*SymbolMarket, int64, error)
 	QuerySymbolMarketTodayFirstData() (*SymbolMarket, error)
+	QuerySymbolMarketTodayFirstDataBySymbol(symbolGuid string) (*SymbolMarket, error)
 }
 
 type SymbolMarketDB interface {
@@ -37,6 +38,7 @@ type SymbolMarketDB interface {
 	StoreSymbolMarket(*SymbolMarket) error
 	UpdateSymbolMarketTicker(symbolGuid, price, volume string) error
 	UpdateSymbolMarketTickerWithChange(symbolGuid, price, volume, change string) error
+	UpsertSymbolMarketTicker(data *SymbolMarket) error
 	UpdateSymbolMarketFull(symbolGuid, marketCap string) error
 }
 
@@ -63,6 +65,26 @@ func (s *symbolMarketDB) QuerySymbolMarketTodayFirstData() (*SymbolMarket, error
 		Order("created_at ASC").
 		First(&symbolMarket).Error; err != nil {
 		log.Error("QuerySymbolMarketTodayFirstData err:", err)
+		return nil, err
+	}
+	return &symbolMarket, nil
+}
+
+func (s *symbolMarketDB) QuerySymbolMarketTodayFirstDataBySymbol(symbolGuid string) (*SymbolMarket, error) {
+	var symbolMarket SymbolMarket
+	now := time.Now().UTC()
+	utcStartOfDay := time.Date(
+		now.Year(),
+		now.Month(),
+		now.Day(),
+		0, 0, 0, 0,
+		time.UTC,
+	)
+	if err := s.gorm.Table("symbol_market").
+		Where("symbol_guid = ? AND created_at >= ?", symbolGuid, utcStartOfDay).
+		Order("created_at ASC").
+		First(&symbolMarket).Error; err != nil {
+		log.Error("QuerySymbolMarketTodayFirstDataBySymbol err:", "symbol_guid", symbolGuid, "err", err)
 		return nil, err
 	}
 	return &symbolMarket, nil
@@ -120,8 +142,9 @@ func (s *symbolMarketDB) UpdateSymbolMarketTicker(symbolGuid, price, volume stri
 	if err := s.gorm.Table("symbol_market").
 		Where("symbol_guid = ?", symbolGuid).
 		Updates(map[string]interface{}{
-			"price":  price,
-			"volume": volume,
+			"price":      price,
+			"volume":     volume,
+			"updated_at": time.Now(),
 		}).Error; err != nil {
 		log.Error("Failed to update symbol_market ticker", "symbol_guid", symbolGuid, "error", err)
 		return err
@@ -133,11 +156,49 @@ func (s *symbolMarketDB) UpdateSymbolMarketTickerWithChange(symbolGuid, price, v
 	if err := s.gorm.Table("symbol_market").
 		Where("symbol_guid = ?", symbolGuid).
 		Updates(map[string]interface{}{
-			"price":  price,
-			"volume": volume,
-			"radio":  change,
+			"price":      price,
+			"volume":     volume,
+			"radio":      change,
+			"updated_at": time.Now(),
 		}).Error; err != nil {
 		log.Error("Failed to update symbol_market ticker with change", "symbol_guid", symbolGuid, "error", err)
+		return err
+	}
+	return nil
+}
+
+func (s *symbolMarketDB) UpsertSymbolMarketTicker(data *SymbolMarket) error {
+	now := time.Now()
+	updates := map[string]interface{}{
+		"price":      data.Price,
+		"ask_price":  data.AskPrice,
+		"bid_price":  data.BidPrice,
+		"volume":     data.Volume,
+		"radio":      data.Radio,
+		"is_active":  data.IsActive,
+		"updated_at": now,
+	}
+
+	tx := s.gorm.Table("symbol_market").
+		Where("symbol_guid = ?", data.SymbolGuid).
+		Updates(updates)
+	if tx.Error != nil {
+		log.Error("Failed to update symbol_market ticker", "symbol_guid", data.SymbolGuid, "error", tx.Error)
+		return tx.Error
+	}
+	if tx.RowsAffected > 0 {
+		return nil
+	}
+
+	if data.MarketCap == "" {
+		data.MarketCap = "0"
+	}
+	if data.CreatedAt.IsZero() {
+		data.CreatedAt = now
+	}
+	data.UpdatedAt = now
+	if err := s.gorm.Table("symbol_market").Create(data).Error; err != nil {
+		log.Error("Failed to create symbol_market ticker", "symbol_guid", data.SymbolGuid, "error", err)
 		return err
 	}
 	return nil
@@ -148,6 +209,7 @@ func (s *symbolMarketDB) UpdateSymbolMarketFull(symbolGuid, marketCap string) er
 		Where("symbol_guid = ?", symbolGuid).
 		Updates(map[string]interface{}{
 			"market_cap": marketCap,
+			"updated_at": time.Now(),
 		}).Error; err != nil {
 		log.Error("Failed to update symbol_market full", "symbol_guid", symbolGuid, "error", err)
 		return err

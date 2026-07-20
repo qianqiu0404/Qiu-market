@@ -123,10 +123,9 @@ var (
 		Required: true,
 	}
 	RedisPasswordFlag = &cli.StringFlag{
-		Name:     "redis-password",
-		Usage:    "The password of the redis",
-		EnvVars:  prefixEnvVars("REDIS_PASSWORD"),
-		Required: true,
+		Name:    "redis-password",
+		Usage:   "The password of the redis",
+		EnvVars: prefixEnvVars("REDIS_PASSWORD"),
 	}
 	RedisDbIndexFlag = &cli.IntFlag{
 		Name:     "redis-db-index",
@@ -148,7 +147,6 @@ var requireFlags = []cli.Flag{
 	MasterDbPasswordFlag,
 	MasterDbNameFlag,
 	RedisAddressFlag,
-	RedisPasswordFlag,
 	RedisDbIndexFlag,
 }
 
@@ -160,6 +158,7 @@ var optionalFlags = []cli.Flag{
 	SlaveDbNameFlag,
 	MetricsHostFlag,
 	MetricsPortFlag,
+	RedisPasswordFlag,
 }
 
 func init() {
