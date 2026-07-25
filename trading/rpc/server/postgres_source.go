@@ -1,0 +1,45 @@
+package server
+
+import (
+	"context"
+
+	postgresstore "github.com/the-web3/s78-market-services/trading/store/postgres"
+)
+
+type PostgresOutbox interface {
+	OutboxAfter(context.Context, postgresstore.Cursor, int) ([]postgresstore.OutboxEvent, error)
+}
+
+type PostgresEventSource struct {
+	store PostgresOutbox
+}
+
+func NewPostgresEventSource(store PostgresOutbox) *PostgresEventSource {
+	return &PostgresEventSource{store: store}
+}
+
+func (s *PostgresEventSource) EventsAfter(
+	ctx context.Context,
+	cursor Cursor,
+	limit int,
+) ([]StoredEvent, error) {
+	events, err := s.store.OutboxAfter(ctx, postgresstore.Cursor{
+		Sequence:   cursor.Sequence,
+		EventIndex: cursor.EventIndex,
+	}, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]StoredEvent, 0, len(events))
+	for _, event := range events {
+		result = append(result, StoredEvent{
+			MarketID: event.MarketID,
+			Cursor: Cursor{
+				Sequence:   event.Sequence,
+				EventIndex: event.EventIndex,
+			},
+			Event: event.Event,
+		})
+	}
+	return result, nil
+}
