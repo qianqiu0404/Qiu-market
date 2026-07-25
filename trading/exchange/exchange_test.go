@@ -528,6 +528,23 @@ func TestSnapshotReplayAndCorruptionDetection(t *testing.T) {
 	if _, err := exchange.Restore(context.Background(), testMarket(), corruptMemory, corruptMemory); !errors.Is(err, exchange.ErrRecoveryDiverged) {
 		t.Fatalf("corrupt recovery error = %v", err)
 	}
+
+	projectionExchange, projectionMemory := mustExchange(t)
+	fund(t, projectionExchange, "projection-1", "alice", "USDT", 100)
+	if _, err := projectionExchange.SaveSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fund(t, projectionExchange, "projection-2", "bob", "USDT", 100)
+	if err := projectionMemory.CorruptRecord(2, func(record *store.Record) {
+		record.Projection.Balances[0].Available++
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exchange.Restore(
+		context.Background(), testMarket(), projectionMemory, projectionMemory,
+	); !errors.Is(err, exchange.ErrRecoveryDiverged) {
+		t.Fatalf("corrupt projection recovery error = %v", err)
+	}
 }
 
 func TestScopedIdempotencyAndQueryViews(t *testing.T) {

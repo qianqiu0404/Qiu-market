@@ -195,6 +195,9 @@ func (m Market) Validate() error {
 	if m.MakerFeeBPS < 0 || m.MakerFeeBPS >= 10_000 || m.TakerFeeBPS < 0 || m.TakerFeeBPS >= 10_000 {
 		return fmt.Errorf("%w: fee rates must be in [0, 10000)", ErrInvalidMarket)
 	}
+	if m.ConfigurationEpoch == 0 {
+		return fmt.Errorf("%w: configuration epoch must be positive", ErrInvalidMarket)
+	}
 	return nil
 }
 

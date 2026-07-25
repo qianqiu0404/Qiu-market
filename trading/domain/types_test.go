@@ -96,6 +96,11 @@ func TestDefaultBTCUSDTFixedPointAndRounding(t *testing.T) {
 	if err := market.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	invalidEpoch := market
+	invalidEpoch.ConfigurationEpoch = 0
+	if err := invalidEpoch.Validate(); !errors.Is(err, domain.ErrInvalidMarket) {
+		t.Fatalf("zero configuration epoch error = %v", err)
+	}
 	const (
 		price    = int64(60_000_010_000)
 		quantity = int64(1_001)

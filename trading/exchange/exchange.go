@@ -146,6 +146,10 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 		if journalErr != nil {
 			return nil, journalErr
 		}
+		projection, projectionErr := trial.buildProjection(record.Command, result)
+		if projectionErr != nil {
+			return nil, projectionErr
+		}
 		trial.requests[record.Command.RequestKey] = requestRecord{
 			Fingerprint: record.Command.Fingerprint,
 			Result:      cloneResult(result),
@@ -160,6 +164,7 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 		}
 		if !reflect.DeepEqual(result, record.Result) ||
 			!reflect.DeepEqual(journalDelta, record.Journal) ||
+			!reflect.DeepEqual(projection, record.Projection) ||
 			hash != record.StateHash {
 			return nil, fmt.Errorf("%w: sequence %d result_or_hash_mismatch",
 				ErrRecoveryDiverged, record.Command.Sequence)
@@ -273,6 +278,10 @@ func (e *Exchange) runLocked(ctx context.Context, command domain.Command) (domai
 	if err != nil {
 		return domain.Result{}, err
 	}
+	projection, err := trial.buildProjection(command, result)
+	if err != nil {
+		return domain.Result{}, err
+	}
 	trial.requests[command.RequestKey] = requestRecord{
 		Fingerprint: command.Fingerprint,
 		Result:      cloneResult(result),
@@ -290,6 +299,7 @@ func (e *Exchange) runLocked(ctx context.Context, command domain.Command) (domai
 		Command:       command,
 		Result:        cloneResult(result),
 		Journal:       journalDelta,
+		Projection:    projection,
 		StateHash:     hash,
 	}
 	if err := e.eventLog.Append(ctx, e.state.sequence, record); err != nil {
@@ -531,6 +541,72 @@ func validateCommandIdentity(command domain.Command) error {
 		return fmt.Errorf("request account does not match command payload")
 	}
 	return nil
+}
+
+func (s *state) buildProjection(command domain.Command, result domain.Result) (store.Projection, error) {
+	orderIDs := make(map[domain.OrderID]struct{})
+	accounts := map[domain.AccountID]struct{}{
+		command.RequestKey.AccountID: {},
+	}
+	trades := make([]domain.Trade, 0)
+	if result.OrderID != "" {
+		orderIDs[result.OrderID] = struct{}{}
+	}
+	for _, event := range result.Events {
+		if event.OrderID != "" {
+			orderIDs[event.OrderID] = struct{}{}
+		}
+		if event.AccountID != "" {
+			accounts[event.AccountID] = struct{}{}
+		}
+		if event.Trade != nil {
+			trade := *event.Trade
+			trades = append(trades, trade)
+			orderIDs[trade.MakerOrderID] = struct{}{}
+			orderIDs[trade.TakerOrderID] = struct{}{}
+			accounts[trade.BuyerAccountID] = struct{}{}
+			accounts[trade.SellerAccountID] = struct{}{}
+		}
+	}
+
+	projection := store.Projection{
+		Orders: make([]domain.Order, 0, len(orderIDs)),
+		Trades: trades,
+	}
+	for orderID := range orderIDs {
+		if order, exists := s.orders[orderID]; exists {
+			projection.Orders = append(projection.Orders, order)
+		}
+	}
+	sort.Slice(projection.Orders, func(i, j int) bool {
+		return projection.Orders[i].ID < projection.Orders[j].ID
+	})
+	sort.Slice(projection.Trades, func(i, j int) bool {
+		return projection.Trades[i].ID < projection.Trades[j].ID
+	})
+
+	accountIDs := make([]domain.AccountID, 0, len(accounts))
+	for accountID := range accounts {
+		if accountID != "" {
+			accountIDs = append(accountIDs, accountID)
+		}
+	}
+	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
+	for _, accountID := range accountIDs {
+		for _, asset := range []domain.Asset{s.market.BaseAsset, s.market.QuoteAsset} {
+			available, held := s.ledger.UserBalance(accountID, asset)
+			if available < 0 || held < 0 {
+				return store.Projection{}, fmt.Errorf("projection contains negative balance")
+			}
+			projection.Balances = append(projection.Balances, store.BalanceProjection{
+				AccountID: accountID,
+				Asset:     asset,
+				Available: available,
+				Held:      held,
+			})
+		}
+	}
+	return projection, nil
 }
 
 func aggregateLevels(orders []domain.Order, limit int) ([]PriceLevelView, error) {

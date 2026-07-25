@@ -14,15 +14,15 @@
 → MarketRunner 顺序执行与故障恢复
 ```
 
-当前状态：`core-v2-verified`（2026-07-25，本地教学核心范围）。这只证明 `trading/**` 的内存存储、顺序执行、恢复和业务语义，不证明 PostgreSQL、网络层、真实交易所或生产性能。
+当前状态：`persistence-v1-verified`（2026-07-25，独立交易模块范围）。这证明 `trading/**` 的内存与 PostgreSQL 存储、顺序执行、恢复、投影重建和业务语义；尚不证明网络层、S78 主进程集成、真实交易所或生产性能。
 
 ## 安全边界
 
 - 仅支持虚拟余额和单个 BTC/USDT 市场。
-- 不读取 `.env`，不需要 API Key，不发送网络请求。
+- 核心和 demo 不读取 `.env`，不需要 API Key，不发送网络请求；PostgreSQL 集成测试只接受显式测试 DSN。
 - 不连接真实交易端点，不包含充值、提现或签名。
 - 不修改 S78 现有 `crawler`、`database`、`services`、`protobuf`、`frontend`、迁移或根 README。
-- 当前 Event Store 和 Snapshot Store 仅有内存实现，不宣称具备生产持久性。
+- PostgreSQL adapter 已通过一次性本地数据库测试，但当前 DDL 仍内嵌在 `trading`，等待 canonical S78 基线确定后再进入正式迁移序列。
 
 ## 模块
 
@@ -33,6 +33,7 @@
 | `ledger` | available/held、平台费用账户、系统 treasury、不可变分录 |
 | `exchange` | 幂等、严格 sequence、资金冻结、撮合清算、快照恢复 |
 | `store` | EventStore/SnapshotStore 接口和并发安全内存实现 |
+| `store/postgres` | pgx 事务、stream CAS、事件/快照/outbox、可重建读模型 |
 | `runtime` | 每市场单 goroutine、有界队列、背压、未知提交结果恢复、关闭快照 |
 | `cmd/demo` | 可运行的虚拟交易与恢复演示 |
 
@@ -88,10 +89,12 @@
 2. 从正式状态构建试算副本；
 3. 在副本完成订单簿和账本变更；
 4. 校验订单簿、每张开放订单的 held、余额非负和账本平衡；
-5. 追加带 schema version 的 Command、Result/Event、Journal Delta 和 state hash；
+5. 追加带 schema version 的 Command、Result/Event、Journal Delta、Projection Delta 和 state hash；
 6. Event Store 追加成功后才替换正式状态。
 
-恢复时加载最新快照，再重放后续 command。每一步重新生成的 Result、Journal Delta 和 state hash 都必须等于持久化记录，否则 fail closed。
+恢复时加载最新快照，再重放后续 command。每一步重新生成的 Result、Journal Delta、Projection Delta 和 state hash 都必须等于持久化记录，否则 fail closed。
+
+PostgreSQL adapter 用 `SELECT ... FOR UPDATE` 与 `current_sequence` CAS 保证一个市场流严格递增。事件批次、账本增量、outbox、订单/成交/余额投影和投影 checkpoint 在同一事务提交；`(market_id, account_id, operation, request_id)` 由数据库唯一约束兜底。事件流是最终真值，全部投影都能在一个事务中清空并由事件流重建。
 
 `MarketRunner` 是单市场唯一写入口。队列满时明确返回背压错误；若持久化层返回“提交结果未知”，runner 立即进入 recovering，通过日志恢复后才继续接单。已经进入队列的命令在关闭时会先执行完，再保存最终快照。命令进入队列后即使调用方超时也可能完成，因此客户端必须使用原幂等键重试。
 
@@ -122,6 +125,8 @@ go run ./trading/cmd/demo
 go test ./trading/...
 go test -race ./trading/...
 go vet ./trading/...
+S78_TEST_POSTGRES_DSN='postgres:///disposable_test_database?host=/tmp' \
+  go test -v ./trading/store/postgres
 go test ./trading/exchange -run '^$' -fuzz FuzzExchange -fuzztime 10s
 go test ./trading/orderbook -bench BenchmarkMatch -benchmem
 git diff --check
@@ -151,6 +156,7 @@ git diff --check
 - 每个 Journal Transaction 按资产平衡；
 - 快照、日志重放、状态哈希与篡改检测；
 - MarketRunner 队列背压、未知提交结果恢复、排空关闭和最终快照；
+- PostgreSQL CAS 冲突、事务内 outbox/投影、跨重启幂等、快照重放与投影重建；
 - 随机命令序列后的订单簿和账本不变量。
 
 ## 后续接入 S78
@@ -160,15 +166,14 @@ MacBook Air 的新版 S78 提交并推送后：
 1. 获取新的 canonical commit；
 2. 将本分支 rebase 到新版 S78；
 3. 先保留 `trading` 纯核心不依赖现有服务；
-4. 第二阶段实现 PostgreSQL Event/Snapshot Store；
-5. 再增加 gRPC、HTTP/WebSocket 和前端 adapter；
+4. 把已验证的内嵌交易 DDL 移入新的正式迁移；
+5. 增加 gRPC、HTTP/WebSocket 和前端 adapter；
 6. 行情服务只通过明确端口提供市场配置和参考价格，不反向侵入撮合核心。
 
 若新版 S78 已创建同名 `trading` 模块，应逐提交移植并重新跑全仓验证，不做整目录覆盖。
 
 ## 尚未实现
 
-- PostgreSQL 持久化、outbox 和灾难恢复演练；
 - 多市场 registry 与跨市场资金账户；
 - HTTP、gRPC、WebSocket、鉴权和限流；
 - 真实行情、K 线和交易所测试网 adapter；

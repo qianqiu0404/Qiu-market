@@ -13,7 +13,20 @@ import (
 
 var ErrSequenceConflict = errors.New("event store sequence conflict")
 
-const CurrentSchemaVersion uint16 = 2
+const CurrentSchemaVersion uint16 = 3
+
+type BalanceProjection struct {
+	AccountID domain.AccountID `json:"account_id"`
+	Asset     domain.Asset     `json:"asset"`
+	Available int64            `json:"available"`
+	Held      int64            `json:"held"`
+}
+
+type Projection struct {
+	Orders   []domain.Order      `json:"orders"`
+	Trades   []domain.Trade      `json:"trades"`
+	Balances []BalanceProjection `json:"balances"`
+}
 
 type Record struct {
 	SchemaVersion uint16               `json:"schema_version"`
@@ -21,6 +34,7 @@ type Record struct {
 	Command       domain.Command       `json:"command"`
 	Result        domain.Result        `json:"result"`
 	Journal       []ledger.Transaction `json:"journal"`
+	Projection    Projection           `json:"projection"`
 	StateHash     string               `json:"state_hash"`
 }
 
