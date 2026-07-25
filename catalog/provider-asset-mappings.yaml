@@ -1,0 +1,339 @@
+version: 1
+quote_assets:
+  - symbol: USD
+    name: US Dollar
+    providers: [coinbase]
+    canonical_kind: fiat
+assets:
+  - coingecko_id: bitcoin
+    aliases: { binance: [BTC], coinbase: [BTC], bybit: [BTC], okx: [BTC], hyperliquid: [BTC] }
+    representations:
+      - chain_id: 1
+        contract_address: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+        token_symbol: WBTC
+        decimals: 8
+        kind: wrapped
+        source: "https://wbtc.network/"
+        note: "Reviewed WBTC representation for indicative Ethereum DEX routing; it is not native BTC."
+      - chain_id: 56
+        contract_address: "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c"
+        token_symbol: BTCB
+        decimals: 18
+        kind: bridged
+        source: "https://bscscan.com/token/0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c"
+        note: "Binance-Peg BTCB representation; route quality remains distinct from native BTC."
+  - coingecko_id: ethereum
+    aliases: { binance: [ETH], coinbase: [ETH], bybit: [ETH], okx: [ETH], hyperliquid: [ETH] }
+    representations:
+      - chain_id: 1
+        contract_address: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+        token_symbol: WETH
+        decimals: 18
+        kind: native_wrapped
+        source: "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-ethereum-deployments"
+        note: "Official Uniswap Ethereum WETH9 address; wraps canonical ETH for ERC-20 routing."
+  - coingecko_id: tether
+    canonical_asset_id: a3
+    aliases: { binance: [USDT], coinbase: [USDT], bybit: [USDT], okx: [USDT] }
+    representations:
+      - chain_id: 56
+        contract_address: "0x55d398326f99059ff775485246999027b3197955"
+        token_symbol: USDT
+        decimals: 18
+        kind: bridged
+        source: "https://bscscan.com/token/0x55d398326f99059ff775485246999027b3197955"
+        note: "BSC USDT representation used only for PancakeSwap route quotes."
+  - coingecko_id: binancecoin
+    aliases: { binance: [BNB], coinbase: [BNB], bybit: [BNB], okx: [BNB], hyperliquid: [BNB] }
+    representations:
+      - chain_id: 56
+        contract_address: "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+        token_symbol: WBNB
+        decimals: 18
+        kind: native_wrapped
+        source: "https://bscscan.com/token/0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+        note: "Wrapped BNB representation used by PancakeSwap V2/V3 routes."
+  - coingecko_id: usd-coin
+    aliases: { binance: [USDC], coinbase: [USDC], bybit: [USDC], okx: [USDC] }
+    representations:
+      - chain_id: 1
+        contract_address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        token_symbol: USDC
+        decimals: 6
+        kind: canonical
+        source: "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+        note: "Circle canonical Ethereum USDC contract."
+  - coingecko_id: ripple
+    aliases: { binance: [XRP], coinbase: [XRP], bybit: [XRP], okx: [XRP], hyperliquid: [XRP] }
+    representations:
+      - chain_id: 56
+        contract_address: "0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe"
+        token_symbol: XRP
+        decimals: 18
+        kind: bridged
+        source: "https://bscscan.com/token/0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe"
+        note: "Binance-Peg XRP representation; indicative PancakeSwap routing only."
+  - coingecko_id: solana
+    aliases: { binance: [SOL], coinbase: [SOL], bybit: [SOL], okx: [SOL], hyperliquid: [SOL] }
+  - coingecko_id: tron
+    aliases: { binance: [TRX], bybit: [TRX], okx: [TRX], hyperliquid: [TRX] }
+  - coingecko_id: figure-heloc
+    aliases: {}
+  - coingecko_id: hyperliquid
+    aliases: { coinbase: [HYPE], bybit: [HYPE], okx: [HYPE], hyperliquid: [HYPE] }
+  - coingecko_id: dogecoin
+    aliases: { binance: [DOGE], coinbase: [DOGE], bybit: [DOGE], okx: [DOGE], hyperliquid: [DOGE] }
+    representations:
+      - chain_id: 56
+        contract_address: "0xba2ae424d960c26247dd6c32edc70b295c744c43"
+        token_symbol: DOGE
+        decimals: 8
+        kind: bridged
+        source: "https://bscscan.com/token/0xba2ae424d960c26247dd6c32edc70b295c744c43"
+        note: "Binance-Peg DOGE representation; indicative PancakeSwap routing only."
+  - coingecko_id: usds
+    aliases: { binance: [USDS], coinbase: [USDS], bybit: [USDS], okx: [USDS] }
+    representations:
+      - chain_id: 1
+        contract_address: "0xdc035d45d973e3ec169d2276ddab16f1e407384f"
+        token_symbol: USDS
+        decimals: 18
+        kind: canonical
+        source: "https://developers.sky.money/tokens/"
+        note: "Sky Protocol USDS on Ethereum."
+  - coingecko_id: rain
+    aliases: {}
+  - coingecko_id: leo-token
+    aliases: { okx: [LEO] }
+  - coingecko_id: zcash
+    aliases: { binance: [ZEC], coinbase: [ZEC], bybit: [ZEC], okx: [ZEC], hyperliquid: [ZEC] }
+  - coingecko_id: whitebit
+    aliases: {}
+  - coingecko_id: monero
+    aliases: { binance: [XMR], bybit: [XMR], okx: [XMR], hyperliquid: [XMR] }
+  - coingecko_id: chainlink
+    aliases: { binance: [LINK], coinbase: [LINK], bybit: [LINK], okx: [LINK], hyperliquid: [LINK] }
+    representations:
+      - chain_id: 1
+        contract_address: "0x514910771af9ca656af840dff83e8264ecf986ca"
+        token_symbol: LINK
+        decimals: 18
+        kind: canonical
+        source: "https://docs.chain.link/resources/link-token-contracts"
+        note: "Chainlink LINK token on Ethereum."
+      - chain_id: 56
+        contract_address: "0xf8a0bf9cf54bb92f17374d9e9a321e6a111a51bd"
+        token_symbol: LINK
+        decimals: 18
+        kind: bridged
+        source: "https://docs.chain.link/resources/link-token-contracts"
+        note: "Chainlink-listed LINK token representation on BNB Chain."
+  - coingecko_id: stellar
+    aliases: { binance: [XLM], coinbase: [XLM], bybit: [XLM], okx: [XLM], hyperliquid: [XLM] }
+  - coingecko_id: cardano
+    aliases: { binance: [ADA], coinbase: [ADA], bybit: [ADA], okx: [ADA], hyperliquid: [ADA] }
+    representations:
+      - chain_id: 56
+        contract_address: "0x3ee2200efb3400fabb9aacf31297cbdd1d435d47"
+        token_symbol: ADA
+        decimals: 18
+        kind: bridged
+        source: "https://bscscan.com/token/0x3ee2200efb3400fabb9aacf31297cbdd1d435d47"
+        note: "Binance-Peg ADA representation; indicative PancakeSwap routing only."
+  - coingecko_id: canton-network
+    aliases: { bybit: [CC], okx: [CC], hyperliquid: [CC] }
+  - coingecko_id: dai
+    aliases: { binance: [DAI], coinbase: [DAI], bybit: [DAI], okx: [DAI] }
+    representations:
+      - chain_id: 1
+        contract_address: "0x6b175474e89094c44da98b954eedeac495271d0f"
+        token_symbol: DAI
+        decimals: 18
+        kind: canonical
+        source: "https://developers.sky.money/tokens/"
+        note: "Canonical DAI token on Ethereum."
+  - coingecko_id: bitcoin-cash
+    aliases: { binance: [BCH], coinbase: [BCH], bybit: [BCH], okx: [BCH], hyperliquid: [BCH] }
+    representations:
+      - chain_id: 56
+        contract_address: "0x8ff795a6f4d97e7887c79bea79aba5cc76444adf"
+        token_symbol: BCH
+        decimals: 18
+        kind: bridged
+        source: "https://bscscan.com/token/0x8ff795a6f4d97e7887c79bea79aba5cc76444adf"
+        note: "Binance-Peg BCH representation; indicative PancakeSwap routing only."
+  - coingecko_id: usd1-wlfi
+    aliases: { binance: [USD1], coinbase: [USD1], bybit: [USD1], okx: [USD1] }
+  - coingecko_id: the-open-network
+    aliases: { binance: [GRAM], bybit: [GRAM], okx: [GRAM], hyperliquid: [GRAM] }
+  - coingecko_id: ethena-usde
+    aliases: { binance: [USDE], bybit: [USDE], okx: [USDE] }
+  - coingecko_id: litecoin
+    aliases: { binance: [LTC], coinbase: [LTC], bybit: [LTC], okx: [LTC], hyperliquid: [LTC] }
+    representations:
+      - chain_id: 56
+        contract_address: "0x4338665cbb7b2485a8855a139b75d5e34ab0db94"
+        token_symbol: LTC
+        decimals: 18
+        kind: bridged
+        source: "https://bscscan.com/token/0x4338665cbb7b2485a8855a139b75d5e34ab0db94"
+        note: "Binance-Peg LTC representation; indicative PancakeSwap routing only."
+  - coingecko_id: global-dollar
+    aliases: { coinbase: [USDG], okx: [USDG] }
+  - coingecko_id: hedera-hashgraph
+    aliases: { binance: [HBAR], coinbase: [HBAR], bybit: [HBAR], okx: [HBAR], hyperliquid: [HBAR] }
+  - coingecko_id: sui
+    aliases: { binance: [SUI], coinbase: [SUI], bybit: [SUI], okx: [SUI], hyperliquid: [SUI] }
+  - coingecko_id: hashnote-usyc
+    aliases: {}
+  - coingecko_id: crypto-com-chain
+    aliases: { coinbase: [CRO], okx: [CRO] }
+  - coingecko_id: avalanche-2
+    aliases: { binance: [AVAX], coinbase: [AVAX], bybit: [AVAX], okx: [AVAX], hyperliquid: [AVAX] }
+  - coingecko_id: paypal-usd
+    aliases: { coinbase: [PYUSD], bybit: [PYUSD], okx: [PYUSD] }
+    representations:
+      - chain_id: 1
+        contract_address: "0x6c3ea9036406852006290770bedfcaba0e23a0e8"
+        token_symbol: PYUSD
+        decimals: 6
+        kind: canonical
+        source: "https://www.paypal.com/us/digital-wallet/manage-money/crypto/pyusd"
+        note: "PayPal USD on Ethereum."
+  - coingecko_id: blackrock-usd-institutional-digital-liquidity-fund
+    aliases: {}
+  - coingecko_id: near
+    aliases: { binance: [NEAR], coinbase: [NEAR], bybit: [NEAR], okx: [NEAR], hyperliquid: [NEAR] }
+  - coingecko_id: tether-gold
+    aliases: { binance: [XAUT], bybit: [XAUT], okx: [XAUT], hyperliquid: [XAUT] }
+  - coingecko_id: shiba-inu
+    aliases: { binance: [SHIB], coinbase: [SHIB], bybit: [SHIB], okx: [SHIB], hyperliquid: [SHIB] }
+    representations:
+      - chain_id: 1
+        contract_address: "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce"
+        token_symbol: SHIB
+        decimals: 18
+        kind: canonical
+        source: "https://docs.shib.io/shibarium/welcome-to-shibarium/the-shibarium-ecosystem/shib"
+        note: "SHIB token on Ethereum."
+      - chain_id: 56
+        contract_address: "0x2859e4544c4bb03966803b044a93563bd2d0dd4d"
+        token_symbol: SHIB
+        decimals: 18
+        kind: bridged
+        source: "https://bscscan.com/token/0x2859e4544c4bb03966803b044a93563bd2d0dd4d"
+        note: "Binance-Peg SHIB representation; indicative PancakeSwap routing only."
+  - coingecko_id: uniswap
+    aliases: { binance: [UNI], coinbase: [UNI], bybit: [UNI], okx: [UNI], hyperliquid: [UNI] }
+    representations:
+      - chain_id: 1
+        contract_address: "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984"
+        token_symbol: UNI
+        decimals: 18
+        kind: canonical
+        source: "https://docs.uniswap.org/contracts/v2/reference/smart-contracts/v2-deployments"
+        note: "UNI governance token on Ethereum."
+  - coingecko_id: ondo-us-dollar-yield
+    aliases: { bybit: [USDY] }
+  - coingecko_id: ondo-finance
+    aliases: { binance: [ONDO], coinbase: [ONDO], bybit: [ONDO], okx: [ONDO], hyperliquid: [ONDO] }
+    representations:
+      - chain_id: 1
+        contract_address: "0xfaba6f8e4a5e8ab82f62fe7c39859fa577269be3"
+        token_symbol: ONDO
+        decimals: 18
+        kind: canonical
+        source: "https://docs.ondo.finance/addresses"
+        note: "ONDO token on Ethereum."
+  - coingecko_id: bittensor
+    aliases: { binance: [TAO], coinbase: [TAO], bybit: [TAO], okx: [TAO], hyperliquid: [TAO] }
+  - coingecko_id: pax-gold
+    aliases: { binance: [PAXG], coinbase: [PAXG], bybit: [PAXG], okx: [PAXG], hyperliquid: [PAXG] }
+    representations:
+      - chain_id: 1
+        contract_address: "0x45804880de22913dafe09f4980848ece6ecbaf78"
+        token_symbol: PAXG
+        decimals: 18
+        kind: canonical
+        source: "https://docs.paxos.com/guides/stablecoin/before-you-start/contract-addresses"
+        note: "Pax Gold token on Ethereum."
+  - coingecko_id: world-liberty-financial
+    aliases: { binance: [WLFI], coinbase: [WLFI], bybit: [WLFI], okx: [WLFI], hyperliquid: [WLFI] }
+  - coingecko_id: okb
+    aliases: { okx: [OKB] }
+  - coingecko_id: aster-2
+    aliases: { binance: [ASTER], coinbase: [ASTER], bybit: [ASTER], okx: [ASTER], hyperliquid: [ASTER] }
+  - coingecko_id: htx-dao
+    aliases: { bybit: [HTX] }
+  - coingecko_id: ripple-usd
+    aliases: { binance: [RLUSD], coinbase: [RLUSD], bybit: [RLUSD], okx: [RLUSD] }
+  - coingecko_id: memecore
+    aliases: {}
+  - coingecko_id: usdd
+    aliases: { binance: [USDD], bybit: [USDD], okx: [USDD] }
+  - coingecko_id: aave
+    aliases: { binance: [AAVE], coinbase: [AAVE], bybit: [AAVE], okx: [AAVE], hyperliquid: [AAVE] }
+  - coingecko_id: sky
+    aliases: { binance: [SKY], coinbase: [SKY], bybit: [SKY], okx: [SKY], hyperliquid: [SKY] }
+  - coingecko_id: mantle
+    aliases: { bybit: [MNT], hyperliquid: [MNT] }
+  - coingecko_id: polkadot
+    aliases: { binance: [DOT], coinbase: [DOT], bybit: [DOT], okx: [DOT], hyperliquid: [DOT] }
+  - coingecko_id: bfusd
+    aliases: { binance: [BFUSD] }
+  - coingecko_id: worldcoin-wld
+    aliases: { binance: [WLD], coinbase: [WLD], bybit: [WLD], okx: [WLD], hyperliquid: [WLD] }
+  - coingecko_id: morpho
+    aliases: { binance: [MORPHO], coinbase: [MORPHO], bybit: [MORPHO], okx: [MORPHO], hyperliquid: [MORPHO] }
+  - coingecko_id: internet-computer
+    aliases: { binance: [ICP], coinbase: [ICP], bybit: [ICP], okx: [ICP], hyperliquid: [ICP] }
+  - coingecko_id: pepe
+    aliases: { binance: [PEPE], coinbase: [PEPE], bybit: [PEPE], okx: [PEPE] }
+  - coingecko_id: united-stables
+    aliases: { binance: [U] }
+  - coingecko_id: ethereum-classic
+    aliases: { binance: [ETC], coinbase: [ETC], bybit: [ETC], okx: [ETC], hyperliquid: [ETC] }
+  - coingecko_id: stable-2
+    aliases: { bybit: [STABLE], hyperliquid: [STABLE] }
+  - coingecko_id: quant-network
+    aliases: { binance: [QNT], coinbase: [QNT], bybit: [QNT] }
+  - coingecko_id: pi-network
+    aliases: { okx: [PI] }
+  - coingecko_id: kucoin-shares
+    aliases: { bybit: [KCS] }
+  - coingecko_id: just
+    aliases: { binance: [JST], bybit: [JST] }
+  - coingecko_id: ethena
+    aliases: { binance: [ENA], coinbase: [ENA], bybit: [ENA], okx: [ENA], hyperliquid: [ENA] }
+  - coingecko_id: polygon-ecosystem-token
+    aliases: { binance: [POL], coinbase: [POL], bybit: [POL], okx: [POL], hyperliquid: [POL] }
+  - coingecko_id: kaspa
+    aliases: { bybit: [KAS], hyperliquid: [KAS] }
+  - coingecko_id: render-token
+    aliases: { binance: [RENDER], coinbase: [RENDER], bybit: [RENDER], okx: [RENDER], hyperliquid: [RENDER] }
+  - coingecko_id: nexo
+    aliases: { binance: [NEXO] }
+  - coingecko_id: algorand
+    aliases: { binance: [ALGO], coinbase: [ALGO], okx: [ALGO], hyperliquid: [ALGO] }
+  - coingecko_id: pump-fun
+    aliases: { binance: [PUMP], coinbase: [PUMP], hyperliquid: [PUMP] }
+  - coingecko_id: cosmos
+    aliases: { binance: [ATOM], coinbase: [ATOM], hyperliquid: [ATOM] }
+  - coingecko_id: filecoin
+    aliases: { coinbase: [FIL], hyperliquid: [FIL] }
+  - coingecko_id: venice-token
+    aliases: { coinbase: [VVV], hyperliquid: [VVV] }
+  - coingecko_id: flare-networks
+    aliases: { coinbase: [FLR] }
+  - coingecko_id: arbitrum
+    aliases: { coinbase: [ARB], hyperliquid: [ARB] }
+  - coingecko_id: injective-protocol
+    aliases: { coinbase: [INJ], hyperliquid: [INJ] }
+  - coingecko_id: aptos
+    aliases: { coinbase: [APT], hyperliquid: [APT] }
+  - coingecko_id: jupiter-exchange-solana
+    aliases: { hyperliquid: [JUP] }
+  - coingecko_id: lighter
+    aliases: { hyperliquid: [LIT] }
+  - coingecko_id: pancakeswap-token
+    aliases: { coinbase: [CAKE] }

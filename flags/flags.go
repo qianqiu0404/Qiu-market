@@ -133,6 +133,78 @@ var (
 		EnvVars:  prefixEnvVars("REDIS_DB_INDEX"),
 		Required: true,
 	}
+	MultiVenueEnabledFlag = &cli.BoolFlag{
+		Name:    "multi-venue-enabled",
+		Usage:   "enable reviewed multi-venue candidates in the formal snapshot/composite read model",
+		Value:   false,
+		EnvVars: prefixEnvVars("MULTI_VENUE_ENABLED"),
+	}
+	EthereumRPCURLFlag = &cli.StringFlag{
+		Name:    "ethereum-rpc-url",
+		Usage:   "private Ethereum mainnet JSON-RPC endpoint for Uniswap V2/V3 read-only quotes",
+		EnvVars: prefixEnvVars("ETHEREUM_RPC_URL"),
+	}
+	BSCRPCURLFlag = &cli.StringFlag{
+		Name:    "bsc-rpc-url",
+		Usage:   "private BNB Smart Chain JSON-RPC endpoint for PancakeSwap V2/V3 read-only quotes",
+		EnvVars: prefixEnvVars("BSC_RPC_URL"),
+	}
+	UniswapV3SubgraphURLFlag = &cli.StringFlag{
+		Name:    "uniswap-v3-subgraph-url",
+		Usage:   "The Graph endpoint for the reviewed Uniswap V3 Ethereum subgraph",
+		EnvVars: prefixEnvVars("UNISWAP_V3_SUBGRAPH_URL"),
+	}
+	PancakeV3SubgraphURLFlag = &cli.StringFlag{
+		Name:    "pancake-v3-subgraph-url",
+		Usage:   "Graph endpoint for the reviewed PancakeSwap V3 BSC subgraph",
+		EnvVars: prefixEnvVars("PANCAKE_V3_SUBGRAPH_URL"),
+	}
+	DexPublicFallbackFlag = &cli.BoolFlag{
+		Name: "dex-public-fallback",
+		Usage: "use rate-limited public RPC and DEX Screener discovery for local " +
+			"Uniswap/Pancake preview when private endpoints are absent",
+		Value:   false,
+		EnvVars: prefixEnvVars("DEX_PUBLIC_FALLBACK"),
+	}
+
+	// Doris OLAP 数仓（全部可选）：默认值与 docker-compose 的 doris 服务匹配。
+	// 显式将 MARKET_DORIS_HOST 置空可禁用数仓；Doris 未运行时 dw 模式与
+	// get_kline_analytics 显式报错，其余进程完全不受影响。
+	DorisHostFlag = &cli.StringFlag{
+		Name:    "doris-host",
+		Usage:   "The host of the Apache Doris FE (set empty to disable the data warehouse)",
+		Value:   "127.0.0.1",
+		EnvVars: prefixEnvVars("DORIS_HOST"),
+	}
+	DorisHttpPortFlag = &cli.IntFlag{
+		Name:    "doris-http-port",
+		Usage:   "The FE HTTP port of Doris (Stream Load)",
+		Value:   8030,
+		EnvVars: prefixEnvVars("DORIS_HTTP_PORT"),
+	}
+	DorisQueryPortFlag = &cli.IntFlag{
+		Name:    "doris-query-port",
+		Usage:   "The FE MySQL protocol port of Doris (analytics queries)",
+		Value:   9030,
+		EnvVars: prefixEnvVars("DORIS_QUERY_PORT"),
+	}
+	DorisUserFlag = &cli.StringFlag{
+		Name:    "doris-user",
+		Usage:   "The user of Doris",
+		Value:   "root",
+		EnvVars: prefixEnvVars("DORIS_USER"),
+	}
+	DorisPasswordFlag = &cli.StringFlag{
+		Name:    "doris-password",
+		Usage:   "The password of Doris (all-in-one 默认 root 空密码)",
+		EnvVars: prefixEnvVars("DORIS_PASSWORD"),
+	}
+	DorisDbFlag = &cli.StringFlag{
+		Name:    "doris-db",
+		Usage:   "The database name of Doris data warehouse",
+		Value:   "s78_market_dw",
+		EnvVars: prefixEnvVars("DORIS_DB"),
+	}
 )
 
 var requireFlags = []cli.Flag{
@@ -159,6 +231,18 @@ var optionalFlags = []cli.Flag{
 	MetricsHostFlag,
 	MetricsPortFlag,
 	RedisPasswordFlag,
+	MultiVenueEnabledFlag,
+	EthereumRPCURLFlag,
+	BSCRPCURLFlag,
+	UniswapV3SubgraphURLFlag,
+	PancakeV3SubgraphURLFlag,
+	DexPublicFallbackFlag,
+	DorisHostFlag,
+	DorisHttpPortFlag,
+	DorisQueryPortFlag,
+	DorisUserFlag,
+	DorisPasswordFlag,
+	DorisDbFlag,
 }
 
 func init() {

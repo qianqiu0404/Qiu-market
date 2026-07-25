@@ -1,317 +1,523 @@
-<template>
-  <div class="page">
-    <div class="header">
-      <h1>Klines</h1>
-      <div class="controls">
-        <select v-model="selectedSymbol" @change="fetchKlines" class="symbol-select">
-          <option value="s1">BTC/USDT</option>
-          <option value="s2">ETH/USDT</option>
-          <option value="s3">SOL/USDT</option>
-        </select>
-        <div class="interval-group">
-          <button v-for="iv in intervals" :key="iv"
-            :class="['interval-btn', { active: selectedInterval === iv }]"
-            @click="changeInterval(iv)">{{ iv }}</button>
-        </div>
-        <span :class="['badge', source.toLowerCase().replace(' ', '-')]">{{ source }}</span>
-      </div>
-    </div>
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import * as echarts from 'echarts/core'
+import { BarChart, CandlestickChart, LineChart } from 'echarts/charts'
+import {
+  DataZoomComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  TooltipComponent,
+} from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import PageHeader from '../components/PageHeader.vue'
+import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import StatusBadge from '../components/StatusBadge.vue'
+import AssetLogo from '../components/AssetLogo.vue'
+import { getMarketDashboard, getKlines, type Kline, type KlineInterval, type MarketItem } from '../api/market'
+import {
+  formatAbbr,
+  formatPercent,
+  formatPrice,
+  formatTime,
+  isInProgressCandle,
+  providerFreshnessVariant,
+} from '../utils/format'
 
-    <div class="chart-container" ref="chartRef">
-      <div v-if="error" class="chart-error">{{ error }}</div>
-    </div>
+echarts.use([
+  CandlestickChart,
+  BarChart,
+  LineChart,
+  GridComponent,
+  TooltipComponent,
+  DataZoomComponent,
+  LegendComponent,
+  MarkLineComponent,
+  CanvasRenderer,
+])
 
-    <div class="table-container">
-      <div class="table-title">Recent Klines (Debug - last 20)</div>
-      <table>
-        <thead>
-          <tr>
-            <th>TIMESTAMP</th>
-            <th>OPEN</th>
-            <th>HIGH</th>
-            <th>LOW</th>
-            <th>CLOSE</th>
-            <th>VOLUME</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(k, idx) in klines.slice(0, 20)" :key="idx">
-            <td>{{ formatTime(k.timestamp) }}</td>
-            <td class="mono">{{ formatNum(k.open) }}</td>
-            <td class="mono">{{ formatNum(k.high) }}</td>
-            <td class="mono">{{ formatNum(k.low) }}</td>
-            <td class="mono">{{ formatNum(k.close) }}</td>
-            <td class="mono">{{ formatNum(k.volume) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-if="klines.length === 0" class="empty-state">
-        No kline data available.
-      </div>
-    </div>
-  </div>
-</template>
+const UP = '#16825D'
+const DOWN = '#D92D4C'
+const MA7_COLOR = '#A35F00'
+const MA25_COLOR = '#0071E3'
+const VOL_UP = 'rgba(22, 130, 93, 0.28)'
+const VOL_DOWN = 'rgba(217, 45, 76, 0.28)'
+const INTERVALS: KlineInterval[] = ['1m', '15m', '1h', '1d']
 
-<script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { request } from '../api/common'
-import * as echarts from 'echarts'
+const route = useRoute()
+const router = useRouter()
+const marketId = computed(() => String(route.params.marketId ?? ''))
+const market = ref<MarketItem | null>(null)
+const marketError = ref<string | null>(null)
+const marketLoading = ref(true)
+const refreshedAt = ref<Date | null>(null)
 
-const selectedSymbol = ref('s1')
-const selectedInterval = ref('1m')
-const intervals = ['1m', '15m', '1h', '1d']
-const klines = ref([])
-const source = ref('Loading...')
-const error = ref('')
-const chartRef = ref(null)
-let chartInstance = null
-
-const formatTime = (ts) => {
-  if (!ts) return '-'
-  const d = new Date(ts)
-  return d.getHours().toString().padStart(2, '0') + ':' +
-         d.getMinutes().toString().padStart(2, '0') + ':' +
-         d.getSeconds().toString().padStart(2, '0')
-}
-
-const formatNum = (val) => {
-  const num = parseFloat(val)
-  if (isNaN(num)) return '0.00'
-  return num.toFixed(4)
-}
-
-const initChart = () => {
-  if (chartRef.value) {
-    if (chartInstance) chartInstance.dispose()
-    chartInstance = echarts.init(chartRef.value)
+async function loadMarket(): Promise<void> {
+  marketLoading.value = true
+  marketError.value = null
+  try {
+    const response = await getMarketDashboard(1, 1, { marketId: marketId.value })
+    const selected = response.items[0]
+    if (!selected || !selected.has_kline) throw new Error('This market has no K-line data')
+    market.value = selected
+    refreshedAt.value = new Date()
+  } catch (e) {
+    market.value = null
+    marketError.value = e instanceof Error ? e.message : 'Unable to load market'
+  } finally {
+    marketLoading.value = false
   }
 }
 
-const changeInterval = (iv) => {
-  selectedInterval.value = iv
-  fetchKlines()
+/* ===== Kline data + chart ===== */
+const interval = ref<KlineInterval>('1h')
+const klines = ref<Kline[]>([])
+const klinesError = ref<string | null>(null)
+const klinesLoading = ref(false)
+const chartEl = ref<HTMLDivElement | null>(null)
+
+let chart: echarts.ECharts | null = null
+let refreshTimer: number | undefined
+let chartReady = false
+
+/** Simple moving average over closes; null until `period` closes exist. */
+function movingAverage(data: Kline[], period: number): Array<[number, number | null]> {
+  const out: Array<[number, number | null]> = []
+  let sum = 0
+  for (let i = 0; i < data.length; i++) {
+    sum += data[i]!.close
+    if (i >= period) sum -= data[i - period]!.close
+    out.push([data[i]!.timestamp, i >= period - 1 ? sum / period : null])
+  }
+  return out
 }
 
-const updateChart = (data) => {
-  if (!chartInstance) return
-  if (data.length === 0) {
-    chartInstance.clear()
-    return
-  }
-
-  const now = Date.now()
-  const minValid = new Date('2020-01-01').getTime()
-  const maxValid = now + 24 * 60 * 60 * 1000
-  const sorted = [...data]
-    .sort((a, b) => a.timestamp - b.timestamp)
-    .filter(k => k.timestamp >= minValid && k.timestamp <= maxValid)
-
-  console.log('Raw Klines Count:', data.length)
-  console.log('Filtered Klines Count:', sorted.length)
-
-  if (sorted.length === 0) {
-    console.log('No valid kline data')
-    return
-  }
-
-  const len = sorted.length
-  const categoryData = []
-  const candleValues = []
-  const volumeValues = []
-  const volumeColors = []
-
-  sorted.forEach(k => {
-    const open = parseFloat(k.open)
-    const close = parseFloat(k.close)
-    let high = parseFloat(k.high)
-    let low = parseFloat(k.low)
-    const vol = parseFloat(k.volume)
-
-    if (open === close && open === high && open === low) {
-      high += 0.0001
-      low -= 0.0001
+function buildOption(data: Kline[], includeZoomRange: boolean): echarts.EChartsCoreOption {
+  // Continuous time axis: [timestamp, open, close, low, high] tuples.
+  // No synthetic candles — real gaps in the data stay visible as gaps.
+  // The in-progress candle (open + interval > now, still being upserted by
+  // the crawler) is drawn with a dashed border + reduced opacity so it reads
+  // as "still forming", not as a stuck or final value.
+  const candles = data.map((k, i) => {
+    const value = [k.timestamp, k.open, k.close, k.low, k.high]
+    if (i === data.length - 1 && isInProgressCandle(k.timestamp, interval.value)) {
+      return { value, itemStyle: { borderType: 'dashed' as const, opacity: 0.85 } }
     }
-
-    const d = new Date(k.timestamp)
-    const label = d.getHours().toString().padStart(2, '0') + ':' +
-                  d.getMinutes().toString().padStart(2, '0')
-    categoryData.push(label)
-    candleValues.push([open, close, low, high])
-    volumeValues.push(vol)
-    volumeColors.push(close >= open ? '#10b981' : '#ef4444')
+    return { value }
   })
+  const volumes = data.map((k) => ({
+    value: [k.timestamp, k.volume],
+    itemStyle: { color: k.close >= k.open ? VOL_UP : VOL_DOWN },
+  }))
+  const ma7 = movingAverage(data, 7)
+  const ma25 = movingAverage(data, 25)
+  const last = data.length > 0 ? data[data.length - 1]! : null
+  const lastColor = last ? (last.close >= last.open ? UP : DOWN) : UP
+  const lastLive = last !== null && isInProgressCandle(last.timestamp, interval.value)
 
-  console.log('Processed Klines Count:', len)
-
-  // X label interval: show ~6 labels, more aggressive for large data
-  const labelInterval = len < 30 ? Math.floor(len / 6) : Math.max(1, Math.floor(len / 6) - 1)
-
-  // Bar width: wider when data is sparse, keep tight when dense
-  const barWidthPct = len < 30 ? '90%' : '85%'
-
-  const option = {
+  const option: echarts.EChartsCoreOption = {
+    animation: false,
     backgroundColor: 'transparent',
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'cross' },
-      formatter: (params) => {
-        const p = params[0]
-        const idx = p.dataIndex
-        const d = new Date(idx < sorted.length ? sorted[idx].timestamp : now)
-        const k = sorted[idx]
-        if (!k) return ''
-        return `<div style="font-weight:bold">${d.toLocaleString()}</div>` +
-               `O: ${parseFloat(k.open).toFixed(2)}<br/>` +
-               `H: ${parseFloat(k.high).toFixed(2)}<br/>` +
-               `L: ${parseFloat(k.low).toFixed(2)}<br/>` +
-               `C: ${parseFloat(k.close).toFixed(2)}<br/>` +
-               `Vol: ${parseFloat(k.volume).toLocaleString(undefined, {maximumFractionDigits: 0})}`
-      }
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    legend: {
+      show: true,
+      top: 0,
+      right: 8,
+      icon: 'roundRect',
+      itemWidth: 12,
+      itemHeight: 2,
+      data: ['MA7', 'MA25'],
+      textStyle: { color: '#515154', fontSize: 11 },
+      inactiveColor: '#86868B',
     },
     grid: [
-      { left: '6%', right: '3%', top: '3%', height: '68%' },
-      { left: '6%', right: '3%', top: '77%', height: '18%' }
+      { left: 20, right: 82, top: 24, height: '60%' },
+      { left: 20, right: 82, top: '72%', height: '18%' },
     ],
     xAxis: [
       {
-        type: 'category',
-        data: categoryData,
-        boundaryGap: true,
-        axisLine: { onZero: false },
+        type: 'time',
+        gridIndex: 0,
+        axisLine: { lineStyle: { color: '#D2D2D7' } },
+        axisLabel: { show: false },
+        axisTick: { show: false },
         splitLine: { show: false },
-        axisLabel: {
-          fontSize: 10,
-          interval: labelInterval
-        },
-        gridIndex: 0
       },
       {
-        type: 'category',
-        data: categoryData,
-        boundaryGap: true,
-        axisLine: { show: false },
+        type: 'time',
+        gridIndex: 1,
+        axisLine: { lineStyle: { color: '#D2D2D7' } },
+        axisLabel: { color: '#6E6E73', fontSize: 10, hideOverlap: true },
         axisTick: { show: false },
-        axisLabel: { show: false },
         splitLine: { show: false },
-        gridIndex: 1
-      }
+      },
     ],
     yAxis: [
       {
         scale: true,
-        splitArea: { show: true },
         gridIndex: 0,
-        axisLabel: { fontSize: 10 }
+        position: 'right',
+        axisLabel: { color: '#6E6E73', fontSize: 10, margin: 10 },
+        splitLine: { lineStyle: { color: '#ECECF0' } },
       },
       {
         scale: true,
-        splitNumber: 2,
         gridIndex: 1,
-        axisLabel: { show: false },
-        splitLine: { show: false }
-      }
+        position: 'right',
+        axisLabel: { color: '#6E6E73', fontSize: 10, margin: 10, formatter: (v: number) => formatAbbr(v) },
+        splitLine: { show: false },
+      },
     ],
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross', label: { backgroundColor: '#515154' } },
+      backgroundColor: '#FFFFFF',
+      borderColor: '#D2D2D7',
+      textStyle: { color: '#1D1D1F', fontSize: 12 },
+      formatter: (params: unknown) => {
+        const list = Array.isArray(params) ? (params as Array<{ seriesType?: string; dataIndex: number }>) : []
+        const candle = list.find((p) => p.seriesType === 'candlestick')
+        if (!candle) return ''
+        const k = data[candle.dataIndex]
+        if (!k) return ''
+        const rows = [
+          ['Open', formatPrice(k.open)],
+          ['High', formatPrice(k.high)],
+          ['Low', formatPrice(k.low)],
+          ['Close', formatPrice(k.close)],
+          ['Volume', formatAbbr(k.volume)],
+        ]
+        const lines = rows
+          .map(
+            ([label, value]) =>
+              `<div style="display:flex;justify-content:space-between;gap:16px"><span style="color:#6E6E73">${label}</span><span>${value}</span></div>`,
+          )
+          .join('')
+        return `<div style="margin-bottom:4px;color:#6E6E73">${formatTime(k.timestamp)}</div>${lines}`
+      },
+    },
     dataZoom: [
+      { type: 'inside', xAxisIndex: [0, 1] },
       {
-        type: 'inside',
+        type: 'slider',
         xAxisIndex: [0, 1],
-        start: 0,
-        end: 100,
-        zoomOnMouseWheel: true,
-        moveOnMouseMove: true
-      }
+        bottom: 4,
+        height: 18,
+        borderColor: '#D2D2D7',
+        backgroundColor: 'transparent',
+        fillerColor: 'rgba(0,113,227,0.12)',
+        handleStyle: { color: '#0071E3' },
+        textStyle: { color: '#6E6E73', fontSize: 10 },
+      },
     ],
     series: [
       {
-        name: 'KLine',
         type: 'candlestick',
-        data: candleValues,
+        name: 'Kline',
+        data: candles,
         xAxisIndex: 0,
         yAxisIndex: 0,
         itemStyle: {
-          color: '#10b981',
-          color0: '#ef4444',
-          borderColor: '#10b981',
-          borderColor0: '#ef4444'
+          color: UP,
+          color0: DOWN,
+          borderColor: UP,
+          borderColor0: DOWN,
         },
-        barWidth: barWidthPct
+        markLine: last
+          ? {
+              symbol: 'none',
+              silent: true,
+              animation: false,
+              data: [{ yAxis: last.close }],
+              lineStyle: { color: lastColor, type: 'dashed', width: 1 },
+              label: {
+                show: true,
+                position: 'end',
+                formatter: `${lastLive ? 'LIVE ' : ''}${formatPrice(last.close)}`,
+                color: '#FFFFFF',
+                backgroundColor: lastColor,
+                padding: [2, 4],
+                borderRadius: 3,
+                fontSize: 10,
+              },
+            }
+          : undefined,
       },
       {
-        name: 'Volume',
+        type: 'line',
+        name: 'MA7',
+        data: ma7,
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        showSymbol: false,
+        lineStyle: { color: MA7_COLOR, width: 1.2 },
+        emphasis: { disabled: true },
+        z: 3,
+      },
+      {
+        type: 'line',
+        name: 'MA25',
+        data: ma25,
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        showSymbol: false,
+        lineStyle: { color: MA25_COLOR, width: 1.2 },
+        emphasis: { disabled: true },
+        z: 3,
+      },
+      {
         type: 'bar',
-        data: volumeValues,
+        name: 'Volume',
+        data: volumes,
         xAxisIndex: 1,
         yAxisIndex: 1,
-        itemStyle: {
-          color: (params) => volumeColors[params.dataIndex]
-        },
-        barWidth: barWidthPct
-      }
-    ]
+        barMaxWidth: 8,
+      },
+    ],
   }
-  chartInstance.setOption(option, true)
+  if (includeZoomRange && data.length > 80) {
+    const start = Math.round((1 - 80 / data.length) * 100)
+    option.dataZoom = (option.dataZoom as Array<Record<string, unknown>>).map((dz) => ({
+      ...dz,
+      start,
+      end: 100,
+    }))
+  }
+  return option
 }
 
-const fetchKlines = async () => {
+function renderChart(includeZoomRange: boolean): void {
+  if (!chart && chartEl.value) {
+    chart = echarts.init(chartEl.value)
+  }
+  if (!chart) return
+  // notMerge=false keeps user zoom on silent refreshes; includeZoomRange only
+  // sets an initial window when (re)loading a new symbol/interval.
+  chart.setOption(buildOption(klines.value, includeZoomRange), { notMerge: !chartReady && includeZoomRange })
+  chartReady = true
+}
+
+async function loadKlines(resetZoom: boolean): Promise<void> {
+  if (!marketId.value) return
+  if (klines.value.length === 0) klinesLoading.value = true
   try {
-    error.value = ''
-    const body = {
-      symbol_guid: selectedSymbol.value,
-      limit: 100
-    }
-    // 向后兼容：如果后端支持 interval，传入；不支持则忽略
-    body.interval = selectedInterval.value
-
-    const res = await request('/api/v1/get_klines', {
-      method: 'POST',
-      body: JSON.stringify(body)
-    })
-
-    if (res.source === 'Connected') {
-      klines.value = Array.isArray(res.data) ? res.data : []
-      source.value = 'Connected'
-      updateChart(klines.value)
-    } else {
-      throw new Error(res.error || 'Unable to load kline data')
-    }
-  } catch (err) {
-    source.value = 'Error'
-    error.value = err instanceof Error ? err.message : 'Unable to load kline data. The API may be unreachable.'
-    klines.value = []
-    updateChart([])
+    klines.value = await getKlines(marketId.value, interval.value, 200)
+    klinesError.value = null
+    renderChart(resetZoom)
+  } catch (e) {
+    klinesError.value = e instanceof Error ? e.message : 'Unable to load klines'
+  } finally {
+    klinesLoading.value = false
   }
 }
+
+function scheduleAutoRefresh(): void {
+  if (refreshTimer !== undefined) window.clearInterval(refreshTimer)
+  refreshTimer = window.setInterval(() => {
+    if (document.hidden) return
+    void loadMarket()
+    void loadKlines(false)
+  }, 60_000)
+}
+
+const handleResize = (): void => {
+  chart?.resize()
+}
+
+watch([marketId, interval], () => {
+  klines.value = []
+  chartReady = false
+  scheduleAutoRefresh()
+  void loadKlines(true)
+})
+
+watch(chartEl, (el) => {
+  if (el && klines.value.length > 0) renderChart(!chartReady)
+})
 
 onMounted(() => {
-  initChart()
-  fetchKlines()
-  window.addEventListener('resize', () => chartInstance?.resize())
+  window.addEventListener('resize', handleResize)
+  scheduleAutoRefresh()
+  void loadMarket()
+  void loadKlines(true)
 })
 
 onUnmounted(() => {
-  chartInstance?.dispose()
-  window.removeEventListener('resize', () => chartInstance?.resize())
+  window.removeEventListener('resize', handleResize)
+  if (refreshTimer !== undefined) window.clearInterval(refreshTimer)
+  chart?.dispose()
+  chart = null
 })
 </script>
 
+<template>
+  <section>
+    <PageHeader
+      :title="market?.symbol ?? 'Market chart'"
+      :subtitle="market ? `${market.exchange} · ${market.market_type || 'Market'}` : 'Loading market…'"
+      :refreshed-at="refreshedAt"
+    >
+      <template #actions>
+        <div class="segmented" role="group" aria-label="Interval">
+          <button
+            v-for="i in INTERVALS"
+            :key="i"
+            type="button"
+            :class="{ active: interval === i }"
+            @click="interval = i"
+          >
+            {{ i }}
+          </button>
+        </div>
+      </template>
+    </PageHeader>
+
+    <button type="button" class="back-link" @click="router.back()">← Back to Markets</button>
+
+    <div v-if="market" class="market-strip card">
+      <div class="market-identity">
+        <AssetLogo :src="market.logo" :name="market.symbol" :size="38" />
+        <div>
+          <div class="market-name">{{ market.name || market.symbol }}</div>
+          <div class="market-code">{{ market.market_code }}</div>
+        </div>
+      </div>
+      <div class="market-metric">
+        <span>Last price</span>
+        <strong class="num">${{ formatPrice(market.price) }}</strong>
+      </div>
+      <div class="market-metric">
+        <span>24h change</span>
+        <StatusBadge
+          v-if="market.change_available"
+          :variant="market.change24h >= 0 ? 'up' : 'down'"
+          :label="formatPercent(market.change24h)"
+          :dot="false"
+        />
+        <strong v-else>—</strong>
+      </div>
+      <div class="market-metric">
+        <span>Updated</span>
+        <strong>{{ formatTime(market.updated_at) }}</strong>
+      </div>
+      <div class="market-metric">
+        <span>Source</span>
+        <StatusBadge
+          :variant="providerFreshnessVariant(market.freshness_status)"
+          :label="market.freshness_status || 'Unknown'"
+        />
+      </div>
+    </div>
+
+    <ErrorState
+      v-if="marketError"
+      :message="marketError"
+      @retry="loadMarket"
+    />
+    <ErrorState
+      v-else-if="klinesError && klines.length === 0"
+      :message="klinesError"
+      @retry="() => loadKlines(true)"
+    />
+    <EmptyState
+      v-else-if="!marketLoading && !klinesLoading && marketId && klines.length === 0"
+      title="No kline data"
+      message="This market has no candles for the selected interval yet."
+    />
+    <div v-show="!marketError && (klines.length > 0 || klinesLoading)" class="card chart-card">
+      <div v-if="klinesLoading" class="chart-skeleton shimmer"></div>
+      <div ref="chartEl" class="chart"></div>
+    </div>
+  </section>
+</template>
+
 <style scoped>
-.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
-.controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.symbol-select { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; outline: none; }
-.interval-group { display: flex; gap: 2px; background: #f1f5f9; border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
-.interval-btn { background: transparent; color: var(--text-muted); border: none; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
-.interval-btn:hover { color: var(--text-primary); }
-.interval-btn.active { background: var(--accent-blue); color: #fff; }
-.chart-container { width: 100%; height: 520px; background: var(--bg-card); border-radius: 12px; margin-bottom: 24px; border: 1px solid var(--border); box-shadow: var(--shadow); }
-.chart-error { height: 100%; display: flex; align-items: center; justify-content: center; color: var(--accent-red); text-align: center; padding: 24px; }
-.table-container { background: var(--bg-card); border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow); }
-.table-title { padding: 12px 16px; background: #f8fafc; border-bottom: 1px solid var(--border); font-size: 0.875rem; color: var(--text-muted); font-weight: bold; }
-table { width: 100%; border-collapse: collapse; text-align: left; }
-th { background: #f8fafc; padding: 12px 16px; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
-td { padding: 12px 16px; border-top: 1px solid var(--border); color: var(--text-primary); font-size: 0.875rem; }
-.mono { font-family: monospace; }
-.badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
-.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
-.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
-.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
+.back-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  padding: 0;
+  margin: -4px 0 14px;
+  cursor: pointer;
+}
+
+.back-link:hover {
+  color: var(--accent);
+}
+
+.market-strip {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+
+.market-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
+}
+
+.market-name {
+  font-weight: 650;
+}
+
+.market-code {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.market-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.market-metric > span {
+  color: var(--text-3);
+}
+
+.market-metric strong {
+  font-size: 14px;
+}
+
+.chart-card {
+  position: relative;
+  padding: 8px;
+}
+
+.chart {
+  width: 100%;
+  height: 460px;
+}
+
+.chart-skeleton {
+  position: absolute;
+  inset: 8px;
+  border-radius: var(--radius-card);
+  z-index: 1;
+}
+
+@media (max-width: 900px) {
+  .market-strip {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 16px 24px;
+  }
+}
+
+@media (max-width: 767px) {
+  .chart {
+    height: 360px;
+  }
+}
 </style>

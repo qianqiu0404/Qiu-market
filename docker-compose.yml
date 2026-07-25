@@ -27,5 +27,44 @@ services:
       timeout: 3s
       retries: 10
 
+  # Apache Doris OLAP 数仓（all-in-one：FE + BE 同容器，仅用于本地开发）。
+  # 镜像 tag 与官方 quickstart（start-doris.sh -v 3.0.8）对应的 3.x 稳定版一致；
+  # 官方 3.x quickstart 脚本实际编排 fe/be 双容器，本 compose 用官方发布的
+  # all-in-one 单容器镜像（apache/doris:3.0.8-all，amd64/arm64 均有）简化本地启动。
+  # 注意：Linux 宿主机需先执行 sysctl -w vm.max_map_count=2000000（Docker Desktop 的
+  # macOS/Windows 虚拟机一般已满足）。首次启动 FE/BE 初始化约需 1~2 分钟。
+  doris:
+    image: apache/doris:3.0.8-all
+    container_name: s78-market-doris
+    # 本地小内存 VM（colima / Docker Desktop 默认 2~8G）必须降 FE 堆：
+    # 镜像 fe.conf 默认 -Xms8192m -Xmx8192m，JVM 启动即 mmap commit 失败退出
+    # （表象是 entrypoint 反复刷 "Register BE to FE is failed"，最终容器静默退出 0）。
+    # 启动前把 FE 堆改为 2G（本地分析数据量足够），再执行镜像原 entrypoint。
+    entrypoint: >
+      bash -c "sed -i 's/-Xmx8192m -Xms8192m/-Xmx2048m -Xms2048m/'
+      /opt/apache-doris/fe/conf/fe.conf && exec bash entry_point.sh"
+    # BE 启动硬性要求 nofile > 60000，否则 start_be.sh 直接拒绝启动
+    # （表象是 FE 正常、BE 注册后容器随即退出 0）。
+    ulimits:
+      nofile:
+        soft: 655350
+        hard: 655350
+    ports:
+      - "8030:8030" # FE HTTP（Web UI / 查询）
+      - "9030:9030" # FE MySQL 协议（查询）
+      - "8040:8040" # BE HTTP（Stream Load：FE 收到导入请求后 307 重定向到 BE，
+      # 宿主机上的 dw 进程跟随重定向直连 BE，因此必须发布此端口）
+    volumes:
+      - doris-fe-meta:/opt/apache-doris/fe/doris-meta
+      - doris-be-storage:/opt/apache-doris/be/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8030 && echo -e \"GET /api/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q OK <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
 volumes:
   postgres-data:
+  doris-fe-meta:
+  doris-be-storage:

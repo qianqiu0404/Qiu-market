@@ -6,20 +6,16 @@ export default defineConfig({
   plugins: [vue()],
   build: {
     chunkSizeWarningLimit: 1300,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          echarts: ['echarts'],
-        },
-      },
-    },
   },
   server: {
+		host: '127.0.0.1',
+		port: 5174,
+		strictPort: true,
     proxy: {
       '/api': {
         target: 'http://localhost:9092',
         changeOrigin: true,
-      }
-    }
-  }
+      },
+    },
+  },
 })

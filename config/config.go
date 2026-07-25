@@ -14,9 +14,32 @@ type Config struct {
 	Metrics               ServerConfig
 	MasterDB              DBConfig
 	SlaveDB               DBConfig
+	Doris                 DorisConfig
 	ExchangeRatePlatforms []ExchangeRatePlatformConfig
 	BaseCurrency          string
 	APIKeyConfig          APIKeyConfig
+	MultiVenueEnabled     bool
+	EthereumRPCURL        string
+	BSCRPCURL             string
+	UniswapV3SubgraphURL  string
+	PancakeV3SubgraphURL  string
+	DexPublicFallback     bool
+}
+
+// DorisConfig Apache Doris 连接配置。Host 为空表示未配置数仓：
+// dw 进程拒绝启动，get_kline_analytics 返回明确错误，其它功能不受影响。
+type DorisConfig struct {
+	Host      string
+	HttpPort  int // FE HTTP 端口（Stream Load），默认 8030
+	QueryPort int // FE MySQL 协议端口（分析查询），默认 9030
+	User      string
+	Password  string
+	Database  string
+}
+
+// Enabled Doris 是否已配置（Host 非空即视为启用）。
+func (d DorisConfig) Enabled() bool {
+	return d.Host != ""
 }
 
 type APIKeyConfig struct {
@@ -85,6 +108,20 @@ func NewConfig(ctx *cli.Context) Config {
 			Addr:     ctx.String(flags.RedisAddressFlag.Name),
 			Password: ctx.String(flags.RedisPasswordFlag.Name),
 			DB:       ctx.Int(flags.RedisDbIndexFlag.Name),
+		},
+		MultiVenueEnabled:    ctx.Bool(flags.MultiVenueEnabledFlag.Name),
+		EthereumRPCURL:       ctx.String(flags.EthereumRPCURLFlag.Name),
+		BSCRPCURL:            ctx.String(flags.BSCRPCURLFlag.Name),
+		UniswapV3SubgraphURL: ctx.String(flags.UniswapV3SubgraphURLFlag.Name),
+		PancakeV3SubgraphURL: ctx.String(flags.PancakeV3SubgraphURLFlag.Name),
+		DexPublicFallback:    ctx.Bool(flags.DexPublicFallbackFlag.Name),
+		Doris: DorisConfig{
+			Host:      ctx.String(flags.DorisHostFlag.Name),
+			HttpPort:  ctx.Int(flags.DorisHttpPortFlag.Name),
+			QueryPort: ctx.Int(flags.DorisQueryPortFlag.Name),
+			User:      ctx.String(flags.DorisUserFlag.Name),
+			Password:  ctx.String(flags.DorisPasswordFlag.Name),
+			Database:  ctx.String(flags.DorisDbFlag.Name),
 		},
 	}
 }

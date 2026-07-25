@@ -20,3 +20,17 @@ func (h Routes) GetKlines(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = jsonResponse(w, resp, http.StatusOK)
 }
+
+func (h Routes) GetMarketSparklines(w http.ResponseWriter, r *http.Request) {
+	var body model.MarketSparklinesRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonErrorResponse(w, BadRequestCode, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	resp, err := h.srv.GetMarketSparklines(&body)
+	if err != nil {
+		jsonErrorResponse(w, InternalErrorCode, "query market sparklines failed", http.StatusInternalServerError)
+		return
+	}
+	_ = jsonResponse(w, resp, http.StatusOK)
+}

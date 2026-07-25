@@ -1,33 +1,70 @@
-export type ApiResult<T = unknown> = {
-  data: T | null
-  source: 'Connected' | 'Error'
-  total?: number
-  error?: string
+/** Typed API error thrown on non-200 HTTP status or envelope code !== 2000. */
+export class ApiError extends Error {
+  readonly code?: number
+  readonly status?: number
+
+  constructor(message: string, opts: { code?: number; status?: number } = {}) {
+    super(message)
+    this.name = 'ApiError'
+    this.code = opts.code
+    this.status = opts.status
+  }
 }
 
-export const request = async <T = unknown>(url: string, options: any = {}): Promise<ApiResult<T>> => {
-  try {
-    const res = await fetch(url, {
-      method: options.method || 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: options.body || JSON.stringify({ consumer_token: 'frontend-dashboard', ...options.data }),
-    })
-    
-    if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`)
-    }
+interface Envelope<T> {
+  code: number
+  result: T
+  total?: number
+  message?: string
+  [key: string]: unknown
+}
 
-    const json = await res.json()
-    // Code 2000 means success, results can be null or empty array but still "Connected"
-    if (json.code === 2000) return { data: json.result, source: 'Connected', total: json.total }
-    
-    throw new Error(json.message || 'Unknown error')
-  } catch (err) {
-    console.error(`Fetch ${url} failed:`, err)
-    return {
-      data: null,
-      source: 'Error',
-      error: err instanceof Error ? err.message : 'Unknown error',
-    }
+export interface RequestOutcome<T> {
+  result: T
+  total?: number
+  [key: string]: unknown
+}
+
+/**
+ * POST envelope convention: every request carries
+ * `consumer_token: 'frontend-dashboard'`; success is `{ code: 2000, result, total? }`.
+ * Throws ApiError on network failure, non-200 HTTP status, or code !== 2000.
+ */
+export async function request<T>(
+  path: string,
+  data: Record<string, unknown> = {},
+): Promise<RequestOutcome<T>> {
+  let res: Response
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ consumer_token: 'frontend-dashboard', ...data }),
+    })
+  } catch {
+    throw new ApiError('Network error: the API is unreachable')
   }
+
+  let json: Envelope<T> | null = null
+  try {
+    json = (await res.json()) as Envelope<T>
+  } catch {
+    json = null
+  }
+
+  if (!res.ok) {
+    throw new ApiError(json?.message ?? `Request failed (HTTP ${res.status})`, {
+      code: json?.code,
+      status: res.status,
+    })
+  }
+  if (!json || json.code !== 2000) {
+    throw new ApiError(json?.message ?? 'Unexpected API response', {
+      code: json?.code,
+      status: res.status,
+    })
+  }
+  // Preserve endpoint-specific read metadata (for example momentum window
+  // boundaries) while keeping result/total as the common typed contract.
+  return { ...json, result: json.result, total: json.total }
 }

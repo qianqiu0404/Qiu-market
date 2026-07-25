@@ -1,54 +1,132 @@
-<template>
-  <div class="page">
-    <div class="header">
-      <h1>Exchanges</h1>
-      <span :class="['badge', source.toLowerCase()]">{{ source }}</span>
-    </div>
-    <div v-if="source === 'Error'" class="empty-state">Unable to load exchanges. The API may be unreachable.</div>
-    <div v-else class="card-grid">
-      <div v-for="e in exchanges" :key="e.guid" class="exchange-card">
-        <div class="logo-container">
-          <img v-if="e.logo" :src="e.logo" class="logo" @error="(err) => { err.target.style.display='none'; err.target.nextElementSibling.style.display='flex' }">
-          <div class="logo-placeholder" :style="{ display: e.logo ? 'none' : 'flex' }">{{ e.name?.charAt(0) }}</div>
-        </div>
-        <div class="name">{{ e.name }}</div>
-      </div>
-    </div>
-  </div>
-</template>
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import PageHeader from '../components/PageHeader.vue'
+import AssetLogo from '../components/AssetLogo.vue'
+import SkeletonRows from '../components/SkeletonRows.vue'
+import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import AppIcon from '../components/AppIcon.vue'
+import { usePolling } from '../composables/usePolling'
+import { getExchanges } from '../api/market'
 
-<script setup>
-import { ref, onMounted } from 'vue'
-import { request } from '../api/common'
+const exchanges = usePolling(() => getExchanges(1, 200), { interval: 60_000 })
 
-const exchanges = ref([])
-const source = ref('Loading...')
+const query = ref('')
 
-onMounted(async () => {
-  const res = await request('/api/v1/get_exchanges')
-  if (res.data) {
-    exchanges.value = res.data
-    source.value = res.source
-  } else {
-    source.value = 'Error'
-    exchanges.value = []
-  }
+const filtered = computed(() => {
+  const list = exchanges.data.value?.items ?? []
+  const q = query.value.trim().toLowerCase()
+  if (!q) return list
+  return list.filter((e) => e.name.toLowerCase().includes(q))
 })
+
+const freshness = computed(() =>
+  exchanges.error.value ? ('offline' as const) : ('live' as const),
+)
 </script>
 
+<template>
+  <section>
+    <PageHeader
+      title="Exchanges"
+      subtitle="Connected exchange sources"
+      :freshness="freshness"
+    />
+
+    <div class="toolbar">
+      <div class="search-box">
+        <AppIcon name="search" :size="15" />
+        <input v-model="query" type="search" placeholder="Search exchanges…" class="search-input" />
+      </div>
+    </div>
+
+    <SkeletonRows v-if="exchanges.loading.value" variant="cards" :rows="8" />
+    <ErrorState
+      v-else-if="exchanges.error.value && !exchanges.data.value"
+      :message="exchanges.error.value"
+      @retry="exchanges.refresh"
+    />
+    <EmptyState
+      v-else-if="filtered.length === 0"
+      title="No exchanges found"
+      message="No exchange matched your search."
+    />
+    <div v-else class="card-grid">
+      <div v-for="exchange in filtered" :key="exchange.guid" class="card card-pad exchange-card">
+        <AssetLogo :src="exchange.logo" :name="exchange.name" :size="40" />
+        <div class="exchange-info">
+          <span class="exchange-name">{{ exchange.name }}</span>
+          <span class="exchange-guid mono" :title="exchange.guid">{{ exchange.guid }}</span>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
+
 <style scoped>
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 24px; }
-.exchange-card { background: var(--bg-card); padding: 24px; border-radius: 12px; text-align: center; border: 1px solid var(--border); box-shadow: var(--shadow); }
-.logo-container { display: flex; justify-content: center; margin-bottom: 12px; }
-.logo { width: 48px; height: 48px; border-radius: 8px; object-fit: contain; }
-.logo-placeholder { 
-  width: 48px; height: 48px; background: #eef2ff; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 20px; font-weight: bold; color: var(--accent-blue);
+.toolbar {
+  margin-bottom: 16px;
 }
-.name { font-weight: bold; }
-.badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
-.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
-.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-3);
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 12px;
+  max-width: 340px;
+}
+
+.search-box:focus-within {
+  border-color: var(--accent);
+}
+
+.search-input {
+  flex: 1;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 0;
+  outline: none;
+}
+
+.search-input::placeholder {
+  color: var(--text-3);
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.exchange-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.exchange-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.exchange-name {
+  font-weight: 600;
+}
+
+.exchange-guid {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>

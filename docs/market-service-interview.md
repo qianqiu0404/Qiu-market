@@ -17,19 +17,25 @@ S78 Market Services 是一个交易所行情数据服务，负责从外部交易
 ## 核心链路
 
 ```text
-Binance / CoinGecko / Fiat API
+CoinGecko Top 200 + Binance/Coinbase/Bybit/OKX + Hyperliquid
         |
         v
-Crawler
+Catalog Audit + independent adapters
         |
         v
-PostgreSQL / Redis
+SnapshotWriter
+   |          |
+   v          v
+PostgreSQL  Redis（派生）
         |
+        +-- worker 扫缺口 -> repair task -> crawler 回补
+        |
+        +-- 5 秒 composite index
         v
 HTTP API / gRPC
         |
         v
-Vue Dashboard
+Qiu Market（Markets / Insights / System）
 ```
 
 ## 面试官为什么问
@@ -45,7 +51,7 @@ Vue Dashboard
 
 ## 标准回答
 
-> 我这个行情服务会定时从 Binance 获取 ticker 和 K 线，从 CoinGecko 获取市值，从 Open ER API 获取法币汇率。后端通过 PostgreSQL 存储资产、交易对、K 线和行情数据，HTTP API 给前端提供 dashboard、markets、klines 等接口。前端不再使用 mock fallback，API 失败时展示 Error 状态，因为行情系统不能用假数据伪装实时数据。
+> 我这个行情服务先用 CoinGecko Top 200 建资产宇宙，再审计 Binance、Coinbase、Bybit、OKX 的 Spot 目录。provider alias 未审核时只进待审表，不按 symbol 猜身份。四家行情独立采集并统一写 SnapshotWriter；综合价只取 30 秒内报价，稳定币率 10 分钟内有效，剔除偏离中位数 3% 的报价，再按 venue 成交额限权。Hyperliquid Perp 只比较，不参加现货指数。
 
 ## 高频追问
 
@@ -55,11 +61,15 @@ Vue Dashboard
 
 ### 行情数据不新鲜怎么办？
 
-不能只看有没有价格，还要看 `last_updated` 和 `data_delay_seconds`。如果价格是几小时前的数据，应该展示 Delayed 或 Stale，而不是当成实时行情。
+不能只看有没有价格，还要看 `provider_updated_at`、`freshness_status` 和 System 的 provider 最近成功时间。如果价格是几小时前的数据，应该展示 Stale，而不是把页面刚刷新当成行情实时。
 
 ### 数据源失败怎么办？
 
-短期可以显示错误态和保留上一次成功数据的时间；生产环境应加入多数据源、重试、熔断和告警。
+单 provider 超时或 429 只让该 adapter 退避，其他来源继续。综合价按 contributor 数降 confidence；全部 Spot 失败时返回 Unknown，不用 CoinGecko 当前价补洞。长期仍需要告警和 SLA。
+
+### 为什么不能按 symbol 自动合并资产？
+
+同一个代码在不同 provider 可能指向不同资产。项目把 provider alias 当成待审核主数据；symbol 唯一只能给出 pending 建议，只有 canonical identity 明确后市场才能 enabled。
 
 ### 为什么价格不用 float 存？
 
@@ -67,11 +77,11 @@ float 有精度误差。项目里价格会放大为整数或使用 numeric/decim
 
 ### Redis 的作用是什么？
 
-Redis 适合缓存高频行情、worker 中间结果和热点数据，DB 负责持久化和查询。
+Redis 保存热点行情、ZSET 排名和进程心跳；PostgreSQL 是快照与任务真值。worker 不再从 Redis 聚合价格写回 DB。
 
 ### K 线缺口怎么办？
 
-生产环境需要补偿任务，按 symbol + interval + open_time 检测缺口并回补。
+项目已按 market_id + interval + open_time 扫描缺口：worker 写持久化 repair task，crawler 用 SKIP LOCKED 领取并回补，逐根验证后才完成。
 
 ### 价格突然异常跳变怎么办？
 
@@ -87,8 +97,18 @@ Redis 适合缓存高频行情、worker 中间结果和热点数据，DB 负责�
 
 ## 可背诵版本
 
-> 行情服务最重要的是数据可信。我的前端已经去掉 mock fallback，API 失败就展示错误态，不用假价格伪装实时行情。后端重点是 Crawler、Worker、DB、Redis 和 API 这条链路，生产化方向是多数据源容灾、行情延迟监控、数据质量校验和 K 线补偿。
+> 行情服务最重要的是身份和价格都可信。Top 200 是资产宇宙，四家 Spot 目录先过 provider alias 审核。每家 adapter 独立运行，但都通过 SnapshotWriter 先写 PG。综合价只用新鲜、非离群、汇率有效的 Spot，Perp 永远排除；只剩一家就标 low，全部失败就是 Unknown。Redis 是缓存，worker 只开 K 线 repair task，Doris 只做历史旁路。
 
 ## 升级后可背诵版本
 
-> 我对这个项目做了两层收口：第一，HTTP API 错误统一返回 JSON，前端不会遇到一会儿 JSON、一会儿纯文本的异常；第二，Dashboard 和 Markets 展示 last_updated 和 data_delay_seconds，因为行情服务不只是有价格，还要知道价格是否新鲜。Klines 页面也把图表库拆成单独 chunk，避免拖慢首屏。
+> 我做了四层收口：目录层不按 symbol 猜身份，采集层每家 provider 独立，写入层只有 SnapshotWriter，读模型层用可审计 contributor 形成综合 Spot。前端固定资产粒度，具体 Spot/Perp 放右侧抽屉；Phase 0 安全门未通过前只发现目录不切新 venue。错误与未知值如实展示，不用 mock 或 0% 冒充真值。
+
+## 闭卷自检
+
+1. 为什么 Redis 不能先于 PostgreSQL 更新？
+2. 为什么 worker 不能直接访问 Binance 做回补？
+3. Running 与 Healthy 分别由什么证据支持？
+4. change_24h_pct 缺失时为什么不能返回 0？
+5. 行情域与交易域各自拥有什么状态？
+6. 为什么 Perp 能进抽屉却不能参加 composite？
+7. Phase 0 安全门关闭时哪些代码仍然运行？

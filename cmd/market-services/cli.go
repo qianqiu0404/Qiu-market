@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/urfave/cli/v2"
@@ -11,6 +13,7 @@ import (
 	"github.com/the-web3/s78-market-services/config"
 	"github.com/the-web3/s78-market-services/crawler"
 	"github.com/the-web3/s78-market-services/database"
+	"github.com/the-web3/s78-market-services/dw"
 	flags2 "github.com/the-web3/s78-market-services/flags"
 	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/grpc"
@@ -28,12 +31,27 @@ func runRpc(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycl
 		return nil, err
 	}
 
+	// Redis 与 api 模式同样采用容错初始化：连不上只告警，
+	// GetTopMovers 会自动回退 SQL 排序，不影响其它 RPC。
+	var redisCli *redis.Client
+	rc, err := redis.New(redis.Config{
+		Address:  cfg.RedisConfig.Addr,
+		Password: cfg.RedisConfig.Password,
+		DB:       cfg.RedisConfig.DB,
+	})
+	if err != nil {
+		log.Warn("redis unavailable, GetTopMovers will use SQL fallback", "err", err)
+	} else {
+		redisCli = rc
+		redisCli.StartHeartbeat(ctx.Context, "rpc", 5*time.Second, 15*time.Second)
+	}
+
 	markConfig := grpc.MarketRpcConfig{
 		Host: cfg.RpcServer.Host,
 		Port: cfg.RpcServer.Port,
 	}
 
-	return grpc.NewMarketRpcService(&markConfig, db)
+	return grpc.NewMarketRpcService(&markConfig, db, redisCli)
 }
 
 func runMigrations(ctx *cli.Context) error {
@@ -79,7 +97,32 @@ func runCrawler(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 		log.Error("fail to connect to redis", "err", err)
 		return nil, err
 	}
+	redisClient.StartHeartbeat(ctx.Context, "crawler", 5*time.Second, 15*time.Second)
 	return crawler.NewCrawler(db, redisClient, &cfg, shutdown)
+}
+
+func runDex(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
+	log.Info("run dex supervisor (Hyperliquid, Uniswap V2/V3, PancakeSwap V2/V3)...")
+	cfg := config.NewConfig(ctx)
+	db, err := database.NewDB(ctx.Context, cfg.MasterDB)
+	if err != nil {
+		log.Error("failed to connect to database", "err", err)
+		return nil, err
+	}
+
+	redisConfig := redis.Config{
+		Address:  cfg.RedisConfig.Addr,
+		Password: cfg.RedisConfig.Password,
+		DB:       cfg.RedisConfig.DB,
+	}
+
+	redisClient, err := redis.New(redisConfig)
+	if err != nil {
+		log.Error("fail to connect to redis", "err", err)
+		return nil, err
+	}
+	redisClient.StartHeartbeat(ctx.Context, "dex", 5*time.Second, 15*time.Second)
+	return crawler.NewDexSupervisor(db, redisClient, &cfg), nil
 }
 
 func runWorker(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
@@ -102,7 +145,34 @@ func runWorker(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifec
 		log.Error("fail to connect to redis", "err", err)
 		return nil, err
 	}
+	redisClient.StartHeartbeat(ctx.Context, "worker", 5*time.Second, 15*time.Second)
 	return worker.NewWorker(db, redisClient, &cfg, shutdown)
+}
+
+// runDw 数仓同步模式（PostgreSQL -> Apache Doris）。Doris 未配置 / 未运行时
+// 返回明确错误拒绝启动，不影响 api / crawler / worker / dex / rpc。
+func runDw(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
+	log.Info("run dw (PostgreSQL -> Doris data warehouse sync)...")
+	cfg := config.NewConfig(ctx)
+	if !cfg.Doris.Enabled() {
+		return nil, fmt.Errorf("doris data warehouse is not configured: set MARKET_DORIS_HOST / start the compose doris service, or explicitly disable with MARKET_DORIS_HOST=")
+	}
+	db, err := database.NewDB(ctx.Context, cfg.MasterDB)
+	if err != nil {
+		log.Error("failed to connect to database", "err", err)
+		return nil, err
+	}
+	// dw 本来不依赖 Redis，心跳按容错模式初始化：连不上只告警，不阻断同步。
+	if rc, err := redis.New(redis.Config{
+		Address:  cfg.RedisConfig.Addr,
+		Password: cfg.RedisConfig.Password,
+		DB:       cfg.RedisConfig.DB,
+	}); err != nil {
+		log.Warn("redis unavailable, dw heartbeat disabled", "err", err)
+	} else {
+		rc.StartHeartbeat(ctx.Context, "dw", 5*time.Second, 15*time.Second)
+	}
+	return dw.NewDW(db, cfg.Doris, shutdown)
 }
 
 func NewCli(GitCommit string, GitData string) *cli.App {
@@ -113,6 +183,7 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 		Description:          "An  market services with rpc",
 		EnableBashCompletion: true,
 		Commands: []*cli.Command{
+			catalogCommand(),
 			{
 				Name:        "migrate",
 				Flags:       flags,
@@ -138,10 +209,22 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 				Action:      cliapp.LifecycleCmd(runCrawler),
 			},
 			{
+				Name:        "dex",
+				Flags:       flags,
+				Description: "Run isolated Hyperliquid and AMM market-data supervisors",
+				Action:      cliapp.LifecycleCmd(runDex),
+			},
+			{
 				Name:        "worker",
 				Flags:       flags,
 				Description: "Run worker business",
 				Action:      cliapp.LifecycleCmd(runWorker),
+			},
+			{
+				Name:        "dw",
+				Flags:       flags,
+				Description: "Run data warehouse sync (PostgreSQL -> Apache Doris)",
+				Action:      cliapp.LifecycleCmd(runDw),
 			},
 			{
 				Name:        "version",

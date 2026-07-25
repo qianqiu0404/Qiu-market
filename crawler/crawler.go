@@ -14,10 +14,12 @@ import (
 )
 
 type Crawler struct {
-	ExchangeOrderbook   *cryptoexchange.ExchangeOrderbook
-	FiatCurrencyCrawler *fiatcurrency.FiatCurrencyCrawler
-	BinanceTicker       *BinanceTickerCrawler
-	stopped             atomic.Bool
+	ExchangeOrderbook    *cryptoexchange.ExchangeOrderbook
+	FiatCurrencyCrawler  *fiatcurrency.FiatCurrencyCrawler
+	CatalogSupervisor    *CatalogSupervisor
+	SpotTickerSupervisor *SpotTickerSupervisor
+	CEXKlineSupervisor   *CEXKlineSupervisor
+	stopped              atomic.Bool
 }
 
 func NewCrawler(db *database.DB, redisClient *redis.Client, config *config.Config, shutdown context.CancelCauseFunc) (*Crawler, error) {
@@ -35,12 +37,16 @@ func NewCrawler(db *database.DB, redisClient *redis.Client, config *config.Confi
 		return nil, err
 	}
 
-	binanceTicker := NewBinanceTickerCrawler(db, redisClient)
+	catalogSupervisor := NewCatalogSupervisor(db, config.MultiVenueEnabled)
+	spotTickerSupervisor := NewSpotTickerSupervisor(db, redisClient, config.MultiVenueEnabled)
+	cexKlineSupervisor := NewCEXKlineSupervisor(db)
 
 	return &Crawler{
 		// ExchangeOrderbook:   exchangeOrderbook,
-		FiatCurrencyCrawler: fiatCurrencyCrawler,
-		BinanceTicker:       binanceTicker,
+		FiatCurrencyCrawler:  fiatCurrencyCrawler,
+		CatalogSupervisor:    catalogSupervisor,
+		SpotTickerSupervisor: spotTickerSupervisor,
+		CEXKlineSupervisor:   cexKlineSupervisor,
 	}, nil
 }
 
@@ -58,9 +64,21 @@ func (cl *Crawler) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	if cl.BinanceTicker != nil {
-		if err := cl.BinanceTicker.Start(); err != nil {
-			log.Error("Crawler BinanceTicker Start error", err)
+	if cl.CatalogSupervisor != nil {
+		if err := cl.CatalogSupervisor.Start(ctx); err != nil {
+			log.Error("Crawler CatalogSupervisor Start error", err)
+			return err
+		}
+	}
+	if cl.SpotTickerSupervisor != nil {
+		if err := cl.SpotTickerSupervisor.Start(ctx); err != nil {
+			log.Error("Crawler SpotTickerSupervisor Start error", err)
+			return err
+		}
+	}
+	if cl.CEXKlineSupervisor != nil {
+		if err := cl.CEXKlineSupervisor.Start(ctx); err != nil {
+			log.Error("Crawler CEXKlineSupervisor Start error", err)
 			return err
 		}
 	}
@@ -86,11 +104,14 @@ func (cl *Crawler) Stop(ctx context.Context) error {
 		}
 	}
 
-	if cl.BinanceTicker != nil {
-		if err := cl.BinanceTicker.Stop(); err != nil {
-			log.Error("Crawler BinanceTicker Stop error", err)
-			return err
-		}
+	if cl.CatalogSupervisor != nil {
+		cl.CatalogSupervisor.Stop()
+	}
+	if cl.SpotTickerSupervisor != nil {
+		cl.SpotTickerSupervisor.Stop()
+	}
+	if cl.CEXKlineSupervisor != nil {
+		cl.CEXKlineSupervisor.Stop()
 	}
 	return nil
 }

@@ -1,13 +1,16 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/the-web3/s78-market-services/common/marketkey"
 	"github.com/the-web3/s78-market-services/database"
+	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/http/model"
 )
 
@@ -35,7 +38,20 @@ func (h HandleSvc) GetSupportAssets(request *model.SupportAssetRequest) (*model.
 }
 
 func (h HandleSvc) GetMarketDashboard(request *model.MarketDashboardRequest) (*model.MarketDashboardResponse, error) {
-	marketList, total, err := h.symbolMarketView.QuerySymbolMarketList(request.Page, request.PageSize)
+	rankOrder := []string(nil)
+	if strings.EqualFold(strings.TrimSpace(request.SortBy), "change24h") {
+		rankOrder = h.changeRankOrder(request.SortDirection)
+	}
+	marketList, total, err := h.symbolMarketView.QuerySymbolMarketList(database.SymbolMarketListQuery{
+		Page:          request.Page,
+		PageSize:      request.PageSize,
+		Exchange:      strings.TrimSpace(request.Exchange),
+		Search:        strings.TrimSpace(request.Search),
+		MarketID:      strings.TrimSpace(request.MarketID),
+		SortBy:        request.SortBy,
+		SortDirection: request.SortDirection,
+		RankOrder:     rankOrder,
+	})
 	if err != nil {
 		log.Error("query symbol market list error", "error", err)
 		return nil, err
@@ -47,7 +63,7 @@ func (h HandleSvc) GetMarketDashboard(request *model.MarketDashboardRequest) (*m
 		return nil, err
 	}
 
-	symbolMap := make(map[string]interface{}) // Quick fix for lookup
+	symbolMap := make(map[string]*database.Symbol, len(symbols))
 	for _, s := range symbols {
 		symbolMap[s.Guid] = s
 	}
@@ -57,37 +73,62 @@ func (h HandleSvc) GetMarketDashboard(request *model.MarketDashboardRequest) (*m
 		log.Error("query assets error", "error", err)
 		return nil, err
 	}
-	assetMap := make(map[string]interface{})
+	assetMap := make(map[string]*database.Asset, len(assets))
 	for _, a := range assets {
 		assetMap[a.Guid] = a
 	}
 
+	marketIDs := make([]string, 0, len(marketList))
+	symbolGuids := make([]string, 0, len(marketList))
+	for _, m := range marketList {
+		marketIDs = append(marketIDs, m.MarketID)
+		symbolGuids = append(symbolGuids, m.SymbolGuid)
+	}
+	metadata, err := h.exchangeSymbolView.QueryMarketMetadataByIDs(marketIDs)
+	if err != nil {
+		return nil, err
+	}
+	klineAvailability, err := h.symbolKlineView.QueryMarketKlineAvailability(marketIDs)
+	if err != nil {
+		return nil, err
+	}
+	changeScores := h.rankScores(symbolGuids)
+
 	var result []model.MarketDashboardItem
 	for _, m := range marketList {
-		// 先处理数值还原
-		price := unscaleString(m.Price, 8)
-		volume := unscaleString(m.Volume, 8)
-		marketCap := unscaleString(m.MarketCap, 8)
-
+		meta := metadata[m.MarketID]
 		item := model.MarketDashboardItem{
+			MarketID:         m.MarketID,
+			MarketCode:       meta.MarketCode,
 			Symbol:           m.SymbolGuid,
-			Price:            price,
-			Volume:           volume,
-			Change24h:        m.Radio,
-			MarketCap:        marketCap,
+			Price:            unscaleString(m.Price, 8),
+			Volume:           unscaleString(m.Volume, 8),
+			MarketCap:        unscaleString(m.MarketCap, 8),
+			Exchange:         meta.Exchange,
+			MarketType:       meta.MarketType,
+			HasKline:         klineAvailability[m.MarketID],
+			ChangeSource:     "unavailable",
 			UpdatedAt:        m.UpdatedAt.UnixMilli(),
 			DataDelaySeconds: marketDataDelaySeconds(m.UpdatedAt),
 		}
+		item.ProviderUpdatedAt, item.FreshnessStatus = marketFreshness(meta.Exchange, m.ObservedAt)
 
-		if s, ok := symbolMap[m.SymbolGuid]; ok {
-			if sym, ok := s.(*database.Symbol); ok {
-				item.Symbol = sym.SymbolName
-				if a, ok := assetMap[sym.BaseAssetGuid]; ok {
-					if asset, ok := a.(*database.Asset); ok {
-						item.Name = asset.AssetName
-						item.Logo = asset.AssetLogo
-					}
-				}
+		if change, ok, source := canonicalChange(changeScores, m.SymbolGuid, m.Change24hPct); ok {
+			item.Change24h = change
+			item.ChangeAvailable = true
+			item.ChangeSource = source
+		}
+		if sym, ok := symbolMap[m.SymbolGuid]; ok {
+			item.Symbol = sym.SymbolName
+			item.BaseAssetID = sym.BaseAssetGuid
+			item.QuoteAssetID = sym.QuoteAssetGuid
+			if asset, ok := assetMap[sym.BaseAssetGuid]; ok {
+				item.Name = asset.AssetName
+				item.Logo = asset.AssetLogo
+				item.BaseAsset = asset.AssetSymbol
+			}
+			if asset, ok := assetMap[sym.QuoteAssetGuid]; ok {
+				item.QuoteAsset = asset.AssetSymbol
 			}
 		}
 		result = append(result, item)
@@ -99,6 +140,46 @@ func (h HandleSvc) GetMarketDashboard(request *model.MarketDashboardRequest) (*m
 		Result:  result,
 		Total:   total,
 	}, nil
+}
+
+func (h HandleSvc) changeRankOrder(direction string) []string {
+	if h.redisCli == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var (
+		pairs []redis.ZScorePair
+		err   error
+	)
+	if strings.EqualFold(direction, "asc") {
+		pairs, err = h.redisCli.ZRangeWithScores(ctx, marketkey.RankChange24hKey, 0, -1)
+	} else {
+		pairs, err = h.redisCli.ZRevRangeWithScores(ctx, marketkey.RankChange24hKey, 0, -1)
+	}
+	if err != nil {
+		log.Warn("query global change rank failed", "error", err)
+		return nil
+	}
+	order := make([]string, 0, len(pairs))
+	for _, pair := range pairs {
+		order = append(order, pair.Member)
+	}
+	return order
+}
+
+func (h HandleSvc) rankScores(symbolGuids []string) map[string]float64 {
+	if h.redisCli == nil || len(symbolGuids) == 0 {
+		return map[string]float64{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	scores, err := h.redisCli.ZScores(ctx, marketkey.RankChange24hKey, symbolGuids)
+	if err != nil {
+		log.Warn("query market change scores failed", "error", err)
+		return map[string]float64{}
+	}
+	return scores
 }
 
 func marketDataDelaySeconds(updatedAt time.Time) int64 {
@@ -188,15 +269,35 @@ func (h HandleSvc) GetSymbols(request *model.CommonRequest) (*model.SymbolRespon
 	if err != nil {
 		return nil, err
 	}
+	// 批量解析交易所名，前端 Klines 页按交易所分组展示交易对
+	guids := make([]string, 0, len(list))
+	for _, s := range list {
+		guids = append(guids, s.Guid)
+	}
+	exchangeNames, err := h.exchangeSymbolView.QueryExchangeNamesBySymbolGuids(guids)
+	if err != nil {
+		log.Error("query exchange names for symbols error", "error", err)
+		exchangeNames = map[string]string{}
+	}
+	assets, err := h.assetView.QueryAssets()
+	if err != nil {
+		return nil, err
+	}
+	assetSymbols := make(map[string]string, len(assets))
+	for _, asset := range assets {
+		assetSymbols[asset.Guid] = asset.AssetSymbol
+	}
 	var res []model.Symbol
 	for _, s := range list {
 		res = append(res, model.Symbol{
 			Guid:         s.Guid,
-			BaseAsset:    s.BaseAssetGuid,
-			QuoteAsset:   s.QuoteAssetGuid,
+			BaseAsset:    assetSymbols[s.BaseAssetGuid],
+			QuoteAsset:   assetSymbols[s.QuoteAssetGuid],
 			SymbolName:   s.SymbolName,
 			BaseAssetId:  s.BaseAssetGuid,
 			QuoteAssetId: s.QuoteAssetGuid,
+			Exchange:     exchangeNames[s.Guid],
+			MarketType:   s.MarketType,
 		})
 	}
 	return &model.SymbolResponse{

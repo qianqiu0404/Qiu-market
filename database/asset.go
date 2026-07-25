@@ -5,6 +5,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/log"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Asset struct {
@@ -31,6 +32,7 @@ type AssetDB interface {
 
 	StoreAssets([]Asset) error
 	StoreAsset(*Asset) error
+	UpsertAssets([]Asset) error
 }
 
 type assetDB struct {
@@ -89,4 +91,18 @@ func (a *assetDB) StoreAsset(asset *Asset) error {
 		return err
 	}
 	return nil
+}
+
+func (a *assetDB) UpsertAssets(assets []Asset) error {
+	if len(assets) == 0 {
+		return nil
+	}
+	return a.gorm.Table("asset").
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "guid"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"asset_name", "asset_symbol", "is_active", "updated_at",
+			}),
+		}).
+		CreateInBatches(assets, 250).Error
 }

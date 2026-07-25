@@ -1,0 +1,95 @@
+# HANDOFF：Qiu Market 四家实时聚合、四家 K 线、V2+V3 DEX 与蓝白 UI
+
+> 动态快照：2026-07-25。本文件只记录本次本地交付与剩余正式验收；长期行为以 README 和 canonical docs 为准。
+
+## 可见结果
+
+- Binance、Coinbase、Bybit、OKX 各自从已审核、可交易的 CoinGecko Top 200 候选中冻结 50 个唯一资产，四家不是被迫共用同一张榜。
+- All 把七张 selection 按 canonical `asset_id` 去重合并，再按 CoinGecko 市值 rank 排序。2026-07-25 动态并集为 109 个资产，BTC 等交集资产只出现一行。
+- Provider 页固定保留自己的 50 个成员；一次 ticker 失败不会删行或清空最后成功值。30 秒内 Fresh，30 秒至 5 分钟 Stale，超过 5 分钟 Unavailable。
+- 只有 Fresh CEX Spot 进入 All 综合价和涨跌榜；Perp、DEX、Stale、Unavailable、零价及 3% 离群报价均不参与。
+- 四家 CEX 实时行情均为 WebSocket 主链路、REST 周期对账；高频事件按 source symbol 只保留最新一条，每约 5 秒合并写 PostgreSQL。
+- Hyperliquid、Uniswap、PancakeSwap 也使用独立、带版本的精确 50 资产选择。
+- Hyperliquid 页面展示 Perp Mark；Uniswap/Pancake 页面固定展示 50 个链上身份已复核的 listed assets。路线支持 V2/V3 直连和最多两跳 mixed path，每跳调用对应 Router/Quoter；先问 `$10K`，失败再问 `$1K/$100`。页面显示 protocol path、实际金额和 `CEX corroborated/On-chain only`，全部失败才显示 `Not covered`。
+- 全站已经从暗色终端改成 Apple 风格蓝白视觉：浅灰页面、白色内容卡、蓝色交互、独立红绿涨跌语义，并通过 1180/1280/1440 三档页面级无溢出验收。
+- 价格可用但 24h 参考缺失时显示明确原因；真实 `0%` 与 Unknown 分开。
+- Binance、Coinbase、Bybit、OKX 各把当前 selection version 的 50 个资产冻结到具体 USD-family Spot market；采原生 1m，并只在分钟连续完整时确定性汇总 15m/1h/1d。具体 market 可进入 K 线，综合资产不生成假图。
+- `make dev` 在一个 iTerm2 窗口中启动 API、RPC、Crawler、Worker、Hyperliquid DEX、DW、Frontend 七个标签，S78 固定使用 5174，不影响 5173 的 `xiuqiu-site`。
+
+## 设计边界
+
+选币成员与正式发布状态是两件事：`provider_asset_selection` 回答“页面有哪些资产”，`provider_rollout_state` 回答“是否完成正式 canary/enabled 验收”。本地 `make dev` 默认为七源启用 Local Preview，让真实行情立即可见，但不会推进正式 readiness；关闭预览后仍需人工按既定顺序晋级。
+
+被拒绝的替代方案是四家都硬套 CoinGecko rank 1–50。那会让未上市资产占满 `Not covered`，也无法表达交易所真实覆盖。当前方案的代价是 All 可能多于 50 行，但 version、rank、selected_at 和 canonical identity 都可审计。
+
+DEX 同样拒绝按 symbol 自动收录 token。AMM listed asset 可以来自 reviewed manifest 或 CoinGecko platform contract，但必须锚回既有 canonical asset，并经过 ERC-20 decimals 与链上 V2/V3 Factory/token/fee 复核。Listing 资格负责固定 50 行，TVL/成交额/区块/impact/spread/逐跳 Router/Quoter 负责当前能否报价。当前 cycle 失败会权威撤回公开 snapshot 的 available，而不是永久保留旧成功。缺少新鲜 CEX 参考不再抹掉合格双向链上报价，但这种 `onchain_only` 最多为 Medium；不同询价金额的 24h 历史严格分开。DEX 会进入 All 成员并集，但永远不进入 All 综合现货价。
+
+## 关键调用链
+
+1. `catalog/provider-asset-mappings.yaml` + `crawler/catalog_supervisor.go`：加载审核别名、发现真实市场并生成候选。
+2. `database/venue_aggregation.go`：原子冻结七源 selection version；七家各 50，并用七家 canonical identity 形成 All。
+3. `crawler/spot_ticker_streams.go` + `crawler/spot_ticker_supervisor.go`：四家隔离的 WebSocket primary、REST reconcile 和 5 秒 latest coalescing；规范化 price/open/change 后进入唯一 writer。
+4. `marketdata/composite.go`：只用 Fresh 四家 Spot 生成资产综合价。
+5. `crawler/cex_kline_supervisor.go` + `crawler/cex_kline_adapters.go`：四家各 50 market 的原生 1m、确定性大周期与按 provider repair。
+6. `crawler/hyperliquid.go` + `crawler/amm_dex.go`：分别产生 Perp Mark 与 V2/V3 最多两跳、`$10K → $1K → $100` route quote。
+7. `services/http/service/market_index.go` + `frontend/src/views/Markets.vue`：返回七个固定 50 provider 页面、All 七源并集、新鲜度和按需市场/路线抽屉。
+
+## 故障、降级与恢复
+
+| 故障 | 可见行为 | 恢复 |
+|---|---|---|
+| 单家 ticker 失败 | 保留成员和最后成功值，Fresh → Stale → Unavailable；该来源退出综合价 | 下一次成功原地恢复 Fresh |
+| 24h open/percent 缺失 | 价格仍可展示，24h 为 Unknown 并给出 `missing_24h_reference` | provider 补齐后恢复 |
+| selection 成员排名变化 | 不静默换币 | owner 显式刷新才生成新版本 |
+| Redis 故障 | PostgreSQL 可信状态仍可重建缓存 | Redis 恢复后重建 |
+| Doris 故障 | 实时 Markets 继续工作，历史模块独立降级 | DW 恢复后继续对账 |
+| 私有 DEX 端点未配置 | 正式路径显示 Unconfigured；本地可显式启用公共只读回退，不拖垮 CEX | 配置私有端点或修复公共来源后单独验证 |
+| DEX 一次报价失败 | 稳定选择成员保留，Fresh → Stale → Unavailable | provider 独立退避后原地恢复 |
+| `$10K` 报价因冲击或 Quoter 失败 | 自动尝试 `$1K/$100`；成功时标 Low 并显示实际金额 | 流动性恢复后下一轮重新优先 `$10K` |
+| 缺少新鲜 CEX 参考 | 双向链上门槛通过则 `On-chain only`，最高 Medium | CEX 恢复后自动追加偏差校验 |
+| AMM 尚未观察满 24h | 价格可展示，24h 明确 Unknown | 同一路线、同询价金额连续覆盖满窗口后自动恢复 |
+| Binance stream 同时含 `o` 与 `O` | 分别解析开盘价和窗口开始时间；不能让时间戳覆盖开盘价 | 协议回归测试锁定大小写组合 |
+| 单家 CEX K 线稀疏/失败 | 只少写该家 bucket 并生成 repair，不用另一家补 | 原 provider 恢复后重叠续传 |
+| 本轮 DEX route 失败 | 当前公开 snapshot 变 unavailable，技术审计行保留 | 下一轮同 selection 路线合格后原地恢复 |
+
+## 证据边界
+
+- `implemented`：迁移到 `2026082000022.sql`、七源独立 50 selection、All canonical union、四家 WS-first/REST-reconcile/5 秒写入、四家版本化 K 线 selection、原生 1m 与确定性大周期、V2+V3 mixed AMM、权威 DEX snapshot、公共只读本地回退、preview/正式隔离、蓝白 UI、HTTP/gRPC 和 iTerm2 七标签启动均已落地。
+- `build-verified`：2026-07-26 运行 `go build ./...`、`go vet ./...`、`go test ./...`、Vitest 6/6、Vue production build、Playwright 11/11、`make verify-local`、shell syntax 与 `git diff --check` 均通过。opt-in DEX snapshot 真实 PG 事务测试单独通过；其余假设空库的 integration fixtures 未拿共享业务库冒充隔离 harness。
+- `integration-verified`：七个本地角色正在运行。2026-07-25 23:19 CST 浏览器 All 显示 70/109 fresh、四家 CEX contributor，BTC 为 3 contributors 且 24h 为正常正值；真实 PG 中 Binance BTC open 约 64k，不再是时间戳。四家 K 线各 reconcile 50 个 market。真实公共 RPC、V2/V3 合约和 mixed protocol path 已交换数据；动态数量不是永久覆盖承诺。
+- `environment-pending`：Uniswap/Pancake route 同 route/名义金额尚未连续观察满 24h；正式 CEX/DEX 24/48/72 小时 rollout、私有 DEX 端点、四家 K 线长期缺口率、DW 长时安全门和最终七天仍未完成。任何状态不会自动晋级。
+- `production-recommendation`：综合资产 K 线、公开 API 鉴权/配额/SLA 和交易域都是后续独立切片。
+
+## Owner 60 秒解释
+
+> 七个 provider 各自冻结 50 个身份审核通过的资产；All 按 asset_id 去重，所以 BTC 只有一行。四家 CEX 用 WebSocket 收实时 ticker，REST 对账漏项，5 秒合并写入；只有 Fresh Spot 进入综合价。K 线另把四家 selection 固定到具体 market，采 1m 后确定性汇总。AMM 允许 V2/V3 最多两跳混合路线，按 `$10K/$1K/$100` 分级询价，本轮失败就撤回公开可用态。Local Preview 不改变正式 rollout。
+
+## 闭卷自检
+
+1. 为什么四家 selection 可以不同，而 All 不会出现两个 BTC？
+2. 为什么 selection 不能等同于当前 Fresh 报价集合？
+3. Stale 为什么可以展示，却不能进入综合价和涨跌榜？
+4. 本地 Local Preview 为什么不等于正式 Enabled？
+5. 为什么真实 `0%` 不能与缺失 24h 参考共用一个值？
+6. 为什么 Top 200 是候选池，而不是首页最终行数？
+7. 为什么 ticker 扩展不能自动扩大 K 线范围？
+8. Doris 故障时为什么 Markets 仍应可用？
+9. 为什么 DEX 可以固定 50 个资产，却不能为了填满价格而放宽身份或路线质量？
+10. 为什么 DEX Screener 发现的价格不能直接成为 Qiu Market 的 route quote？
+11. 为什么 AMM 有当前价却仍可能没有 24h 涨跌？
+12. 为什么蓝白视觉改造不能顺手改变 All 的 contributor 规则？
+13. 为什么缺少 CEX 参考时可以展示 On-chain only，却不能标 High？
+14. 为什么 `$10K` 与 `$1K` 的观察不能混成一条 24h 曲线？
+15. Binance `o` 与 `O` 为什么必须是两个结构体字段？
+16. WebSocket 已经实时，为什么还需要 REST reconcile？
+17. 四家 K 线为什么采同一粒度，但不能互相补洞？
+18. mixed route 如何决定每一跳走 V2 Router 还是 V3 QuoterV2？
+
+## 启动与继续验收
+
+```bash
+make dev
+make dev-status
+```
+
+浏览器入口是 `http://127.0.0.1:5174/markets`。正式验收时使用 `S78_CEX_PREVIEW=0 S78_DEX_PREVIEW=0 S78_DEX_PUBLIC_FALLBACK=0 make dev`，再按 CLI readiness 证据人工晋级；不要把本地完成版的证据冒充 24/48/72 小时生产级 soak。

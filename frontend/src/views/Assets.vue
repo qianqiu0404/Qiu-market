@@ -1,49 +1,135 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import PageHeader from '../components/PageHeader.vue'
+import AssetLogo from '../components/AssetLogo.vue'
+import SkeletonRows from '../components/SkeletonRows.vue'
+import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import AppIcon from '../components/AppIcon.vue'
+import { usePolling } from '../composables/usePolling'
+import { getSupportAssets } from '../api/market'
+
+const assets = usePolling(getSupportAssets, { interval: 60_000 })
+
+const query = ref('')
+
+const filtered = computed(() => {
+  const list = assets.data.value ?? []
+  const q = query.value.trim().toLowerCase()
+  if (!q) return list
+  return list.filter(
+    (a) =>
+      a.asset_name.toLowerCase().includes(q) || a.asset_symbol.toLowerCase().includes(q),
+  )
+})
+
+const freshness = computed(() =>
+  assets.error.value ? ('offline' as const) : ('live' as const),
+)
+</script>
+
 <template>
-  <div class="page">
-    <div class="header">
-      <h1>Assets</h1>
-      <span :class="['badge', source.toLowerCase()]">{{ source }}</span>
+  <section>
+    <PageHeader
+      title="Assets"
+      subtitle="Supported base assets"
+      :freshness="freshness"
+    />
+
+    <div class="toolbar">
+      <div class="search-box">
+        <AppIcon name="search" :size="15" />
+        <input v-model="query" type="search" placeholder="Search assets…" class="search-input" />
+      </div>
     </div>
-    <div v-if="source === 'Error'" class="empty-state">Unable to load assets. The API may be unreachable.</div>
+
+    <SkeletonRows v-if="assets.loading.value" variant="cards" :rows="8" />
+    <ErrorState
+      v-else-if="assets.error.value && !assets.data.value"
+      :message="assets.error.value"
+      @retry="assets.refresh"
+    />
+    <EmptyState
+      v-else-if="filtered.length === 0"
+      title="No assets found"
+      message="No asset matched your search."
+    />
     <div v-else class="card-grid">
-      <div v-for="a in assets" :key="a.guid" class="asset-card">
-        <img :src="a.asset_logo" class="logo">
-        <div class="info">
-          <div class="symbol">{{ a.asset_symbol }}</div>
-          <div class="name">{{ a.asset_name }}</div>
+      <div v-for="asset in filtered" :key="asset.guid" class="card card-pad asset-card">
+        <AssetLogo :src="asset.asset_logo" :name="asset.asset_symbol || asset.asset_name" :size="40" />
+        <div class="asset-info">
+          <span class="asset-symbol">{{ asset.asset_symbol }}</span>
+          <span class="asset-name">{{ asset.asset_name }}</span>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 </template>
 
-<script setup>
-import { ref, onMounted } from 'vue'
-import { request } from '../api/common'
-
-const assets = ref([])
-const source = ref('Loading...')
-
-onMounted(async () => {
-  const res = await request('/api/v1/get_support_assets')
-  if (res.data) {
-    assets.value = res.data
-    source.value = res.source
-  } else {
-    source.value = 'Error'
-    assets.value = []
-  }
-})
-</script>
-
 <style scoped>
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 24px; }
-.asset-card { background: var(--bg-card); padding: 20px; border-radius: 12px; display: flex; align-items: center; border: 1px solid var(--border); box-shadow: var(--shadow); }
-.logo { width: 32px; height: 32px; margin-right: 16px; }
-.symbol { font-weight: bold; font-size: 1.1rem; }
-.name { color: var(--text-muted); font-size: 0.875rem; }
-.badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
-.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
-.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
+.toolbar {
+  margin-bottom: 16px;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-3);
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 12px;
+  max-width: 340px;
+}
+
+.search-box:focus-within {
+  border-color: var(--accent);
+}
+
+.search-input {
+  flex: 1;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 0;
+  outline: none;
+}
+
+.search-input::placeholder {
+  color: var(--text-3);
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+.asset-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.asset-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.asset-symbol {
+  font-weight: 600;
+}
+
+.asset-name {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 </style>

@@ -80,8 +80,74 @@ func (c *Client) ZAdd(ctx context.Context, key string, score float64, member any
 	}).Err()
 }
 
+func (c *Client) ZRem(ctx context.Context, key string, members ...any) error {
+	return c.rdb.ZRem(ctx, key, members...).Err()
+}
+
 func (c *Client) ZRevRange(ctx context.Context, key string, start, stop int64) ([]string, error) {
 	return c.rdb.ZRevRange(ctx, key, start, stop).Result()
+}
+
+// ZScorePair 是 ZSET 读榜结果：member + 其 score（本项目里是 24h 涨跌幅百分比）。
+type ZScorePair struct {
+	Member string
+	Score  float64
+}
+
+func (c *Client) ZCard(ctx context.Context, key string) (int64, error) {
+	return c.rdb.ZCard(ctx, key).Result()
+}
+
+// ZRangeWithScores 按 score 升序取 [start, stop] 区间（跌幅榜用）。
+func (c *Client) ZRangeWithScores(ctx context.Context, key string, start, stop int64) ([]ZScorePair, error) {
+	zs, err := c.rdb.ZRangeWithScores(ctx, key, start, stop).Result()
+	return zPairs(zs), err
+}
+
+// ZRevRangeWithScores 按 score 降序取 [start, stop] 区间（涨幅榜用）。
+func (c *Client) ZRevRangeWithScores(ctx context.Context, key string, start, stop int64) ([]ZScorePair, error) {
+	zs, err := c.rdb.ZRevRangeWithScores(ctx, key, start, stop).Result()
+	return zPairs(zs), err
+}
+
+// ZScores returns only members that currently exist in the ZSET. A genuine
+// score of zero is therefore distinguishable from a missing rank value.
+func (c *Client) ZScores(ctx context.Context, key string, members []string) (map[string]float64, error) {
+	result := make(map[string]float64, len(members))
+	if len(members) == 0 {
+		return result, nil
+	}
+	pipe := c.rdb.Pipeline()
+	cmds := make(map[string]*redis.FloatCmd, len(members))
+	for _, member := range members {
+		cmds[member] = pipe.ZScore(ctx, key, member)
+	}
+	_, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	for member, cmd := range cmds {
+		score, cmdErr := cmd.Result()
+		if cmdErr == nil {
+			result[member] = score
+		} else if cmdErr != redis.Nil {
+			return nil, cmdErr
+		}
+	}
+	return result, nil
+}
+
+func zPairs(zs []redis.Z) []ZScorePair {
+	pairs := make([]ZScorePair, 0, len(zs))
+	for _, z := range zs {
+		member, _ := z.Member.(string)
+		pairs = append(pairs, ZScorePair{Member: member, Score: z.Score})
+	}
+	return pairs
+}
+
+func (c *Client) Close() error {
+	return c.rdb.Close()
 }
 
 func (c *Client) TryLock(ctx context.Context, key string, value string, expiration time.Duration) (bool, error) {

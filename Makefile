@@ -12,6 +12,9 @@ market-services:
 dev-deps:
 	docker compose up -d postgres redis
 
+doris-deps:
+	docker compose up -d doris
+
 migrate: market-services
 	. ./.env; ./market-services migrate
 
@@ -21,17 +24,42 @@ seed:
 api: market-services
 	. ./.env; ./market-services api
 
+rpc: market-services
+	. ./.env; ./market-services rpc
+
 crawler: market-services
 	. ./.env; ./market-services crawler
 
+dex: market-services
+	. ./.env; ./market-services dex
+
 worker: market-services
 	. ./.env; ./market-services worker
+
+dw: market-services
+	. ./.env; ./market-services dw
 
 frontend-dev:
 	cd frontend && npm run dev
 
 frontend-build:
 	cd frontend && npm run build
+
+dev:
+	bash script/dev.sh up
+
+dev-status:
+	bash script/dev.sh status
+
+dev-stop:
+	bash script/dev.sh stop
+
+dev-logs:
+	bash script/dev.sh logs
+
+dev-restart:
+	@test -n "$(ROLE)" || (echo "Usage: make dev-restart ROLE=crawler" >&2; exit 2)
+	bash script/dev.sh restart "$(ROLE)"
 
 verify-local:
 	bash script/verify-local.sh
@@ -51,13 +79,22 @@ proto:
 .PHONY: \
 	market-services \
 	dev-deps \
+	doris-deps \
 	migrate \
 	seed \
 	api \
+	rpc \
 	crawler \
+	dex \
 	worker \
+	dw \
 	frontend-dev \
 	frontend-build \
+	dev \
+	dev-status \
+	dev-stop \
+	dev-logs \
+	dev-restart \
 	verify-local \
 	clean \
 	test \

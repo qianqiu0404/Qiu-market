@@ -2,13 +2,19 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	stdlog "log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+	"time"
 
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
-	"github.com/pkg/errors"
 	"gorm.io/driver/postgres"
 
 	"github.com/the-web3/s78-market-services/common/retry"
@@ -16,16 +22,19 @@ import (
 )
 
 type DB struct {
-	gorm                *gorm.DB
-	Asset               AssetDB
-	Currency            CurrencyDB
-	Exchange            ExchangeDB
-	ExchangeSymbol      ExchangeSymbolDB
-	ExchangeSymbolKline ExchangeSymbolKlineDB
-	Symbol              SymbolDB
-	SymbolKline         SymbolKlineDB
-	SymbolMarket        SymbolMarketDB
-	SymbolMarketCurrey  SymbolMarketCurreyDB
+	gorm              *gorm.DB
+	Asset             AssetDB
+	Currency          CurrencyDB
+	Exchange          ExchangeDB
+	ExchangeSymbol    ExchangeSymbolDB
+	Symbol            SymbolDB
+	SymbolKline       SymbolKlineDB
+	SymbolMarket      SymbolMarketDB
+	DwSync            DwSyncDB
+	DWAcceptance      DWAcceptanceDB
+	ProviderStatus    ProviderStatusDB
+	KlineRepair       KlineRepairDB
+	MarketAggregation MarketAggregationDB
 }
 
 func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
@@ -43,6 +52,16 @@ func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
 	gormConfig := gorm.Config{
 		SkipDefaultTransaction: true,
 		CreateBatchSize:        3_000,
+		Logger: gormlogger.New(
+			stdlog.New(os.Stdout, "\r\n", stdlog.LstdFlags),
+			gormlogger.Config{
+				SlowThreshold:             2 * time.Second,
+				LogLevel:                  gormlogger.Warn,
+				IgnoreRecordNotFoundError: true,
+				ParameterizedQueries:      true,
+				Colorful:                  false,
+			},
+		),
 	}
 
 	retryStrategy := &retry.ExponentialStrategy{Min: 1000, Max: 20_000, MaxJitter: 250}
@@ -59,16 +78,19 @@ func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
 	}
 
 	db := &DB{
-		gorm:                gorm,
-		Asset:               NewAssetDB(gorm),
-		Currency:            NewCurrencyDB(gorm),
-		Exchange:            NewExchangeDB(gorm),
-		ExchangeSymbol:      NewExchangeSymbolDB(gorm),
-		ExchangeSymbolKline: NewExchangeSymbolKlineDB(gorm),
-		Symbol:              NewSymbolDB(gorm),
-		SymbolKline:         NewSymbolKlineDB(gorm),
-		SymbolMarket:        NewSymbolMarketDB(gorm),
-		SymbolMarketCurrey:  NewSymbolMarketCurreyDB(gorm),
+		gorm:              gorm,
+		Asset:             NewAssetDB(gorm),
+		Currency:          NewCurrencyDB(gorm),
+		Exchange:          NewExchangeDB(gorm),
+		ExchangeSymbol:    NewExchangeSymbolDB(gorm),
+		Symbol:            NewSymbolDB(gorm),
+		SymbolKline:       NewSymbolKlineDB(gorm),
+		SymbolMarket:      NewSymbolMarketDB(gorm),
+		DwSync:            NewDwSyncDB(gorm),
+		DWAcceptance:      NewDWAcceptanceDB(gorm),
+		ProviderStatus:    NewProviderStatusDB(gorm),
+		KlineRepair:       NewKlineRepairDB(gorm),
+		MarketAggregation: NewMarketAggregationDB(gorm),
 	}
 	return db, nil
 }
@@ -76,19 +98,34 @@ func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
 func (db *DB) Transaction(fn func(db *DB) error) error {
 	return db.gorm.Transaction(func(tx *gorm.DB) error {
 		txDB := &DB{
-			gorm:                tx,
-			Asset:               NewAssetDB(tx),
-			Currency:            NewCurrencyDB(tx),
-			Exchange:            NewExchangeDB(tx),
-			ExchangeSymbol:      NewExchangeSymbolDB(tx),
-			ExchangeSymbolKline: NewExchangeSymbolKlineDB(tx),
-			Symbol:              NewSymbolDB(tx),
-			SymbolKline:         NewSymbolKlineDB(tx),
-			SymbolMarket:        NewSymbolMarketDB(tx),
-			SymbolMarketCurrey:  NewSymbolMarketCurreyDB(tx),
+			gorm:              tx,
+			Asset:             NewAssetDB(tx),
+			Currency:          NewCurrencyDB(tx),
+			Exchange:          NewExchangeDB(tx),
+			ExchangeSymbol:    NewExchangeSymbolDB(tx),
+			Symbol:            NewSymbolDB(tx),
+			SymbolKline:       NewSymbolKlineDB(tx),
+			SymbolMarket:      NewSymbolMarketDB(tx),
+			DwSync:            NewDwSyncDB(tx),
+			DWAcceptance:      NewDWAcceptanceDB(tx),
+			ProviderStatus:    NewProviderStatusDB(tx),
+			KlineRepair:       NewKlineRepairDB(tx),
+			MarketAggregation: NewMarketAggregationDB(tx),
 		}
 		return fn(txDB)
 	})
+}
+
+// ApplyMarketSnapshot guarantees that the row-level ordering decision and the
+// write execute inside one PostgreSQL transaction.
+func (db *DB) ApplyMarketSnapshot(input MarketSnapshotInput) (MarketSnapshotResult, error) {
+	var result MarketSnapshotResult
+	err := db.Transaction(func(tx *DB) error {
+		var err error
+		result, err = tx.SymbolMarket.ApplyMarketSnapshot(input)
+		return err
+	})
+	return result, err
 }
 
 func (db *DB) Close() error {
@@ -100,23 +137,90 @@ func (db *DB) Close() error {
 }
 
 func (db *DB) ExecuteSQLMigration(migrationsFolder string) error {
+	files, err := collectSQLMigrations(migrationsFolder)
+	if err != nil {
+		return err
+	}
+	if err := db.gorm.Exec(`
+		CREATE TABLE IF NOT EXISTS s78_schema_migrations (
+			filename TEXT PRIMARY KEY,
+			checksum_sha256 TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+		)
+	`).Error; err != nil {
+		return fmt.Errorf("create migration ledger: %w", err)
+	}
+	type appliedMigration struct {
+		Filename string `gorm:"column:filename"`
+		Checksum string `gorm:"column:checksum_sha256"`
+	}
+	var appliedRows []appliedMigration
+	if err := db.gorm.Table("s78_schema_migrations").Find(&appliedRows).Error; err != nil {
+		return fmt.Errorf("read migration ledger: %w", err)
+	}
+	applied := make(map[string]string, len(appliedRows))
+	for _, row := range appliedRows {
+		applied[row.Filename] = row.Checksum
+	}
+	for _, migration := range files {
+		if checksum, ok := applied[migration.filename]; ok {
+			if checksum != migration.checksum {
+				return fmt.Errorf(
+					"migration %s changed after it was applied: recorded=%s current=%s",
+					migration.filename, checksum, migration.checksum,
+				)
+			}
+			continue
+		}
+		if execErr := db.gorm.Exec(string(migration.content)).Error; execErr != nil {
+			return fmt.Errorf("execute migration %s: %w", migration.filename, execErr)
+		}
+		if insertErr := db.gorm.Exec(`
+			INSERT INTO s78_schema_migrations(filename, checksum_sha256)
+			VALUES (?, ?)
+			ON CONFLICT (filename) DO NOTHING
+		`, migration.filename, migration.checksum).Error; insertErr != nil {
+			return fmt.Errorf("record migration %s: %w", migration.filename, insertErr)
+		}
+	}
+	return nil
+}
+
+type sqlMigrationFile struct {
+	filename string
+	content  []byte
+	checksum string
+}
+
+func collectSQLMigrations(migrationsFolder string) ([]sqlMigrationFile, error) {
+	files := make([]sqlMigrationFile, 0)
 	err := filepath.Walk(migrationsFolder, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return errors.Wrap(err, fmt.Sprintf("Failed to process migration file: %s", path))
+			return fmt.Errorf("process migration path %s: %w", path, err)
 		}
 		if info.IsDir() {
 			return nil
 		}
+		if !strings.EqualFold(filepath.Ext(info.Name()), ".sql") {
+			return nil
+		}
 		fileContent, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return errors.Wrap(readErr, fmt.Sprintf("Error reading SQL file: %s", path))
+			return fmt.Errorf("read migration file %s: %w", path, readErr)
 		}
-
-		execErr := db.gorm.Exec(string(fileContent)).Error
-		if execErr != nil {
-			return errors.Wrap(execErr, fmt.Sprintf("Error executing SQL script: %s", path))
-		}
+		digest := sha256.Sum256(fileContent)
+		files = append(files, sqlMigrationFile{
+			filename: filepath.Base(path),
+			content:  fileContent,
+			checksum: hex.EncodeToString(digest[:]),
+		})
 		return nil
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].filename < files[j].filename
+	})
+	return files, nil
 }
