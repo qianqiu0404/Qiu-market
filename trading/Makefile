@@ -14,4 +14,4 @@ verify-fuzz:
 	cd .. && go test ./trading/orderbook -run '^$$' -bench '^BenchmarkMatch$$' -benchmem
 
 verify-web:
-	cd web && npm test && npm run build && npm audit --audit-level=high
+	./scripts/verify-local.sh web

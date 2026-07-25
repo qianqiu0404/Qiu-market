@@ -43,7 +43,34 @@ prepare_postgres() {
 verify_postgres() {
 	prepare_postgres
 	cd "$repo_root"
-	go test -count=1 -p 1 -v ./trading/auth ./trading/store/postgres
+	go test -count=1 -p 1 -v \
+		./trading/auth \
+		./trading/store/postgres \
+		./trading/e2e
+	go test -race -count=1 -p 1 ./trading/e2e
+}
+
+verify_npm_audit() {
+	audit_attempt=1
+	while ! npm_config_fetch_retries=3 \
+		npm_config_fetch_retry_mintimeout=1000 \
+		npm_config_fetch_retry_maxtimeout=5000 \
+		npm audit --audit-level=high; do
+		if [ "$audit_attempt" -ge 3 ]; then
+			echo "npm audit failed after $audit_attempt attempts" >&2
+			return 1
+		fi
+		echo "npm audit attempt $audit_attempt failed; retrying" >&2
+		sleep "$audit_attempt"
+		audit_attempt=$((audit_attempt + 1))
+	done
+}
+
+verify_web() {
+	cd "$repo_root/trading/web"
+	npm test
+	npm run build
+	verify_npm_audit
 }
 
 if [ "$mode" = postgres ]; then
@@ -51,8 +78,13 @@ if [ "$mode" = postgres ]; then
 	exit 0
 fi
 
+if [ "$mode" = web ]; then
+	verify_web
+	exit 0
+fi
+
 if [ "$mode" != all ]; then
-	echo "usage: $0 [postgres]" >&2
+	echo "usage: $0 [postgres|web]" >&2
 	exit 2
 fi
 
@@ -70,11 +102,7 @@ go vet ./trading/...
 verify_postgres
 GOMAXPROCS=2 go test ./trading/exchange -run '^$' -fuzz '^FuzzExchange$' -fuzztime "${S78_TRADING_FUZZ_TIME:-10s}"
 go test ./trading/orderbook -run '^$' -bench '^BenchmarkMatch$' -benchmem
-
-cd "$repo_root/trading/web"
-npm test
-npm run build
-npm audit --audit-level=high
+verify_web
 
 cd "$repo_root"
 git diff --check

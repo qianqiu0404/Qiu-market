@@ -162,7 +162,7 @@ make -C trading verify-local
 
 1. 检查 Go 格式；
 2. 执行 `go test ./...`、`go test -race ./trading/...` 和 `go vet ./trading/...`；
-3. 创建并销毁精确命名的一次性 PostgreSQL 数据库，执行 store 与 session 集成测试；
+3. 创建并销毁精确命名的一次性 PostgreSQL 数据库，执行 store、session 与真实传输层重启 E2E；
 4. 执行 10 秒 exchange fuzz 和 orderbook benchmark；
 5. 执行 Vue 单测、类型检查、生产构建和 npm audit；
 6. 执行 `git diff --check`。
@@ -177,6 +177,8 @@ make -C trading verify-web
 ```
 
 测试覆盖定点数舍入与溢出、FIFO、多档与部分成交、全部订单类型、自成交保护、冻结/清算/费用/解冻、幂等、并发背压、故障恢复、CAS、事务回滚、outbox cursor、session/CSRF/Origin/越权、一次性 WS ticket 和浏览器交易流程。
+
+PostgreSQL E2E 会启动真实 TCP gRPC 与 HTTP/WebSocket adapter，完成虚拟入金、Maker 挂单、Taker 成交、双边手续费、剩余撤单、优雅快照、整套服务重启、session 延续、跨重启幂等重试，以及重启前后 snapshot/event state hash 一致性检查。
 
 ## 等待最终 S78 基线后再做
 
