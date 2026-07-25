@@ -13,10 +13,14 @@ func TestMemoryStoreEnforcesExpectedSequenceAndCopiesData(t *testing.T) {
 	t.Parallel()
 
 	memory := store.NewMemory()
+	key := domain.NewIdempotencyKey("BTC-USDT", "alice", domain.CommandKindFund, "r1")
 	record := store.Record{
+		SchemaVersion: store.CurrentSchemaVersion,
+		MarketID:      "BTC-USDT",
 		Command: domain.Command{
 			Sequence:    1,
 			RequestID:   "r1",
+			RequestKey:  key,
 			Fingerprint: "fingerprint",
 			Kind:        domain.CommandKindFund,
 		},

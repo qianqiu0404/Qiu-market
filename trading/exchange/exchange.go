@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
@@ -19,6 +20,7 @@ var (
 	ErrOrderNotFound      = errors.New("order not found")
 	ErrOrderNotOpen       = errors.New("order is not open")
 	ErrOrderOwnerMismatch = errors.New("order belongs to another account")
+	ErrPersistence        = errors.New("trading persistence failure")
 )
 
 type Exchange struct {
@@ -31,6 +33,25 @@ type Exchange struct {
 type BalanceView struct {
 	Available int64 `json:"available"`
 	Held      int64 `json:"held"`
+}
+
+type AssetBalanceView struct {
+	Asset     domain.Asset `json:"asset"`
+	Available int64        `json:"available"`
+	Held      int64        `json:"held"`
+}
+
+type PriceLevelView struct {
+	Price      int64 `json:"price"`
+	Quantity   int64 `json:"quantity"`
+	OrderCount int   `json:"order_count"`
+}
+
+type OrderBookView struct {
+	MarketID domain.MarketID  `json:"market_id"`
+	Sequence uint64           `json:"sequence"`
+	Bids     []PriceLevelView `json:"bids"`
+	Asks     []PriceLevelView `json:"asks"`
 }
 
 func New(market domain.Market, eventLog store.EventStore, snapshots store.SnapshotStore) (*Exchange, error) {
@@ -61,6 +82,9 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 		return nil, fmt.Errorf("load snapshot: %w", err)
 	}
 	if found {
+		if snapshot.SchemaVersion != store.CurrentSchemaVersion || snapshot.MarketID != market.ID {
+			return nil, fmt.Errorf("%w: unsupported snapshot metadata", ErrRecoveryDiverged)
+		}
 		current, err = unmarshalState(snapshot.Payload)
 		if err != nil {
 			return nil, err
@@ -87,16 +111,24 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 		return nil, fmt.Errorf("load event records: %w", err)
 	}
 	for _, record := range records {
+		if record.SchemaVersion != store.CurrentSchemaVersion || record.MarketID != market.ID {
+			return nil, fmt.Errorf("%w: unsupported event record metadata", ErrRecoveryDiverged)
+		}
 		if record.Command.Sequence != current.sequence+1 {
 			return nil, fmt.Errorf("%w: event sequence have=%d want=%d",
 				ErrRecoveryDiverged, record.Command.Sequence, current.sequence+1)
 		}
-		if record.Command.RequestID == "" || record.Command.Fingerprint == "" {
+		if record.Command.Fingerprint == "" ||
+			record.Command.RequestKey.MarketID != market.ID ||
+			validateCommandIdentity(record.Command) != nil {
 			return nil, fmt.Errorf("%w: replayed command lacks idempotency identity", ErrRecoveryDiverged)
 		}
-		if _, duplicate := current.requests[record.Command.RequestID]; duplicate {
+		if err := record.Command.RequestKey.Validate(); err != nil {
+			return nil, fmt.Errorf("%w: replayed command has invalid idempotency key", ErrRecoveryDiverged)
+		}
+		if _, duplicate := current.requests[record.Command.RequestKey]; duplicate {
 			return nil, fmt.Errorf("%w: replayed request %s is duplicated",
-				ErrRecoveryDiverged, record.Command.RequestID)
+				ErrRecoveryDiverged, record.Command.RequestKey.String())
 		}
 
 		trial, cloneErr := current.clone()
@@ -104,12 +136,17 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 			return nil, cloneErr
 		}
 		trial.sequence = record.Command.Sequence
+		journalStart := trial.ledger.JournalLen()
 		result, applyErr := trial.apply(record.Command)
 		if applyErr != nil {
 			return nil, fmt.Errorf("%w: replay sequence %d: %v",
 				ErrRecoveryDiverged, record.Command.Sequence, applyErr)
 		}
-		trial.requests[record.Command.RequestID] = requestRecord{
+		journalDelta, journalErr := trial.ledger.JournalFrom(journalStart)
+		if journalErr != nil {
+			return nil, journalErr
+		}
+		trial.requests[record.Command.RequestKey] = requestRecord{
 			Fingerprint: record.Command.Fingerprint,
 			Result:      cloneResult(result),
 		}
@@ -121,7 +158,9 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 		if hashErr != nil {
 			return nil, hashErr
 		}
-		if !reflect.DeepEqual(result, record.Result) || hash != record.StateHash {
+		if !reflect.DeepEqual(result, record.Result) ||
+			!reflect.DeepEqual(journalDelta, record.Journal) ||
+			hash != record.StateHash {
 			return nil, fmt.Errorf("%w: sequence %d result_or_hash_mismatch",
 				ErrRecoveryDiverged, record.Command.Sequence)
 		}
@@ -148,7 +187,10 @@ func (e *Exchange) Fund(ctx context.Context, request domain.FundRequest) (domain
 	}
 	requestCopy := request
 	return e.runLocked(ctx, domain.Command{
-		RequestID:   request.RequestID,
+		RequestID: request.RequestID,
+		RequestKey: domain.NewIdempotencyKey(
+			e.state.market.ID, request.AccountID, domain.CommandKindFund, request.RequestID,
+		),
 		Fingerprint: fingerprint,
 		Kind:        domain.CommandKindFund,
 		Fund:        &requestCopy,
@@ -168,7 +210,10 @@ func (e *Exchange) Submit(ctx context.Context, request domain.NewOrder) (domain.
 	}
 	requestCopy := request
 	return e.runLocked(ctx, domain.Command{
-		RequestID:   request.ClientOrderID,
+		RequestID: request.ClientOrderID,
+		RequestKey: domain.NewIdempotencyKey(
+			e.state.market.ID, request.AccountID, domain.CommandKindSubmitOrder, request.ClientOrderID,
+		),
 		Fingerprint: fingerprint,
 		Kind:        domain.CommandKindSubmitOrder,
 		Submit:      &requestCopy,
@@ -188,7 +233,10 @@ func (e *Exchange) Cancel(ctx context.Context, request domain.CancelOrder) (doma
 	}
 	requestCopy := request
 	return e.runLocked(ctx, domain.Command{
-		RequestID:   request.RequestID,
+		RequestID: request.RequestID,
+		RequestKey: domain.NewIdempotencyKey(
+			e.state.market.ID, request.AccountID, domain.CommandKindCancelOrder, request.RequestID,
+		),
 		Fingerprint: fingerprint,
 		Kind:        domain.CommandKindCancelOrder,
 		Cancel:      &requestCopy,
@@ -199,7 +247,11 @@ func (e *Exchange) runLocked(ctx context.Context, command domain.Command) (domai
 	if err := ctx.Err(); err != nil {
 		return domain.Result{}, err
 	}
-	if previous, exists := e.state.requests[command.RequestID]; exists {
+	if err := validateCommandIdentity(command); err != nil ||
+		command.RequestKey.MarketID != e.state.market.ID {
+		return domain.Result{}, fmt.Errorf("%w: command idempotency key does not match command", domain.ErrInvalidRequest)
+	}
+	if previous, exists := e.state.requests[command.RequestKey]; exists {
 		if previous.Fingerprint != command.Fingerprint {
 			return domain.Result{}, domain.ErrIdempotencyConflict
 		}
@@ -212,11 +264,16 @@ func (e *Exchange) runLocked(ctx context.Context, command domain.Command) (domai
 		return domain.Result{}, err
 	}
 	trial.sequence = command.Sequence
+	journalStart := trial.ledger.JournalLen()
 	result, err := trial.apply(command)
 	if err != nil {
 		return domain.Result{}, err
 	}
-	trial.requests[command.RequestID] = requestRecord{
+	journalDelta, err := trial.ledger.JournalFrom(journalStart)
+	if err != nil {
+		return domain.Result{}, err
+	}
+	trial.requests[command.RequestKey] = requestRecord{
 		Fingerprint: command.Fingerprint,
 		Result:      cloneResult(result),
 	}
@@ -228,12 +285,15 @@ func (e *Exchange) runLocked(ctx context.Context, command domain.Command) (domai
 		return domain.Result{}, err
 	}
 	record := store.Record{
-		Command:   command,
-		Result:    cloneResult(result),
-		StateHash: hash,
+		SchemaVersion: store.CurrentSchemaVersion,
+		MarketID:      e.state.market.ID,
+		Command:       command,
+		Result:        cloneResult(result),
+		Journal:       journalDelta,
+		StateHash:     hash,
 	}
 	if err := e.eventLog.Append(ctx, e.state.sequence, record); err != nil {
-		return domain.Result{}, fmt.Errorf("append event batch: %w", err)
+		return domain.Result{}, fmt.Errorf("%w: append event batch: %w", ErrPersistence, err)
 	}
 	e.state = trial
 	return cloneResult(result), nil
@@ -293,9 +353,11 @@ func (e *Exchange) SaveSnapshot(ctx context.Context) (store.Snapshot, error) {
 		return store.Snapshot{}, err
 	}
 	snapshot := store.Snapshot{
-		Sequence:  e.state.sequence,
-		StateHash: hash,
-		Payload:   payload,
+		SchemaVersion: store.CurrentSchemaVersion,
+		MarketID:      e.state.market.ID,
+		Sequence:      e.state.sequence,
+		StateHash:     hash,
+		Payload:       payload,
 	}
 	if err := e.snapshots.Save(ctx, snapshot); err != nil {
 		return store.Snapshot{}, fmt.Errorf("save snapshot: %w", err)
@@ -322,6 +384,23 @@ func (e *Exchange) Balance(accountID domain.AccountID, asset domain.Asset) Balan
 	return BalanceView{Available: available, Held: held}
 }
 
+func (e *Exchange) Market() domain.Market {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.state.market
+}
+
+func (e *Exchange) Balances(accountID domain.AccountID) []AssetBalanceView {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	result := make([]AssetBalanceView, 0, 2)
+	for _, asset := range []domain.Asset{e.state.market.BaseAsset, e.state.market.QuoteAsset} {
+		available, held := e.state.ledger.UserBalance(accountID, asset)
+		result = append(result, AssetBalanceView{Asset: asset, Available: available, Held: held})
+	}
+	return result
+}
+
 func (e *Exchange) PlatformFees(asset domain.Asset) int64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -335,10 +414,69 @@ func (e *Exchange) Order(orderID domain.OrderID) (domain.Order, bool) {
 	return order, exists
 }
 
+func (e *Exchange) Orders(accountID domain.AccountID, openOnly bool) []domain.Order {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	result := make([]domain.Order, 0)
+	for _, order := range e.state.orders {
+		if accountID != "" && order.AccountID != accountID {
+			continue
+		}
+		if openOnly && !order.IsOpen() {
+			continue
+		}
+		result = append(result, order)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].AcceptedSequence != result[j].AcceptedSequence {
+			return result[i].AcceptedSequence > result[j].AcceptedSequence
+		}
+		return result[i].ID > result[j].ID
+	})
+	return result
+}
+
+func (e *Exchange) Trades(accountID domain.AccountID) []domain.Trade {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	result := make([]domain.Trade, 0, len(e.state.trades))
+	for i := len(e.state.trades) - 1; i >= 0; i-- {
+		trade := e.state.trades[i]
+		if accountID != "" && trade.BuyerAccountID != accountID && trade.SellerAccountID != accountID {
+			continue
+		}
+		result = append(result, trade)
+	}
+	return result
+}
+
 func (e *Exchange) Book() orderbook.Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.state.book.Snapshot()
+}
+
+func (e *Exchange) Depth(levels int) (OrderBookView, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if levels <= 0 {
+		levels = 20
+	}
+	snapshot := e.state.book.Snapshot()
+	bids, err := aggregateLevels(snapshot.Bids, levels)
+	if err != nil {
+		return OrderBookView{}, err
+	}
+	asks, err := aggregateLevels(snapshot.Asks, levels)
+	if err != nil {
+		return OrderBookView{}, err
+	}
+	return OrderBookView{
+		MarketID: e.state.market.ID,
+		Sequence: e.state.sequence,
+		Bids:     bids,
+		Asks:     asks,
+	}, nil
 }
 
 func (e *Exchange) Journal() []ledger.Transaction {
@@ -356,4 +494,61 @@ func (e *Exchange) Validate() error {
 func appendEvent(events []domain.Event, event domain.Event) []domain.Event {
 	event.Index = uint32(len(events) + 1)
 	return append(events, event)
+}
+
+func validateCommandIdentity(command domain.Command) error {
+	if err := command.RequestKey.Validate(); err != nil {
+		return err
+	}
+	if command.RequestID == "" || command.RequestKey.RequestID != command.RequestID ||
+		command.RequestKey.Operation != command.Kind {
+		return fmt.Errorf("request identity does not match command")
+	}
+	var accountID domain.AccountID
+	switch command.Kind {
+	case domain.CommandKindFund:
+		if command.Fund == nil || command.Submit != nil || command.Cancel != nil ||
+			command.Fund.RequestID != command.RequestID {
+			return fmt.Errorf("fund payload does not match command")
+		}
+		accountID = command.Fund.AccountID
+	case domain.CommandKindSubmitOrder:
+		if command.Submit == nil || command.Fund != nil || command.Cancel != nil ||
+			command.Submit.ClientOrderID != command.RequestID {
+			return fmt.Errorf("submit payload does not match command")
+		}
+		accountID = command.Submit.AccountID
+	case domain.CommandKindCancelOrder:
+		if command.Cancel == nil || command.Fund != nil || command.Submit != nil ||
+			command.Cancel.RequestID != command.RequestID {
+			return fmt.Errorf("cancel payload does not match command")
+		}
+		accountID = command.Cancel.AccountID
+	default:
+		return fmt.Errorf("unsupported command kind")
+	}
+	if accountID != command.RequestKey.AccountID {
+		return fmt.Errorf("request account does not match command payload")
+	}
+	return nil
+}
+
+func aggregateLevels(orders []domain.Order, limit int) ([]PriceLevelView, error) {
+	result := make([]PriceLevelView, 0, limit)
+	for _, order := range orders {
+		if len(result) == 0 || result[len(result)-1].Price != order.Price {
+			if len(result) == limit {
+				break
+			}
+			result = append(result, PriceLevelView{Price: order.Price})
+		}
+		level := &result[len(result)-1]
+		quantity, err := domain.CheckedAdd(level.Quantity, order.RemainingQuantity)
+		if err != nil {
+			return nil, fmt.Errorf("aggregate price level %d: %w", order.Price, err)
+		}
+		level.Quantity = quantity
+		level.OrderCount++
+	}
+	return result, nil
 }

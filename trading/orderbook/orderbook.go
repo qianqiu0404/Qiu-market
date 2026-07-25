@@ -45,33 +45,34 @@ type Snapshot struct {
 }
 
 type Book struct {
-	quantityStep int64
-	bids         map[int64][]domain.OrderID
-	asks         map[int64][]domain.OrderID
-	bidPrices    []int64
-	askPrices    []int64
-	orders       map[domain.OrderID]domain.Order
+	market    domain.Market
+	bids      map[int64][]domain.OrderID
+	asks      map[int64][]domain.OrderID
+	bidPrices []int64
+	askPrices []int64
+	orders    map[domain.OrderID]domain.Order
 }
 
-func New(quantityStep int64) (*Book, error) {
-	if quantityStep <= 0 {
-		return nil, fmt.Errorf("%w: quantity step must be positive", ErrInvalidBookOrder)
+func New(market domain.Market) (*Book, error) {
+	if err := market.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidBookOrder, err)
 	}
 	return &Book{
-		quantityStep: quantityStep,
-		bids:         make(map[int64][]domain.OrderID),
-		asks:         make(map[int64][]domain.OrderID),
-		orders:       make(map[domain.OrderID]domain.Order),
+		market: market,
+		bids:   make(map[int64][]domain.OrderID),
+		asks:   make(map[int64][]domain.OrderID),
+		orders: make(map[domain.OrderID]domain.Order),
 	}, nil
 }
 
 func (b *Book) Clone() (*Book, error) {
-	return FromSnapshot(b.quantityStep, b.Snapshot())
+	return FromSnapshot(b.market, b.Snapshot())
 }
 
 func (b *Book) Add(order domain.Order) error {
 	if order.ID == "" || order.Type != domain.OrderTypeLimit || order.TimeInForce != domain.TimeInForceGTC ||
-		order.Price <= 0 || order.RemainingQuantity <= 0 || order.RemainingQuantity%b.quantityStep != 0 ||
+		order.MarketID != b.market.ID || order.Price <= 0 || order.Price%b.market.PriceTick != 0 ||
+		order.RemainingQuantity <= 0 || order.RemainingQuantity%b.market.QuantityStep != 0 ||
 		!order.IsOpen() {
 		return fmt.Errorf("%w: only open limit GTC orders with aligned remaining quantity may rest", ErrInvalidBookOrder)
 	}
@@ -180,14 +181,23 @@ func (b *Book) Match(incoming *domain.Order) (MatchResult, error) {
 			result.StopReason = stop
 			return result, nil
 		}
-		quoteAmount, err := domain.CheckedMul(maker.Price, quantity)
+		quoteAmount, err := b.market.QuoteAmountFloor(maker.Price, quantity)
 		if err != nil {
 			return MatchResult{}, fmt.Errorf("match quote amount: %w", err)
 		}
+		if quoteAmount <= 0 {
+			return MatchResult{}, fmt.Errorf("match quote amount must be positive")
+		}
 
 		maker.RemainingQuantity -= quantity
-		maker.FilledQuantity += quantity
-		maker.SpentQuote += quoteAmount
+		maker.FilledQuantity, err = domain.CheckedAdd(maker.FilledQuantity, quantity)
+		if err != nil {
+			return MatchResult{}, fmt.Errorf("update maker filled quantity: %w", err)
+		}
+		maker.SpentQuote, err = domain.CheckedAdd(maker.SpentQuote, quoteAmount)
+		if err != nil {
+			return MatchResult{}, fmt.Errorf("update maker spent quote: %w", err)
+		}
 		maker.LastSequence = incoming.AcceptedSequence
 		if maker.RemainingQuantity == 0 {
 			maker.Status = domain.OrderStatusFilled
@@ -199,8 +209,14 @@ func (b *Book) Match(incoming *domain.Order) (MatchResult, error) {
 			b.orders[maker.ID] = maker
 		}
 
-		incoming.FilledQuantity += quantity
-		incoming.SpentQuote += quoteAmount
+		incoming.FilledQuantity, err = domain.CheckedAdd(incoming.FilledQuantity, quantity)
+		if err != nil {
+			return MatchResult{}, fmt.Errorf("update taker filled quantity: %w", err)
+		}
+		incoming.SpentQuote, err = domain.CheckedAdd(incoming.SpentQuote, quoteAmount)
+		if err != nil {
+			return MatchResult{}, fmt.Errorf("update taker spent quote: %w", err)
+		}
 		incoming.LastSequence = incoming.AcceptedSequence
 		if incoming.Type == domain.OrderTypeMarket && incoming.Side == domain.SideBuy {
 			incoming.RemainingQuoteBudget -= quoteAmount
@@ -218,7 +234,7 @@ func (b *Book) Match(incoming *domain.Order) (MatchResult, error) {
 		})
 
 		if incoming.Type == domain.OrderTypeMarket && incoming.Side == domain.SideBuy {
-			if incoming.RemainingQuoteBudget < b.quantityStep {
+			if incoming.RemainingQuoteBudget == 0 {
 				result.StopReason = StopBudgetExhausted
 				return result, nil
 			}
@@ -236,6 +252,21 @@ func (b *Book) Order(orderID domain.OrderID) (domain.Order, bool) {
 	return order, ok
 }
 
+// Update replaces the mutable fields of an already-resting order without
+// changing its FIFO position.
+func (b *Book) Update(order domain.Order) error {
+	current, exists := b.orders[order.ID]
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrOrderNotFound, order.ID)
+	}
+	if current.Side != order.Side || current.Price != order.Price || current.AccountID != order.AccountID ||
+		current.AcceptedSequence != order.AcceptedSequence || !order.IsOpen() || order.RemainingQuantity <= 0 {
+		return fmt.Errorf("%w: resting order identity or open state changed", ErrInvalidBookOrder)
+	}
+	b.orders[order.ID] = order
+	return nil
+}
+
 func (b *Book) Snapshot() Snapshot {
 	result := Snapshot{}
 	for _, price := range b.bidPrices {
@@ -251,8 +282,8 @@ func (b *Book) Snapshot() Snapshot {
 	return result
 }
 
-func FromSnapshot(quantityStep int64, snapshot Snapshot) (*Book, error) {
-	book, err := New(quantityStep)
+func FromSnapshot(market domain.Market, snapshot Snapshot) (*Book, error) {
+	book, err := New(market)
 	if err != nil {
 		return nil, err
 	}
@@ -341,8 +372,10 @@ func (b *Book) bestOpposing(side domain.Side) (domain.Order, bool) {
 
 func (b *Book) executableQuantity(incoming *domain.Order, maker domain.Order) (int64, StopReason, error) {
 	if incoming.Type == domain.OrderTypeMarket && incoming.Side == domain.SideBuy {
-		affordable := incoming.RemainingQuoteBudget / maker.Price
-		affordable -= affordable % b.quantityStep
+		affordable, err := b.market.AffordableQuantity(incoming.RemainingQuoteBudget, maker.Price)
+		if err != nil {
+			return 0, "", fmt.Errorf("calculate affordable quantity: %w", err)
+		}
 		if affordable == 0 {
 			return 0, StopBudgetExhausted, nil
 		}

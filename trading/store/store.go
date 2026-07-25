@@ -8,20 +8,28 @@ import (
 	"sync"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
+	"github.com/the-web3/s78-market-services/trading/ledger"
 )
 
 var ErrSequenceConflict = errors.New("event store sequence conflict")
 
+const CurrentSchemaVersion uint16 = 2
+
 type Record struct {
-	Command   domain.Command `json:"command"`
-	Result    domain.Result  `json:"result"`
-	StateHash string         `json:"state_hash"`
+	SchemaVersion uint16               `json:"schema_version"`
+	MarketID      domain.MarketID      `json:"market_id"`
+	Command       domain.Command       `json:"command"`
+	Result        domain.Result        `json:"result"`
+	Journal       []ledger.Transaction `json:"journal"`
+	StateHash     string               `json:"state_hash"`
 }
 
 type Snapshot struct {
-	Sequence  uint64 `json:"sequence"`
-	StateHash string `json:"state_hash"`
-	Payload   []byte `json:"payload"`
+	SchemaVersion uint16          `json:"schema_version"`
+	MarketID      domain.MarketID `json:"market_id"`
+	Sequence      uint64          `json:"sequence"`
+	StateHash     string          `json:"state_hash"`
+	Payload       []byte          `json:"payload"`
 }
 
 type EventStore interface {
@@ -36,6 +44,7 @@ type SnapshotStore interface {
 
 type Memory struct {
 	mu       sync.RWMutex
+	marketID domain.MarketID
 	records  []Record
 	snapshot *Snapshot
 }
@@ -57,10 +66,18 @@ func (m *Memory) Append(ctx context.Context, expectedSequence uint64, record Rec
 		return fmt.Errorf("%w: have=%d expected=%d command=%d result=%d",
 			ErrSequenceConflict, current, expectedSequence, record.Command.Sequence, record.Result.Sequence)
 	}
+	if record.SchemaVersion != CurrentSchemaVersion || record.MarketID == "" ||
+		record.Command.RequestKey.MarketID != record.MarketID {
+		return fmt.Errorf("invalid event record metadata")
+	}
+	if m.marketID != "" && m.marketID != record.MarketID {
+		return fmt.Errorf("event store is bound to market %s, not %s", m.marketID, record.MarketID)
+	}
 	cloned, err := cloneRecord(record)
 	if err != nil {
 		return err
 	}
+	m.marketID = record.MarketID
 	m.records = append(m.records, cloned)
 	return nil
 }
@@ -96,8 +113,15 @@ func (m *Memory) Save(ctx context.Context, snapshot Snapshot) error {
 	if snapshot.Sequence > uint64(len(m.records)) {
 		return fmt.Errorf("%w: snapshot sequence %d after current %d", ErrSequenceConflict, snapshot.Sequence, len(m.records))
 	}
+	if snapshot.SchemaVersion != CurrentSchemaVersion || snapshot.MarketID == "" {
+		return fmt.Errorf("invalid snapshot metadata")
+	}
+	if m.marketID != "" && m.marketID != snapshot.MarketID {
+		return fmt.Errorf("snapshot store is bound to market %s, not %s", m.marketID, snapshot.MarketID)
+	}
 	cloned := snapshot
 	cloned.Payload = append([]byte(nil), snapshot.Payload...)
+	m.marketID = snapshot.MarketID
 	m.snapshot = &cloned
 	return nil
 }

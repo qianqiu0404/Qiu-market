@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 )
 
 type Asset string
@@ -128,6 +129,19 @@ const (
 	CommandKindCancelOrder
 )
 
+func (k CommandKind) String() string {
+	switch k {
+	case CommandKindFund:
+		return "fund"
+	case CommandKindSubmitOrder:
+		return "submit_order"
+	case CommandKindCancelOrder:
+		return "cancel_order"
+	default:
+		return "unknown"
+	}
+}
+
 type EventType string
 
 const (
@@ -154,21 +168,23 @@ type Market struct {
 	ID                 MarketID `json:"id"`
 	BaseAsset          Asset    `json:"base_asset"`
 	QuoteAsset         Asset    `json:"quote_asset"`
+	BaseScale          int64    `json:"base_scale"`
+	QuoteScale         int64    `json:"quote_scale"`
 	PriceTick          int64    `json:"price_tick"`
 	QuantityStep       int64    `json:"quantity_step"`
 	MinQuantity        int64    `json:"min_quantity"`
 	MinNotional        int64    `json:"min_notional"`
 	MakerFeeBPS        int64    `json:"maker_fee_bps"`
 	TakerFeeBPS        int64    `json:"taker_fee_bps"`
-	BaseDisplayScale   uint8    `json:"base_display_scale"`
-	QuoteDisplayScale  uint8    `json:"quote_display_scale"`
-	PriceDisplayScale  uint8    `json:"price_display_scale"`
 	ConfigurationEpoch uint64   `json:"configuration_epoch"`
 }
 
 func (m Market) Validate() error {
 	if m.ID == "" || m.BaseAsset == "" || m.QuoteAsset == "" || m.BaseAsset == m.QuoteAsset {
 		return fmt.Errorf("%w: market identity and distinct assets are required", ErrInvalidMarket)
+	}
+	if !isPowerOfTen(m.BaseScale) || !isPowerOfTen(m.QuoteScale) {
+		return fmt.Errorf("%w: base and quote scales must be positive powers of ten", ErrInvalidMarket)
 	}
 	if m.PriceTick <= 0 || m.QuantityStep <= 0 || m.MinQuantity <= 0 || m.MinNotional <= 0 {
 		return fmt.Errorf("%w: tick, step, minimum quantity, and minimum notional must be positive", ErrInvalidMarket)
@@ -180,6 +196,48 @@ func (m Market) Validate() error {
 		return fmt.Errorf("%w: fee rates must be in [0, 10000)", ErrInvalidMarket)
 	}
 	return nil
+}
+
+// DefaultBTCUSDTMarket returns the first vertical-slice market. Price values are
+// quote atoms per one whole base unit, quantities are base atoms, and notionals
+// are quote atoms.
+func DefaultBTCUSDTMarket() Market {
+	return Market{
+		ID:                 "BTC-USDT",
+		BaseAsset:          "BTC",
+		QuoteAsset:         "USDT",
+		BaseScale:          100_000_000,
+		QuoteScale:         1_000_000,
+		PriceTick:          10_000,
+		QuantityStep:       100,
+		MinQuantity:        1_000,
+		MinNotional:        5_000_000,
+		MakerFeeBPS:        10,
+		TakerFeeBPS:        20,
+		ConfigurationEpoch: 1,
+	}
+}
+
+// QuoteAmountFloor converts a price and base quantity into quote atoms,
+// rounding down. Settlement always uses this rule.
+func (m Market) QuoteAmountFloor(price, quantity int64) (int64, error) {
+	return CheckedMulDivFloor(price, quantity, m.BaseScale)
+}
+
+// QuoteAmountCeil converts a price and base quantity into quote atoms,
+// rounding up. Buy-side reservations always use this rule.
+func (m Market) QuoteAmountCeil(price, quantity int64) (int64, error) {
+	return CheckedMulDivCeil(price, quantity, m.BaseScale)
+}
+
+// AffordableQuantity returns the base atoms that a quote budget can buy at a
+// price, rounded down to the market quantity step.
+func (m Market) AffordableQuantity(quoteBudget, price int64) (int64, error) {
+	quantity, err := CheckedMulDivFloor(quoteBudget, m.BaseScale, price)
+	if err != nil {
+		return 0, err
+	}
+	return quantity - quantity%m.QuantityStep, nil
 }
 
 type FundRequest struct {
@@ -235,7 +293,11 @@ func (o NewOrder) Validate(m Market) error {
 		if o.PostOnly && o.TimeInForce != TimeInForceGTC {
 			return fmt.Errorf("%w: post only requires limit GTC", ErrInvalidOrder)
 		}
-		notional, err := CheckedMul(o.Price, o.Quantity)
+		stepNotional, err := m.QuoteAmountFloor(o.Price, m.QuantityStep)
+		if err != nil || stepNotional <= 0 {
+			return fmt.Errorf("%w: price and quantity step cannot produce a positive quote atom", ErrInvalidOrder)
+		}
+		notional, err := m.QuoteAmountFloor(o.Price, o.Quantity)
 		if err != nil {
 			return fmt.Errorf("%w: limit notional: %v", ErrInvalidOrder, err)
 		}
@@ -291,6 +353,8 @@ type Order struct {
 	OriginalQuoteBudget  int64       `json:"original_quote_budget"`
 	RemainingQuoteBudget int64       `json:"remaining_quote_budget"`
 	SpentQuote           int64       `json:"spent_quote"`
+	HeldAsset            Asset       `json:"held_asset,omitempty"`
+	HeldAmount           int64       `json:"held_amount,omitempty"`
 	Status               OrderStatus `json:"status"`
 	AcceptedSequence     uint64      `json:"accepted_sequence"`
 	LastSequence         uint64      `json:"last_sequence"`
@@ -352,13 +416,42 @@ type Result struct {
 }
 
 type Command struct {
-	Sequence    uint64       `json:"sequence"`
-	RequestID   string       `json:"request_id"`
-	Fingerprint string       `json:"fingerprint"`
-	Kind        CommandKind  `json:"kind"`
-	Fund        *FundRequest `json:"fund,omitempty"`
-	Submit      *NewOrder    `json:"submit,omitempty"`
-	Cancel      *CancelOrder `json:"cancel,omitempty"`
+	Sequence    uint64         `json:"sequence"`
+	RequestID   string         `json:"request_id"`
+	RequestKey  IdempotencyKey `json:"request_key"`
+	Fingerprint string         `json:"fingerprint"`
+	Kind        CommandKind    `json:"kind"`
+	Fund        *FundRequest   `json:"fund,omitempty"`
+	Submit      *NewOrder      `json:"submit,omitempty"`
+	Cancel      *CancelOrder   `json:"cancel,omitempty"`
+}
+
+type IdempotencyKey struct {
+	MarketID  MarketID    `json:"market_id"`
+	AccountID AccountID   `json:"account_id"`
+	Operation CommandKind `json:"operation"`
+	RequestID string      `json:"request_id"`
+}
+
+func NewIdempotencyKey(marketID MarketID, accountID AccountID, operation CommandKind, requestID string) IdempotencyKey {
+	return IdempotencyKey{
+		MarketID:  marketID,
+		AccountID: accountID,
+		Operation: operation,
+		RequestID: requestID,
+	}
+}
+
+func (k IdempotencyKey) Validate() error {
+	if k.MarketID == "" || k.AccountID == "" || k.RequestID == "" ||
+		(k.Operation != CommandKindFund && k.Operation != CommandKindSubmitOrder && k.Operation != CommandKindCancelOrder) {
+		return fmt.Errorf("%w: invalid idempotency scope", ErrInvalidRequest)
+	}
+	return nil
+}
+
+func (k IdempotencyKey) String() string {
+	return fmt.Sprintf("%s\x1f%s\x1f%d\x1f%s", k.MarketID, k.AccountID, k.Operation, k.RequestID)
 }
 
 func Fingerprint(v any) (string, error) {
@@ -378,13 +471,26 @@ func CheckedAdd(a, b int64) (int64, error) {
 }
 
 func CheckedMul(a, b int64) (int64, error) {
-	if a < 0 || b < 0 {
-		return 0, fmt.Errorf("%w: negative operands are not supported", ErrArithmeticOverflow)
+	return CheckedMulDivFloor(a, b, 1)
+}
+
+func CheckedMulDivFloor(a, b, denominator int64) (int64, error) {
+	quotient, _, err := checkedMulDiv(a, b, denominator)
+	return quotient, err
+}
+
+func CheckedMulDivCeil(a, b, denominator int64) (int64, error) {
+	quotient, remainder, err := checkedMulDiv(a, b, denominator)
+	if err != nil {
+		return 0, err
 	}
-	if a != 0 && b > math.MaxInt64/a {
+	if remainder == 0 {
+		return quotient, nil
+	}
+	if quotient == math.MaxInt64 {
 		return 0, ErrArithmeticOverflow
 	}
-	return a * b, nil
+	return quotient + 1, nil
 }
 
 func FeeAmount(amount, rateBPS int64) (int64, error) {
@@ -394,9 +500,34 @@ func FeeAmount(amount, rateBPS int64) (int64, error) {
 	if amount == 0 || rateBPS == 0 {
 		return 0, nil
 	}
-	product, err := CheckedMul(amount, rateBPS)
-	if err != nil {
-		return 0, err
+	return CheckedMulDivFloor(amount, rateBPS, 10_000)
+}
+
+func checkedMulDiv(a, b, denominator int64) (int64, uint64, error) {
+	if a < 0 || b < 0 || denominator <= 0 {
+		return 0, 0, fmt.Errorf("%w: mul-div requires non-negative operands and a positive denominator", ErrArithmeticOverflow)
 	}
-	return product / 10_000, nil
+	high, low := bits.Mul64(uint64(a), uint64(b))
+	divisor := uint64(denominator)
+	if high >= divisor {
+		return 0, 0, ErrArithmeticOverflow
+	}
+	quotient, remainder := bits.Div64(high, low, divisor)
+	if quotient > math.MaxInt64 {
+		return 0, 0, ErrArithmeticOverflow
+	}
+	return int64(quotient), remainder, nil
+}
+
+func isPowerOfTen(value int64) bool {
+	if value <= 0 {
+		return false
+	}
+	for value > 1 {
+		if value%10 != 0 {
+			return false
+		}
+		value /= 10
+	}
+	return true
 }

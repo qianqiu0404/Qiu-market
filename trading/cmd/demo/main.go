@@ -13,21 +13,7 @@ import (
 
 func main() {
 	ctx := context.Background()
-	market := domain.Market{
-		ID:                 "BTC-USDT",
-		BaseAsset:          "BTC",
-		QuoteAsset:         "USDT",
-		PriceTick:          100,
-		QuantityStep:       1,
-		MinQuantity:        1_000,
-		MinNotional:        60_000_000,
-		MakerFeeBPS:        10,
-		TakerFeeBPS:        20,
-		BaseDisplayScale:   6,
-		QuoteDisplayScale:  6,
-		PriceDisplayScale:  2,
-		ConfigurationEpoch: 1,
-	}
+	market := domain.DefaultBTCUSDTMarket()
 	memory := store.NewMemory()
 	trading, err := exchange.New(market, memory, memory)
 	must(err)
@@ -39,7 +25,7 @@ func main() {
 		RequestID: "demo-fund-maker-btc",
 		AccountID: "maker",
 		Asset:     "BTC",
-		Amount:    200_000,
+		Amount:    20_000_000,
 	}))
 	run(trading.Fund(ctx, domain.FundRequest{
 		RequestID: "demo-fund-taker-usdt",
@@ -55,8 +41,8 @@ func main() {
 		Side:          domain.SideSell,
 		Type:          domain.OrderTypeLimit,
 		TimeInForce:   domain.TimeInForceGTC,
-		Price:         60_000,
-		Quantity:      100_000,
+		Price:         60_000_000_000,
+		Quantity:      10_000_000,
 	}))
 	printResult("maker places 0.1 BTC sell @ 60,000", makerOrder)
 	printBalances(trading)
@@ -67,13 +53,13 @@ func main() {
 		Side:          domain.SideBuy,
 		Type:          domain.OrderTypeLimit,
 		TimeInForce:   domain.TimeInForceIOC,
-		Price:         60_200,
-		Quantity:      70_000,
+		Price:         60_200_000_000,
+		Quantity:      7_000_000,
 	}))
 	printResult("taker buys 0.07 BTC with price improvement", takerOrder)
 	printBalances(trading)
 	fmt.Printf("platform fees: BTC=%s, USDT=%s\n",
-		formatFixed(trading.PlatformFees("BTC"), 6),
+		formatFixed(trading.PlatformFees("BTC"), 8),
 		formatFixed(trading.PlatformFees("USDT"), 6),
 	)
 
@@ -118,11 +104,11 @@ func printResult(title string, result domain.Result) {
 			continue
 		}
 		trade := event.Trade
-		fmt.Printf("  [%d] trade=%s price=%d qty=%s quote=%s maker=%s taker=%s\n",
+		fmt.Printf("  [%d] trade=%s price=%s qty=%s quote=%s maker=%s taker=%s\n",
 			event.Index,
 			trade.ID,
-			trade.Price,
-			formatFixed(trade.Quantity, 6),
+			formatFixed(trade.Price, 6),
+			formatFixed(trade.Quantity, 8),
 			formatFixed(trade.QuoteAmount, 6),
 			trade.MakerOrderID,
 			trade.TakerOrderID,
@@ -137,8 +123,8 @@ func printBalances(trading *exchange.Exchange) {
 		usdt := trading.Balance(accountID, "USDT")
 		fmt.Printf("  %-5s BTC available=%-12s held=%-12s | USDT available=%-14s held=%s\n",
 			accountID,
-			formatFixed(btc.Available, 6),
-			formatFixed(btc.Held, 6),
+			formatFixed(btc.Available, 8),
+			formatFixed(btc.Held, 8),
 			formatFixed(usdt.Available, 6),
 			formatFixed(usdt.Held, 6),
 		)

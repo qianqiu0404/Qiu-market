@@ -530,6 +530,148 @@ func TestSnapshotReplayAndCorruptionDetection(t *testing.T) {
 	}
 }
 
+func TestScopedIdempotencyAndQueryViews(t *testing.T) {
+	t.Parallel()
+
+	ex, memory := mustExchange(t)
+	fund(t, ex, "shared-fund", "alice", "USDT", 20_000)
+	fund(t, ex, "shared-fund", "bob", "USDT", 20_000)
+
+	alice := submit(t, ex, domain.NewOrder{
+		ClientOrderID: "shared-order",
+		AccountID:     "alice",
+		Side:          domain.SideBuy,
+		Type:          domain.OrderTypeLimit,
+		TimeInForce:   domain.TimeInForceGTC,
+		Price:         100,
+		Quantity:      100,
+	})
+	bob := submit(t, ex, domain.NewOrder{
+		ClientOrderID: "shared-order",
+		AccountID:     "bob",
+		Side:          domain.SideBuy,
+		Type:          domain.OrderTypeLimit,
+		TimeInForce:   domain.TimeInForceGTC,
+		Price:         100,
+		Quantity:      100,
+	})
+	if alice.OrderID == bob.OrderID || ex.Sequence() != 4 {
+		t.Fatalf("scoped order ids/sequences = %s/%s seq=%d", alice.OrderID, bob.OrderID, ex.Sequence())
+	}
+
+	retry := submit(t, ex, domain.NewOrder{
+		ClientOrderID: "shared-order",
+		AccountID:     "alice",
+		Side:          domain.SideBuy,
+		Type:          domain.OrderTypeLimit,
+		TimeInForce:   domain.TimeInForceGTC,
+		Price:         100,
+		Quantity:      100,
+	})
+	if retry.Sequence != alice.Sequence || ex.Sequence() != 4 {
+		t.Fatalf("idempotent retry sequence=%d engine=%d, want %d/4", retry.Sequence, ex.Sequence(), alice.Sequence)
+	}
+	_, err := ex.Submit(context.Background(), domain.NewOrder{
+		ClientOrderID: "shared-order",
+		AccountID:     "alice",
+		Side:          domain.SideBuy,
+		Type:          domain.OrderTypeLimit,
+		TimeInForce:   domain.TimeInForceGTC,
+		Price:         101,
+		Quantity:      100,
+	})
+	if !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf("idempotency conflict error = %v", err)
+	}
+
+	depth, err := ex.Depth(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(depth.Bids) != 1 || depth.Bids[0].Price != 100 ||
+		depth.Bids[0].Quantity != 200 || depth.Bids[0].OrderCount != 2 {
+		t.Fatalf("aggregated depth = %+v", depth)
+	}
+	if orders := ex.Orders("alice", true); len(orders) != 1 || orders[0].ID == "" {
+		t.Fatalf("alice open orders = %+v", orders)
+	}
+	if balances := ex.Balances("alice"); len(balances) != 2 {
+		t.Fatalf("alice balances = %+v", balances)
+	}
+
+	records, err := memory.RecordsAfter(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 4 || records[0].SchemaVersion != store.CurrentSchemaVersion ||
+		records[0].MarketID != "BTC-USDT" || len(records[0].Journal) != 1 ||
+		records[0].Command.RequestKey.AccountID != "alice" ||
+		records[1].Command.RequestKey.AccountID != "bob" {
+		t.Fatalf("persisted scoped records = %+v", records)
+	}
+}
+
+func TestDifferentAssetScalesReleaseRoundingDust(t *testing.T) {
+	t.Parallel()
+
+	market := domain.Market{
+		ID:                 "BTC-USDT",
+		BaseAsset:          "BTC",
+		QuoteAsset:         "USDT",
+		BaseScale:          100,
+		QuoteScale:         100,
+		PriceTick:          1,
+		QuantityStep:       1,
+		MinQuantity:        1,
+		MinNotional:        1,
+		MakerFeeBPS:        0,
+		TakerFeeBPS:        0,
+		ConfigurationEpoch: 1,
+	}
+	memory := store.NewMemory()
+	ex, err := exchange.New(market, memory, memory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fund(t, ex, "buyer-fund", "buyer", "USDT", 10)
+	fund(t, ex, "seller-fund", "seller", "BTC", 3)
+	buy := submit(t, ex, domain.NewOrder{
+		ClientOrderID: "rounded-buy",
+		AccountID:     "buyer",
+		Side:          domain.SideBuy,
+		Type:          domain.OrderTypeLimit,
+		TimeInForce:   domain.TimeInForceGTC,
+		Price:         333,
+		Quantity:      3,
+	})
+	assertBalance(t, ex, "buyer", "USDT", 0, 10)
+
+	submit(t, ex, domain.NewOrder{
+		ClientOrderID: "rounded-sell",
+		AccountID:     "seller",
+		Side:          domain.SideSell,
+		Type:          domain.OrderTypeLimit,
+		TimeInForce:   domain.TimeInForceIOC,
+		Price:         333,
+		Quantity:      3,
+	})
+	assertBalance(t, ex, "buyer", "USDT", 1, 0)
+	assertBalance(t, ex, "buyer", "BTC", 3, 0)
+	assertBalance(t, ex, "seller", "USDT", 9, 0)
+	order, found := ex.Order(buy.OrderID)
+	if !found || order.Status != domain.OrderStatusFilled || order.HeldAmount != 0 || order.HeldAsset != "" {
+		t.Fatalf("rounded maker order = %+v, found=%t", order, found)
+	}
+	trades := ex.Trades("buyer")
+	if len(trades) != 1 || trades[0].QuoteAmount != 9 {
+		t.Fatalf("rounded trades = %+v", trades)
+	}
+	if err := ex.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	assertJournalBalanced(t, ex)
+}
+
 func FuzzExchange(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4, 5})
 	f.Add([]byte{9, 8, 7, 6, 5, 4, 3, 2, 1})
@@ -608,15 +750,14 @@ func testMarket() domain.Market {
 		ID:                 "BTC-USDT",
 		BaseAsset:          "BTC",
 		QuoteAsset:         "USDT",
+		BaseScale:          1,
+		QuoteScale:         1,
 		PriceTick:          1,
 		QuantityStep:       1,
 		MinQuantity:        1,
 		MinNotional:        1,
 		MakerFeeBPS:        10,
 		TakerFeeBPS:        20,
-		BaseDisplayScale:   6,
-		QuoteDisplayScale:  6,
-		PriceDisplayScale:  2,
 		ConfigurationEpoch: 1,
 	}
 }

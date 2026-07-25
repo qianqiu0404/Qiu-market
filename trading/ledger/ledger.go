@@ -195,6 +195,17 @@ func (l *Ledger) Journal() []Transaction {
 	return cloneJournal(l.journal)
 }
 
+func (l *Ledger) JournalLen() int {
+	return len(l.journal)
+}
+
+func (l *Ledger) JournalFrom(index int) ([]Transaction, error) {
+	if index < 0 || index > len(l.journal) {
+		return nil, fmt.Errorf("%w: journal index %d is outside [0,%d]", ErrInvalidTransaction, index, len(l.journal))
+	}
+	return cloneJournal(l.journal[index:]), nil
+}
+
 func (l *Ledger) Snapshot() Snapshot {
 	return Snapshot{
 		Balances: l.Balances(),

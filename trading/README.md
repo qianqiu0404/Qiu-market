@@ -1,4 +1,4 @@
-# S78 Trading Core Lab
+# S78 Trading Core V2 Lab
 
 `trading` 是 S78 的第一阶段虚拟交易核心。它在不连接真实资金、真实交易所和现有行情服务的前提下，提供一条可以测试和恢复的现货交易闭环：
 
@@ -9,11 +9,12 @@
 → 价格时间优先撮合
 → Maker / Taker 手续费
 → 双重记账清算
-→ Command + Event Batch
+→ Versioned Command + Event + Journal Batch
 → 快照与确定性重放
+→ MarketRunner 顺序执行与故障恢复
 ```
 
-当前状态：`verified`（2026-07-25，本地教学核心范围）。这只证明 `trading/**` 的专项行为，不证明 PostgreSQL、网络层、真实交易所或生产性能。
+当前状态：`core-v2-verified`（2026-07-25，本地教学核心范围）。这只证明 `trading/**` 的内存存储、顺序执行、恢复和业务语义，不证明 PostgreSQL、网络层、真实交易所或生产性能。
 
 ## 安全边界
 
@@ -32,18 +33,31 @@
 | `ledger` | available/held、平台费用账户、系统 treasury、不可变分录 |
 | `exchange` | 幂等、严格 sequence、资金冻结、撮合清算、快照恢复 |
 | `store` | EventStore/SnapshotStore 接口和并发安全内存实现 |
+| `runtime` | 每市场单 goroutine、有界队列、背压、未知提交结果恢复、关闭快照 |
 | `cmd/demo` | 可运行的虚拟交易与恢复演示 |
 
 ## 固定业务语义
 
 ### 整数单位
 
-撮合和账本不使用 `float64`：
+撮合和账本不使用 `float64`。V2 的单位定义为：
 
-- 价格：一个 base lot 值多少 quote atom；
-- 数量：base lots；
-- 余额和成交额：asset atoms；
-- 所有乘法、加法和手续费计算都检查 `int64` 溢出。
+- BTC 数量和余额：base atoms，`1 BTC = 100,000,000 atoms`；
+- USDT 余额和成交额：quote atoms，`1 USDT = 1,000,000 atoms`；
+- 价格：买卖一枚完整 BTC 所需的 USDT atoms，例如 `60,000 USDT = 60,000,000,000`；
+- 成交金额：`floor(price × base atoms ÷ 100,000,000)`；
+- 买单冻结：同一公式向上取整，成交和撤单后释放舍入余量；
+- 乘除使用 `math/bits` 的 128 位中间值，结果仍必须安全落入非负 `int64`。
+
+默认 BTC/USDT 规则：
+
+| 规则 | 值 |
+| --- | --- |
+| 价格 tick | `0.01 USDT` |
+| 数量 step | `0.000001 BTC` |
+| 最小数量 | `0.00001 BTC` |
+| 最小名义金额 | `5 USDT` |
+| Maker / Taker | `10 / 20 bps` |
 
 ### 订单类型
 
@@ -70,14 +84,16 @@
 
 每条新业务请求：
 
-1. 检查 request/client order ID；
+1. 以 `(market, account, operation, request ID)` 检查幂等；
 2. 从正式状态构建试算副本；
 3. 在副本完成订单簿和账本变更；
-4. 校验订单簿、余额非负和账本平衡；
-5. 追加 Command、Result/Event Batch 和 state hash；
+4. 校验订单簿、每张开放订单的 held、余额非负和账本平衡；
+5. 追加带 schema version 的 Command、Result/Event、Journal Delta 和 state hash；
 6. Event Store 追加成功后才替换正式状态。
 
-恢复时加载最新快照，再重放后续 command。每一步重新生成的 Result 和 state hash 都必须等于持久化记录，否则 fail closed。
+恢复时加载最新快照，再重放后续 command。每一步重新生成的 Result、Journal Delta 和 state hash 都必须等于持久化记录，否则 fail closed。
+
+`MarketRunner` 是单市场唯一写入口。队列满时明确返回背压错误；若持久化层返回“提交结果未知”，runner 立即进入 recovering，通过日志恢复后才继续接单。已经进入队列的命令在关闭时会先执行完，再保存最终快照。命令进入队列后即使调用方超时也可能完成，因此客户端必须使用原幂等键重试。
 
 当前“每命令克隆完整状态”和“快照包含完整 journal”是为了让教学版原子性容易审计，不是低延迟生产优化方案。
 
@@ -116,8 +132,8 @@ git diff --check
 - `go test ./trading/...`；
 - `go test -race ./trading/...`；
 - `go vet ./trading/...`；
-- 10 秒 fuzz 通过，本次未发现失败；
-- Apple M4 教学基准样本：`10,570 ns/op`、`13,694 B/op`、`108 allocs/op`。
+- 10 秒 fuzz 通过（本机以 `GOMAXPROCS=2` 运行，避免测试运行时过度并行）；
+- Apple M4 教学基准三次样本：`5,853–5,865 ns/op`、`14,126 B/op`、`108 allocs/op`。
 
 基准只用于保存当前实现的对照样本；每条命令克隆完整状态，因此不能把该数字当作生产撮合性能。
 
@@ -128,10 +144,13 @@ git diff --check
 - 价格改善退款；
 - 余额不足、整数溢出、越权撤单；
 - client order ID 幂等和并发重试；
+- 跨账户、跨操作的作用域幂等；
 - Cancel Taker 自成交保护；
 - Maker/Taker 双边手续费；
+- base/quote 不同精度、向上冻结、向下成交和舍入余量释放；
 - 每个 Journal Transaction 按资产平衡；
 - 快照、日志重放、状态哈希与篡改检测；
+- MarketRunner 队列背压、未知提交结果恢复、排空关闭和最终快照；
 - 随机命令序列后的订单簿和账本不变量。
 
 ## 后续接入 S78
@@ -150,7 +169,7 @@ MacBook Air 的新版 S78 提交并推送后：
 ## 尚未实现
 
 - PostgreSQL 持久化、outbox 和灾难恢复演练；
-- 多市场分片和独立市场 goroutine；
+- 多市场 registry 与跨市场资金账户；
 - HTTP、gRPC、WebSocket、鉴权和限流；
 - 真实行情、K 线和交易所测试网 adapter；
 - 止损触发单、杠杆、永续、期权和统一账户；

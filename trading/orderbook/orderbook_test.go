@@ -133,7 +133,7 @@ func TestCancelPreservesFIFO(t *testing.T) {
 
 func BenchmarkMatch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		book, _ := orderbook.New(1)
+		book, _ := orderbook.New(bookMarket())
 		for level := 0; level < 20; level++ {
 			_ = book.Add(restingOrder(
 				domain.OrderID(fmt.Sprintf("ask-%d", level)),
@@ -164,11 +164,28 @@ func BenchmarkMatch(b *testing.B) {
 
 func mustBook(t *testing.T) *orderbook.Book {
 	t.Helper()
-	book, err := orderbook.New(1)
+	book, err := orderbook.New(bookMarket())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return book
+}
+
+func bookMarket() domain.Market {
+	return domain.Market{
+		ID:                 "BTC-USDT",
+		BaseAsset:          "BTC",
+		QuoteAsset:         "USDT",
+		BaseScale:          1,
+		QuoteScale:         1,
+		PriceTick:          1,
+		QuantityStep:       1,
+		MinQuantity:        1,
+		MinNotional:        1,
+		MakerFeeBPS:        10,
+		TakerFeeBPS:        20,
+		ConfigurationEpoch: 1,
+	}
 }
 
 func restingOrder(id domain.OrderID, accountID domain.AccountID, side domain.Side, price, quantity int64, sequence uint64) domain.Order {

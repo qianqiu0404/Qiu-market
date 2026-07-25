@@ -23,6 +23,12 @@ func TestCheckedArithmetic(t *testing.T) {
 	if _, err := domain.CheckedMul(math.MaxInt64, 2); !errors.Is(err, domain.ErrArithmeticOverflow) {
 		t.Fatalf("CheckedMul overflow error = %v", err)
 	}
+	if got, err := domain.CheckedMulDivFloor(math.MaxInt64, math.MaxInt64, math.MaxInt64); err != nil || got != math.MaxInt64 {
+		t.Fatalf("CheckedMulDivFloor 128-bit intermediate = %d, %v", got, err)
+	}
+	if got, err := domain.CheckedMulDivCeil(10, 10, 6); err != nil || got != 17 {
+		t.Fatalf("CheckedMulDivCeil = %d, %v", got, err)
+	}
 }
 
 func TestNewOrderValidation(t *testing.T) {
@@ -83,11 +89,44 @@ func TestFeeAmountUsesIntegerFloor(t *testing.T) {
 	}
 }
 
+func TestDefaultBTCUSDTFixedPointAndRounding(t *testing.T) {
+	t.Parallel()
+
+	market := domain.DefaultBTCUSDTMarket()
+	if err := market.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		price    = int64(60_000_010_000)
+		quantity = int64(1_001)
+	)
+	floor, err := market.QuoteAmountFloor(price, quantity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ceil, err := market.QuoteAmountCeil(price, quantity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if floor != 600_600 || ceil != 600_601 {
+		t.Fatalf("quote rounding floor/ceil = %d/%d, want 600600/600601", floor, ceil)
+	}
+	affordable, err := market.AffordableQuantity(floor, price)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if affordable != 1_000 {
+		t.Fatalf("affordable quantity = %d, want 1000 aligned base atoms", affordable)
+	}
+}
+
 func testMarket() domain.Market {
 	return domain.Market{
 		ID:                 "BTC-USDT",
 		BaseAsset:          "BTC",
 		QuoteAsset:         "USDT",
+		BaseScale:          1,
+		QuoteScale:         1,
 		PriceTick:          1,
 		QuantityStep:       1,
 		MinQuantity:        1,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/ledger"
@@ -18,15 +19,16 @@ type requestRecord struct {
 }
 
 type persistedRequest struct {
-	RequestID   string        `json:"request_id"`
-	Fingerprint string        `json:"fingerprint"`
-	Result      domain.Result `json:"result"`
+	Key         domain.IdempotencyKey `json:"key"`
+	Fingerprint string                `json:"fingerprint"`
+	Result      domain.Result         `json:"result"`
 }
 
 type persistedState struct {
 	Market   domain.Market      `json:"market"`
 	Sequence uint64             `json:"sequence"`
 	Orders   []domain.Order     `json:"orders"`
+	Trades   []domain.Trade     `json:"trades"`
 	Requests []persistedRequest `json:"requests"`
 	Book     orderbook.Snapshot `json:"book"`
 	Ledger   ledger.Snapshot    `json:"ledger"`
@@ -38,14 +40,15 @@ type state struct {
 	book     *orderbook.Book
 	ledger   *ledger.Ledger
 	orders   map[domain.OrderID]domain.Order
-	requests map[string]requestRecord
+	trades   []domain.Trade
+	requests map[domain.IdempotencyKey]requestRecord
 }
 
 func newState(market domain.Market) (*state, error) {
 	if err := market.Validate(); err != nil {
 		return nil, err
 	}
-	book, err := orderbook.New(market.QuantityStep)
+	book, err := orderbook.New(market)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +57,7 @@ func newState(market domain.Market) (*state, error) {
 		book:     book,
 		ledger:   ledger.New(),
 		orders:   make(map[domain.OrderID]domain.Order),
-		requests: make(map[string]requestRecord),
+		requests: make(map[domain.IdempotencyKey]requestRecord),
 	}, nil
 }
 
@@ -69,6 +72,7 @@ func (s *state) persisted() persistedState {
 		Book:     s.book.Snapshot(),
 		Ledger:   s.ledger.Snapshot(),
 		Orders:   make([]domain.Order, 0, len(s.orders)),
+		Trades:   append([]domain.Trade(nil), s.trades...),
 		Requests: make([]persistedRequest, 0, len(s.requests)),
 	}
 	for _, order := range s.orders {
@@ -77,15 +81,15 @@ func (s *state) persisted() persistedState {
 	sort.Slice(persisted.Orders, func(i, j int) bool {
 		return persisted.Orders[i].ID < persisted.Orders[j].ID
 	})
-	for requestID, record := range s.requests {
+	for key, record := range s.requests {
 		persisted.Requests = append(persisted.Requests, persistedRequest{
-			RequestID:   requestID,
+			Key:         key,
 			Fingerprint: record.Fingerprint,
 			Result:      cloneResult(record.Result),
 		})
 	}
 	sort.Slice(persisted.Requests, func(i, j int) bool {
-		return persisted.Requests[i].RequestID < persisted.Requests[j].RequestID
+		return persisted.Requests[i].Key.String() < persisted.Requests[j].Key.String()
 	})
 	return persisted
 }
@@ -94,7 +98,7 @@ func stateFromPersisted(persisted persistedState) (*state, error) {
 	if err := persisted.Market.Validate(); err != nil {
 		return nil, fmt.Errorf("restore market: %w", err)
 	}
-	book, err := orderbook.FromSnapshot(persisted.Market.QuantityStep, persisted.Book)
+	book, err := orderbook.FromSnapshot(persisted.Market, persisted.Book)
 	if err != nil {
 		return nil, fmt.Errorf("restore order book: %w", err)
 	}
@@ -108,7 +112,8 @@ func stateFromPersisted(persisted persistedState) (*state, error) {
 		book:     book,
 		ledger:   restoredLedger,
 		orders:   make(map[domain.OrderID]domain.Order, len(persisted.Orders)),
-		requests: make(map[string]requestRecord, len(persisted.Requests)),
+		trades:   append([]domain.Trade(nil), persisted.Trades...),
+		requests: make(map[domain.IdempotencyKey]requestRecord, len(persisted.Requests)),
 	}
 	for _, order := range persisted.Orders {
 		if order.ID == "" {
@@ -120,13 +125,13 @@ func stateFromPersisted(persisted persistedState) (*state, error) {
 		restored.orders[order.ID] = order
 	}
 	for _, request := range persisted.Requests {
-		if request.RequestID == "" || request.Fingerprint == "" {
-			return nil, fmt.Errorf("restore request: id and fingerprint are required")
+		if err := request.Key.Validate(); err != nil || request.Fingerprint == "" {
+			return nil, fmt.Errorf("restore request: valid key and fingerprint are required")
 		}
-		if _, duplicate := restored.requests[request.RequestID]; duplicate {
-			return nil, fmt.Errorf("restore request: duplicate request id %s", request.RequestID)
+		if _, duplicate := restored.requests[request.Key]; duplicate {
+			return nil, fmt.Errorf("restore request: duplicate request key %s", request.Key.String())
 		}
-		restored.requests[request.RequestID] = requestRecord{
+		restored.requests[request.Key] = requestRecord{
 			Fingerprint: request.Fingerprint,
 			Result:      cloneResult(request.Result),
 		}
@@ -188,6 +193,66 @@ func (s *state) validate() error {
 		}
 		if order.RemainingQuantity < 0 || order.FilledQuantity < 0 || order.RemainingQuoteBudget < 0 || order.SpentQuote < 0 {
 			return fmt.Errorf("order %s contains negative quantities", orderID)
+		}
+	}
+	type heldKey struct {
+		account domain.AccountID
+		asset   domain.Asset
+	}
+	expectedHeld := make(map[heldKey]int64)
+	for orderID, order := range s.orders {
+		if order.IsOpen() {
+			expectedAsset := s.market.BaseAsset
+			expectedAmount := order.RemainingQuantity
+			if order.Side == domain.SideBuy {
+				expectedAsset = s.market.QuoteAsset
+				var err error
+				expectedAmount, err = s.market.QuoteAmountCeil(order.Price, order.RemainingQuantity)
+				if err != nil {
+					return fmt.Errorf("validate order %s hold: %w", orderID, err)
+				}
+			}
+			if order.HeldAsset != expectedAsset || order.HeldAmount != expectedAmount {
+				return fmt.Errorf("order %s hold asset/amount mismatch", orderID)
+			}
+			key := heldKey{account: order.AccountID, asset: order.HeldAsset}
+			total, err := domain.CheckedAdd(expectedHeld[key], order.HeldAmount)
+			if err != nil {
+				return fmt.Errorf("sum held amount for order %s: %w", orderID, err)
+			}
+			expectedHeld[key] = total
+		} else if order.HeldAmount != 0 || order.HeldAsset != "" {
+			return fmt.Errorf("closed order %s retains held funds", orderID)
+		}
+	}
+	for key, expected := range expectedHeld {
+		if actual := s.ledger.Balance(ledger.UserHeld(key.account), key.asset); actual != expected {
+			return fmt.Errorf("held balance mismatch for account %s asset %s: have=%d want=%d",
+				key.account, key.asset, actual, expected)
+		}
+	}
+	for _, balance := range s.ledger.Balances() {
+		if !strings.HasPrefix(balance.Account, "user:") || !strings.HasSuffix(balance.Account, ":held") {
+			continue
+		}
+		account := domain.AccountID(strings.TrimSuffix(strings.TrimPrefix(balance.Account, "user:"), ":held"))
+		if expectedHeld[heldKey{account: account, asset: balance.Asset}] != balance.Amount {
+			return fmt.Errorf("ledger contains unmatched held balance for account %s asset %s", account, balance.Asset)
+		}
+	}
+	seenTrades := make(map[domain.TradeID]struct{}, len(s.trades))
+	for _, trade := range s.trades {
+		if trade.ID == "" || trade.MarketID != s.market.ID {
+			return fmt.Errorf("trade identity is invalid")
+		}
+		if _, duplicate := seenTrades[trade.ID]; duplicate {
+			return fmt.Errorf("duplicate trade %s", trade.ID)
+		}
+		seenTrades[trade.ID] = struct{}{}
+	}
+	for key, request := range s.requests {
+		if err := key.Validate(); err != nil || key.MarketID != s.market.ID || request.Fingerprint == "" {
+			return fmt.Errorf("invalid request record %s", key.String())
 		}
 	}
 	return nil

@@ -53,6 +53,8 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 	if err != nil {
 		return domain.Result{}, err
 	}
+	order.HeldAsset = reserveAsset
+	order.HeldAmount = reserveAmount
 	if err := s.ledger.Hold(
 		fmt.Sprintf("hold:%020d", command.Sequence),
 		"order-hold:"+string(order.ID),
@@ -61,6 +63,8 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 		reserveAmount,
 	); err != nil {
 		if errors.Is(err, ledger.ErrInsufficientBalance) {
+			order.HeldAsset = ""
+			order.HeldAmount = 0
 			return s.rejectOrder(command.Sequence, order, "insufficient_balance"), nil
 		}
 		return domain.Result{}, fmt.Errorf("hold funds for order %s: %w", order.ID, err)
@@ -84,32 +88,47 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 	if err != nil {
 		return domain.Result{}, fmt.Errorf("match order %s: %w", order.ID, err)
 	}
-	currentHold := reserveAmount
 	for fillIndex, fill := range matchResult.Fills {
 		trade, settleErr := s.settleFill(command.Sequence, fillIndex+1, order, fill)
 		if settleErr != nil {
 			return domain.Result{}, settleErr
 		}
-		if order.Side == domain.SideBuy {
-			currentHold -= fill.QuoteAmount
-		} else {
-			currentHold -= fill.Quantity
-		}
-		if currentHold < 0 {
-			return domain.Result{}, fmt.Errorf("order %s hold became negative", order.ID)
+		if err := consumeOrderHold(&order, fill); err != nil {
+			return domain.Result{}, err
 		}
 
 		maker := s.orders[fill.MakerOrderID]
 		maker.RemainingQuantity = fill.MakerRemaining
-		maker.FilledQuantity += fill.Quantity
-		maker.SpentQuote += fill.QuoteAmount
+		maker.FilledQuantity, err = domain.CheckedAdd(maker.FilledQuantity, fill.Quantity)
+		if err != nil {
+			return domain.Result{}, fmt.Errorf("update maker filled quantity: %w", err)
+		}
+		maker.SpentQuote, err = domain.CheckedAdd(maker.SpentQuote, fill.QuoteAmount)
+		if err != nil {
+			return domain.Result{}, fmt.Errorf("update maker spent quote: %w", err)
+		}
 		maker.LastSequence = command.Sequence
 		if maker.RemainingQuantity == 0 {
 			maker.Status = domain.OrderStatusFilled
 		} else {
 			maker.Status = domain.OrderStatusPartiallyFilled
 		}
+		if err := consumeOrderHold(&maker, fill); err != nil {
+			return domain.Result{}, err
+		}
+		if err := s.releaseExcessBuyHold(command.Sequence, fillIndex+1, &maker); err != nil {
+			return domain.Result{}, err
+		}
+		if maker.Status == domain.OrderStatusFilled {
+			if maker.HeldAmount != 0 {
+				return domain.Result{}, fmt.Errorf("filled maker order %s retains held amount %d", maker.ID, maker.HeldAmount)
+			}
+			maker.HeldAsset = ""
+		} else if err := s.book.Update(maker); err != nil {
+			return domain.Result{}, fmt.Errorf("update resting maker %s: %w", maker.ID, err)
+		}
 		s.orders[maker.ID] = maker
+		s.trades = append(s.trades, trade)
 
 		events = appendEvent(events, domain.Event{
 			Sequence:    command.Sequence,
@@ -161,7 +180,7 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 			order.Status = domain.OrderStatusOpen
 		}
 		if order.Side == domain.SideBuy {
-			desiredHold, err = domain.CheckedMul(order.Price, order.RemainingQuantity)
+			desiredHold, err = s.market.QuoteAmountCeil(order.Price, order.RemainingQuantity)
 			if err != nil {
 				return domain.Result{}, fmt.Errorf("calculate remaining buy hold: %w", err)
 			}
@@ -180,10 +199,10 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 		order.Status = domain.OrderStatusCanceled
 	}
 
-	if currentHold < desiredHold {
-		return domain.Result{}, fmt.Errorf("order %s current hold %d below required %d", order.ID, currentHold, desiredHold)
+	if order.HeldAmount < desiredHold {
+		return domain.Result{}, fmt.Errorf("order %s current hold %d below required %d", order.ID, order.HeldAmount, desiredHold)
 	}
-	releaseAmount := currentHold - desiredHold
+	releaseAmount := order.HeldAmount - desiredHold
 	if releaseAmount > 0 {
 		if err := s.ledger.Release(
 			fmt.Sprintf("release:%020d", command.Sequence),
@@ -194,6 +213,10 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 		); err != nil {
 			return domain.Result{}, fmt.Errorf("release funds for order %s: %w", order.ID, err)
 		}
+		order.HeldAmount -= releaseAmount
+	}
+	if order.HeldAmount == 0 {
+		order.HeldAsset = ""
 	}
 
 	if shouldRest {
@@ -279,17 +302,16 @@ func (s *state) applyCancel(command domain.Command) (domain.Result, error) {
 	var (
 		releaseAsset  domain.Asset
 		releaseAmount int64
-		err           error
 	)
 	if order.Side == domain.SideBuy {
 		releaseAsset = s.market.QuoteAsset
-		releaseAmount, err = domain.CheckedMul(order.Price, order.RemainingQuantity)
-		if err != nil {
-			return domain.Result{}, fmt.Errorf("calculate cancel release: %w", err)
-		}
+		releaseAmount = order.HeldAmount
 	} else {
 		releaseAsset = s.market.BaseAsset
-		releaseAmount = order.RemainingQuantity
+		releaseAmount = order.HeldAmount
+	}
+	if releaseAmount <= 0 || order.HeldAsset != releaseAsset {
+		return domain.Result{}, fmt.Errorf("order %s has invalid held funds", order.ID)
 	}
 	if err := s.ledger.Release(
 		fmt.Sprintf("cancel-release:%020d", command.Sequence),
@@ -302,6 +324,8 @@ func (s *state) applyCancel(command domain.Command) (domain.Result, error) {
 	}
 	order.Status = domain.OrderStatusCanceled
 	order.LastSequence = command.Sequence
+	order.HeldAsset = ""
+	order.HeldAmount = 0
 	s.orders[order.ID] = order
 	event := domain.Event{
 		Sequence:      command.Sequence,
@@ -330,6 +354,8 @@ func (s *state) rejectOrder(sequence uint64, order domain.Order, reason string) 
 	order.Status = domain.OrderStatusRejected
 	order.RejectReason = reason
 	order.LastSequence = sequence
+	order.HeldAsset = ""
+	order.HeldAmount = 0
 	s.orders[order.ID] = order
 	event := domain.Event{
 		Sequence:      sequence,
@@ -378,11 +404,58 @@ func (s *state) reserveFor(order domain.Order) (domain.Asset, int64, error) {
 	if order.Type == domain.OrderTypeMarket {
 		return s.market.QuoteAsset, order.RemainingQuoteBudget, nil
 	}
-	amount, err := domain.CheckedMul(order.Price, order.RemainingQuantity)
+	amount, err := s.market.QuoteAmountCeil(order.Price, order.RemainingQuantity)
 	if err != nil {
 		return "", 0, fmt.Errorf("calculate buy reserve: %w", err)
 	}
 	return s.market.QuoteAsset, amount, nil
+}
+
+func consumeOrderHold(order *domain.Order, fill orderbook.RawFill) error {
+	if order == nil {
+		return fmt.Errorf("order is required")
+	}
+	consumed := fill.Quantity
+	if order.Side == domain.SideBuy {
+		consumed = fill.QuoteAmount
+	}
+	if consumed < 0 || order.HeldAmount < consumed {
+		return fmt.Errorf("order %s hold became negative: held=%d consumed=%d", order.ID, order.HeldAmount, consumed)
+	}
+	order.HeldAmount -= consumed
+	return nil
+}
+
+func (s *state) releaseExcessBuyHold(sequence uint64, fillIndex int, order *domain.Order) error {
+	if order == nil || order.Side != domain.SideBuy {
+		return nil
+	}
+	desired := int64(0)
+	var err error
+	if order.RemainingQuantity > 0 {
+		desired, err = s.market.QuoteAmountCeil(order.Price, order.RemainingQuantity)
+		if err != nil {
+			return fmt.Errorf("calculate maker hold for order %s: %w", order.ID, err)
+		}
+	}
+	if order.HeldAmount < desired {
+		return fmt.Errorf("maker order %s hold %d below required %d", order.ID, order.HeldAmount, desired)
+	}
+	release := order.HeldAmount - desired
+	if release == 0 {
+		return nil
+	}
+	if err := s.ledger.Release(
+		fmt.Sprintf("maker-release:%020d:%04d", sequence, fillIndex),
+		"maker-rounding-release:"+string(order.ID),
+		order.AccountID,
+		s.market.QuoteAsset,
+		release,
+	); err != nil {
+		return fmt.Errorf("release maker hold for order %s: %w", order.ID, err)
+	}
+	order.HeldAmount = desired
+	return nil
 }
 
 func (s *state) settleFill(sequence uint64, fillIndex int, taker domain.Order, fill orderbook.RawFill) (domain.Trade, error) {
