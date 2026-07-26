@@ -1,6 +1,6 @@
 # S78 Market Services
 
-S78 Market Services 是一个行情数据后端服务项目：从外部交易所与行情平台采集加密货币价格、K 线、市值和法币汇率，经过精度转换与聚合后存入 PostgreSQL / Redis，并通过 HTTP API、gRPC 和 Vue 管理前端（Qiu Market）对外提供行情数据能力。
+S78 Market Services 是一个行情与虚拟交易后端项目：从外部交易所与行情平台采集加密货币价格、K 线、市值和法币汇率，经过精度转换与聚合后存入 PostgreSQL / Redis，并通过 HTTP API、gRPC 和 Vue 管理前端（Qiu Market）对外提供行情能力；独立 `trading` 进程还提供仅使用虚拟资金的 BTC/USDT 撮合、账本和恢复教学纵切片。
 
 ## 架构
 
@@ -45,6 +45,8 @@ HTTP API / gRPC（共用业务层，数据一致）
 Vue Dashboard（Qiu Market，蓝白金融产品风）
 ```
 
+虚拟交易是独立故障域：共享 HTTP API 通过本机 `127.0.0.1:9094` gRPC 调用 `market-services trading`，撮合事件与账本写 PostgreSQL。交易进程异常只降级 `/api/v1/trading/**`，行情页面继续工作；行情参考异常只会让虚拟 demo-maker 撤单停机，不阻断撮合恢复。
+
 ## 核心能力
 
 | 模块 | 作用 |
@@ -56,8 +58,9 @@ Vue Dashboard（Qiu Market，蓝白金融产品风）
 | `database` | GORM + PostgreSQL 表模型和查询 |
 | `services/http` | v1 市场/Insights/K 线与 v2 综合资产首页、按需市场抽屉、Catalog Audit |
 | `services/grpc` | gRPC MarketService：16 个只读 RPC 与 HTTP 共用业务层（历史动量当前仅 HTTP，详见 [docs/grpc-service.md](docs/grpc-service.md)） |
+| `trading` | BTC/USDT 虚拟撮合、available/held 双重记账、PostgreSQL 事件流/快照/outbox、loopback gRPC、鉴权 REST/WebSocket 和 demo-maker（详见 [docs/trading-system.md](docs/trading-system.md)） |
 | `redis` | 热点价格缓存（TTL 抖动）+ ZSET 24h 涨跌幅榜（详见 [docs/redis-top-movers.md](docs/redis-top-movers.md)）+ 进程心跳（`market:heartbeat:<role>`，5s 刷新 / TTL 15s，System 页真实状态来源） |
-| `frontend` | Vue3 + Vite + TypeScript 行情后台（详见 [docs/frontend.md](docs/frontend.md)） |
+| `frontend` | Vue3 + Vite + TypeScript 行情与虚拟交易终端（详见 [docs/frontend.md](docs/frontend.md)） |
 
 ## 工程设计与实现要点
 
@@ -72,10 +75,17 @@ K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 s
 ### 可信行情底座与多交易所实施状态
 
 - `implemented`：七家独立版本化 50 资产选择、All canonical 去重并集、本地预览与正式 rollout 隔离、四家 WebSocket/REST feed、四家版本化 50 market K 线、V2+V3 最多两跳 AMM、权威 DEX snapshot、最后成功值与 Fresh/Stale/Unavailable、手动 rollout 门和统一 venue 快照已落地。
-- `build-verified`：2026-07-26 的 `go build ./...`、`go vet ./...`、`go test ./...`、Vitest 6/6、Vue production build、Playwright 11/11、`make verify-local`、shell syntax 与 `git diff --check` 通过；编译通过不等于外部来源已完成 canary。
-- `integration-verified`：当前业务库已顺序执行到 `2026082000022.sql`。2026-07-25 本地七角色运行；HTTP/gRPC/PostgreSQL/Redis、四家真实 CEX、Hyperliquid、公共只读 EVM RPC、V2 Router 与 V3 QuoterV2 已交换数据。All 浏览器现场显示 109 个 canonical 并集成员、四家 CEX contributor；四家 K 线各 reconcile 50 个 market；数据库确认 Binance BTC 24h open/percent 正常，页面不再出现时间戳造成的 `-100%`。AMM 抽屉出现 V2/V3 direct 与 mixed protocol path。动态数量只代表现场快照。
-- `environment-pending`：DW 新连续对账窗 72 小时、Binance 当前阶段门、Coinbase → Bybit → OKX 各 24h canary/48h enabled、四家联合 72 小时和最终七天；任何阶段都不会自动晋级。
+- `build-verified`：2026-07-26 的 `go vet ./...`、`go test ./...`、交易 race/fuzz/benchmark、Vitest 8/8、Vue production build、Playwright 16/16、npm audit 0、`make verify-local`、shell syntax 与 `git diff --check` 通过；编译通过不等于外部来源已完成 canary。
+- `integration-verified`：当前本地业务库已顺序执行到 `2026082100023.sql`。HTTP/gRPC/PostgreSQL/Redis、四家真实 CEX、Hyperliquid、公共只读 EVM RPC、V2 Router 与 V3 QuoterV2 已交换数据。七家各有 50 个 active selection，All 为 109 个 canonical 并集成员；四家 K 线各 reconcile 50 个 market。真实浏览器还完成虚拟入金、挂单、成交、费用、撤单、WebSocket 与交易重启恢复；动态数量只代表现场快照。
+- `environment-pending`：DW 新连续对账窗 72 小时、Binance 当前阶段门、Coinbase → Bybit → OKX 各 24h canary/48h enabled、四家联合 72 小时、交易 HTTPS/OAuth/容量与最终七天；任何阶段都不会自动晋级。
 - 旧 Doris 表、水位、`get_kline_analytics` 和旧组件都保留；`/analytics` 只做地址重定向。`exchange_symbol_kline`、`symbol_market_currey` 已解除运行时注册但未删除；删除仍需最终七天验收后单独批准。
+
+### 虚拟现货交易实施状态
+
+- `implemented`：`BTC-USDT` 定点数撮合、全部首版订单语义、双重记账、每市场串行 runner、PostgreSQL 事件/快照/outbox/投影、正式迁移 `2026082100023.sql`、loopback gRPC、共享 HTTP gateway、单用户鉴权、WebSocket cursor、可信参考 demo-maker 和共享 `/trade/BTC-USDT` 已落地。
+- `build-verified`：2026-07-26 的全仓 Go test/vet、交易 race、10 秒 fuzz、benchmark、一次性 PostgreSQL 测试、前端 8 个 Vitest、production build、npm audit 0 和 16 个 Playwright 回归通过。
+- `integration-verified`：一次性真实 PostgreSQL 上执行正式 migration，启动真实 gRPC + REST，完成虚拟入金、挂单、撤单、优雅快照、整套重启、session 延续、跨重启幂等，并确认 snapshot/event state hash 完全一致。
+- `production-pending`：真实资金、充值提现、私钥、实盘下单不在目标内；生产 HTTPS/OAuth 回调、容量压测、备份恢复演练、监控告警和长期 soak 仍未验收。
 
 ### 价格精度
 
@@ -83,7 +93,7 @@ K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 s
 
 ### 统一响应信封与错误处理
 
-所有 HTTP 接口（包括读接口）统一为 POST + JSON，响应信封 `{ code, message, result }`：`code = 2000` 成功，`4000/5000` 为业务 / 内部错误且伴随正确的 HTTP 状态码。前端只需判断 `code`，不需要兼容纯文本错误或多种错误格式。
+现有 market-data HTTP 接口（包括读接口）统一为 POST + JSON，响应信封 `{ code, message, result }`：`code = 2000` 成功，`4000/5000` 为业务 / 内部错误且伴随正确的 HTTP 状态码。`/api/v1/trading/**` 是独立 REST/WebSocket 契约，使用标准 HTTP 方法和精确十进制字符串；两个边界在前端 API 层分开处理。
 
 ### 数据新鲜度模型
 
@@ -108,7 +118,7 @@ K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 s
 
 Qiu Market 前端在 2026-07 完成整体重设计，当前形态：
 
-- **三项主导航 + 行情详情**：Markets、Insights、System。`/` 与 `/dashboard` 回到 Markets；旧 `/analytics` 到 Insights；旧 `/klines` 到 Markets。Assets / Exchanges / Symbols 作为 System 内的 Catalog 标签，旧 URL 重定向并保留 tab。
+- **四项主导航 + 行情详情**：Markets、Trade、Insights、System。`/trade/BTC-USDT` 是虚拟交易终端；`/` 与 `/dashboard` 回到 Markets，旧 `/analytics` 到 Insights，旧 `/klines` 到 Markets。Assets / Exchanges / Symbols 作为 System 内的 Catalog 标签，旧 URL 重定向并保留 tab。
 - **Markets 聚合首页**：七个 provider 各展示自己带版本号的 50 资产选择；All 展示七张选择按 canonical identity 去重后的并集并按市值排序。单 venue 与 All 都保持一项资产一行，短暂断线或 DEX 询价失败不会删行，而会保留成员并显示 Stale/Unavailable/Not covered。
 - **按需市场/路线抽屉**：点击数量后才请求 CEX Spot、Hyperliquid Perp 和 DEX routes；Perp/DEX 明确排除综合价。只有 `has_kline=true` 的具体市场显示图表入口。
 - **七源稳定选择**：四家 CEX 各冻结 50 个审核现货资产；Hyperliquid 冻结 50 个身份确认的 Perp 资产；Uniswap/PancakeSwap 各冻结 50 个链上身份已复核的 listed assets。是否入选和是否已有合格路线报价是两个状态；AMM 使用 V2/V3 直连或最多两跳 mixed route，按 `$10K → $1K → $100` 询价并显示实际金额和 protocol path，全部失败才显示 `Not covered`。
@@ -118,7 +128,7 @@ Qiu Market 前端在 2026-07 完成整体重设计，当前形态：
 
 ## 从零启动（新设备验证指南）
 
-日常启动、停止、七终端说明和故障处理以 [docs/local-development.md](docs/local-development.md) 为 canonical runbook；本节保留新设备从零准备依赖的完整步骤。
+日常启动、停止、八终端说明和故障处理以 [docs/local-development.md](docs/local-development.md) 为 canonical runbook；本节保留新设备从零准备依赖的完整步骤。
 
 ### 已配置开发机：一条命令启动
 
@@ -128,13 +138,13 @@ macOS 上已经准备好 `.env`、PostgreSQL、Redis 和 Docker 时，直接执�
 make dev
 ```
 
-默认启动会为七个 provider 开启本地真实行情预览；七个标签分别读取自己的 50 资产 selection，All 读取七张选择的去重并集。正式验收时关闭预览：
+默认启动会为七个 provider 开启本地真实行情预览；七个 provider 分别读取自己的 50 资产 selection，All 读取七张选择的去重并集。进程层面会启动八个角色。正式验收时关闭预览：
 
 ```bash
 S78_CEX_PREVIEW=0 make dev
 ```
 
-启动器会先探测 `.env` 指向的真实 PostgreSQL/Redis、编译，在检测到待执行迁移时把私有备份写到 `~/Library/Application Support/S78 Market Services/backups`，幂等执行迁移并启动 Doris，然后启动 API / RPC / crawler / worker / dex / dw / frontend 七个终端角色。它不会启动 compose 的空 PostgreSQL/Redis，也不会杀死端口上的非托管进程。本机安装 iTerm2 时默认打开一个 iTerm2 窗口七个标签；否则降级到 Terminal.app 标签或独立窗口。
+启动器会先探测 `.env` 指向的真实 PostgreSQL/Redis、编译，在检测到待执行迁移时把私有备份写到 `~/Library/Application Support/S78 Market Services/backups`，幂等执行迁移并启动 Doris，然后启动 API / Trading / RPC / crawler / worker / dex / dw / frontend 八个终端角色。它不会启动 compose 的空 PostgreSQL/Redis，也不会杀死端口上的非托管进程。本机安装 iTerm2 时默认打开一个 iTerm2 窗口八个标签；否则降级到 Terminal.app 标签或独立窗口。
 
 新来源由 `provider_rollout_state` 独立控制。全新空库中的 CEX 与 AMM 从 shadow 开始，Hyperliquid 保持初始化策略；已有部署的 rollout 行绝不被初始化迁移覆盖。当前业务库的 Binance 是已经审计并固化十资产清单的 canary。旧 `MARKET_MULTI_VENUE_ENABLED` 只保留兼容，不再决定正式切流。审核与 rollout 命令见 [docs/catalog-audit.md](docs/catalog-audit.md)。
 
@@ -195,22 +205,25 @@ make migrate   # 编译二进制并执行 migrations/ 下的建表 SQL
 make seed      # 通过 psql 写入 7 个资产 / 交易所 / 交易对演示数据
 ```
 
-### 4. 启动后端进程（3 个终端 + 2 个可选终端）
+### 4. 启动后端进程
 
 ```bash
 # 终端 1：HTTP API（前端的数据来源）
 make api
 
-# 终端 2：crawler，目录审计、四家 Spot adapter、综合价与四家 CEX K 线
+# 终端 2：虚拟 BTC/USDT 撮合、账本、事件与 9094 gRPC
+make trading
+
+# 终端 3：crawler，目录审计、四家 Spot adapter、综合价与四家 CEX K 线
 make crawler
 
-# 终端 3：worker，只扫描 K 线缺口并生成 repair task
+# 终端 4：worker，只扫描 K 线缺口并生成 repair task
 make worker
 
-# 终端 4（可选）：dex，隔离运行 Hyperliquid、Uniswap/PancakeSwap V2+V3
+# 终端 5（可选）：dex，隔离运行 Hyperliquid、Uniswap/PancakeSwap V2+V3
 make dex
 
-# 终端 5（可选）：gRPC 行情服务，与 HTTP API 共用业务层、返回相同数据
+# 终端 6（可选）：gRPC 行情服务，与 HTTP API 共用业务层、返回相同数据
 make rpc
 ```
 
@@ -271,6 +284,7 @@ grpcurl -plaintext -d '{"page":1,"page_size":3}' 127.0.0.1:9091 dapplink.xyz.Mar
 浏览器打开 `http://127.0.0.1:5174`，预期看到：
 
 - 默认进入 Markets，按 rank 展示七家 selection 的 canonical 去重并集；没有新鲜报价的资产仍保留并显示明确原因；
+- `/trade/BTC-USDT` 展示可信参考、真实 venue K 线、虚拟订单簿和交易操作；缺失行情时明确 unavailable，不生成假图；
 - All 只展示 CEX Spot 综合价，切换七个 venue 后仍保持一项资产一行，多市场和路线从右侧抽屉按需查看；
 - System 的 Processes 与 Data sources 分开；crawler 运行不等于 Binance 必然 Healthy；
 - 停掉 `make api` 后，前端各页面进入 Offline 错误态（可重试），这是设计行为。
@@ -281,7 +295,7 @@ grpcurl -plaintext -d '{"page":1,"page_size":3}' 127.0.0.1:9091 dapplink.xyz.Mar
 make verify-local
 ```
 
-该检查会复用已经监听 9092 的托管 API；若 API 尚未启动，才创建一个带精确 PID 和临时日志的短生命周期 API，并在检查结束后回收，不会与 `make dev` 抢占端口。除旧接口 smoke test 外，它还要求七家 provider 各返回 50 个唯一 canonical asset，并核验 All 并集没有重复身份。
+该检查会复用已经监听 9092/9094 的服务；缺少服务时才创建带精确 PID 和临时日志的短生命周期 API/Trading，并在退出时只回收自己启动的进程。除行情接口和七源 selection 外，它还检查交易 schema、公开状态、精确字符串 sequence 和订单簿数组契约。
 
 ### 端口一览
 
@@ -290,6 +304,7 @@ make verify-local
 | 5174 | S78 Vite dev server | 前端入口（固定 127.0.0.1，代理 /api → 9092；5173 由 xiuqiu-site 使用） |
 | 9092 | market-services api | HTTP API |
 | 9091 | market-services rpc | gRPC |
+| 9094 | market-services trading | loopback-only TradingService gRPC |
 | 9093 | market-services | metrics |
 | 5432 | Docker postgres | PostgreSQL 16 |
 | 6379 | Docker redis | Redis 7 |
@@ -312,6 +327,8 @@ make verify-local
 ```bash
 go test ./...
 go build ./cmd/market-services
+go test -race ./trading/...
+./trading/scripts/verify-local.sh postgres
 ```
 
 前端：
@@ -320,7 +337,7 @@ go build ./cmd/market-services
 cd frontend
 npm run test     # Vitest
 npm run build    # vue-tsc 类型检查 + Vite 构建
-npm run test:e2e # Playwright，复用 5174
+npm run test:e2e # Playwright，默认使用隔离端口 4175
 ```
 
 ## 文档索引
@@ -340,15 +357,16 @@ README 全局架构
 
 | 文档 | 内容 |
 |---|---|
-| [docs/local-development.md](docs/local-development.md) | 日常一键启动、七终端角色、停止、日志与常见故障 |
-| [docs/frontend.md](docs/frontend.md) | CMC 风格资产首页、v2 数据契约、按需市场抽屉和响应式验收 |
+| [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
+| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、数据契约、交互和响应式验收 |
+| [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、事件恢复、接口鉴权、demo-maker 和验收边界 |
 | [docs/klines-pipeline.md](docs/klines-pipeline.md) | K 线 market identity、显式时间、业务唯一键、分周期续传与刷新 |
 | [docs/redis-top-movers.md](docs/redis-top-movers.md) | Redis ZSET 涨跌榜、TTL 抖动防雪崩、SQL 回退 |
 | [docs/catalog-audit.md](docs/catalog-audit.md) | provider 审核清单、版本化资产选择、候选市场、rollout 与安全 CLI |
 | [docs/dex-hyperliquid.md](docs/dex-hyperliquid.md) | Hyperliquid Perp、Uniswap/Pancake V2+V3 mixed route、链上校验与综合价排除 |
 | [docs/grpc-service.md](docs/grpc-service.md) | gRPC MarketService、与 HTTP 共用业务层、proto 重新生成 |
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、覆盖率与故障隔离 |
-| [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、All canonical 并集、CEX-only 综合现货价、rollout 与未来交易域边界 |
+| [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、All canonical 并集、CEX-only 综合现货价、rollout 与独立交易域边界 |
 | [docs/market-data-quality.md](docs/market-data-quality.md) | provider 隔离、综合价排除/降级、身份异常与修复 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |
 | [docs/project-go-interview-bagua.md](docs/project-go-interview-bagua.md) | Go 工程知识与当前项目代码映射 |
@@ -360,7 +378,7 @@ README 全局架构
 - 行情延迟指标与告警体系。
 - 更完整的 Redis 缓存策略（持久化、雪崩防护已做 TTL 抖动，其余待补）。
 - 数据质量校验待补价格突变与成交量异常；持续缺口扫描和 repair task 已实现，但连续 48/72 小时验收仍未完成。
-- API 鉴权、限流和监控（HTTP / gRPC 均待补）。
+- 公共行情 API 的鉴权、配额和监控仍待补；虚拟交易写接口已有单用户 session、CSRF、Origin 和限流。
 - provider 状态已落表；后续补监控指标、告警和长期 SLA 统计。
 - Doris 链路可继续加分区 / 分桶调优、Routine Load、物化视图。
 - 前端已做 ECharts 按需引入 + 路由级懒加载，可继续做更细粒度拆分与 CDN 化。

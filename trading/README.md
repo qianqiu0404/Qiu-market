@@ -18,7 +18,7 @@ Vue 交易终端
 PostgreSQL（事件流 / 账本 / outbox / 快照 / 可重建投影）
 ```
 
-当前状态：`standalone-vertical-slice-verified`（2026-07-25）。独立 `trading/**` 已具备网络接口、持久化和浏览器终端；这不等于已经接入 MacBook Air 上尚未交付的 S78 行情与共享前端，也不代表完成生产部署。
+当前状态：`shared-integration-verified`（2026-07-26）。独立核心已 rebase 到 MacBook Air 推送的 `b1fafb4` 基线，并接入正式 migration、独立 9094 进程、共享 9092 gateway、可信 S78 BTC 参考和共享 Vue 终端；这仍不代表真实资金或生产部署。
 
 ## 安全边界
 
@@ -29,7 +29,7 @@ PostgreSQL（事件流 / 账本 / outbox / 快照 / 可重建投影）
 - HTTP 层从服务端 session 确定账户；客户端提交的 `account_id` 不参与普通用户授权。
 - 公开订单簿和成交可匿名读取，公开成交会清除账户标识。
 - 不记录 token、cookie、OAuth secret 或 `.env` 内容。
-- PostgreSQL DDL 暂时内嵌于 `trading/store/postgres`；等最终 S78 基线确定后才进入正式迁移序列。
+- 正式 DDL 位于 `migrations/2026082100023.sql`；`trading/store/postgres` 的 embedded schema 只供一次性独立测试使用，集成服务启动时只验证 migration，不偷偷建表。
 
 ## 模块
 
@@ -49,7 +49,11 @@ PostgreSQL（事件流 / 账本 / outbox / 快照 / 可重建投影）
 | `marketmaker` | `system:demo-maker` 三档 Post Only 报价与陈旧/跳变停机 |
 | `cmd/demo` | 内存交易、手续费、撤单和重启恢复演示 |
 | `cmd/server` | PostgreSQL + MarketRunner + gRPC + HTTP 独立进程 |
-| `web` | Vue 3 虚拟交易终端 |
+| `web` | 独立验证用 Vue 3 终端；正式产品入口位于根 `frontend` |
+| `service` | 集成 S78 的 PostgreSQL 恢复、9094 gRPC 和可信 demo-maker 生命周期 |
+| `gateway` | 共享 HTTP API 使用的会话与 gRPC adapter |
+| `reference` | 只读 S78 BTC 综合现货指数 |
+| `integration` | 正式 migration + gRPC + REST + restart 的隔离 PostgreSQL E2E |
 
 ## 固定业务语义
 
@@ -103,7 +107,47 @@ go run ./trading/cmd/demo
 
 它会演示虚拟入金、部分成交、双边手续费、撤单、快照、重启恢复和状态哈希一致。
 
-### PostgreSQL、gRPC、HTTP 与 Vue
+### 集成 S78 的 PostgreSQL、gRPC、HTTP 与 Vue
+
+先配置根 `.env` 并执行正式迁移：
+
+```bash
+make migrate
+```
+
+日常直接：
+
+```bash
+make dev
+```
+
+也可以在三个终端分别启动：
+
+```bash
+make trading       # 127.0.0.1:9094，唯一撮合状态 owner
+make api           # 127.0.0.1:9092，浏览器 gateway
+make frontend-dev  # 127.0.0.1:5174
+```
+
+浏览器访问 `http://127.0.0.1:5174/trade/BTC-USDT`。共享页面从 S78 读取真实 BTC 参考和具体 spot venue K 线；来源不可用时显示明确状态，不生成假行情。
+
+本地免 OAuth 必须显式设置：
+
+```bash
+export MARKET_TRADING_LOCAL_AUTH=true
+export MARKET_TRADING_ALLOWED_ORIGINS=http://127.0.0.1:5174
+export MARKET_TRADING_SECURE_COOKIES=false
+```
+
+共享环境应关闭本地模式，配置 GitHub OAuth 并在 HTTPS 后启用 secure cookie。demo-maker 默认读取 30 秒内的 S78 BTC 综合参考；若只验证恢复而不希望它挂单：
+
+```bash
+MARKET_TRADING_DEMO_MAKER_ENABLED=false make trading
+```
+
+### 独立 harness
+
+独立 `cmd/server` 和 `trading/web` 仍保留，用于不启动 S78 其他角色时验证 trading bounded context。
 
 先准备一个仅用于本地实验的空数据库，然后启动后端：
 
@@ -131,7 +175,7 @@ npm run dev
 
 浏览器访问 `http://127.0.0.1:5175/trade/BTC-USDT`。本地模式必须显式开启且只能绑定 `127.0.0.1`；共享环境应关闭本地模式，改用 GitHub OAuth 环境变量并启用 HTTPS secure cookie。
 
-当前 K 线与参考价区域会明确显示“等待集成”，不会用随机数、静态价格或过期行情兜底。`marketmaker` 已完成逻辑和单测，但要等最终 S78 行情接口确定后才能连接可信参考价并随服务启动。
+独立 harness 的 K 线与参考价区域仍明确显示“等待集成”；共享根前端才连接 S78 可信行情。两个入口都禁止随机数、静态价格或过期行情兜底。
 
 ## 接口
 
@@ -180,16 +224,28 @@ make -C trading verify-web
 
 PostgreSQL E2E 会启动真实 TCP gRPC 与 HTTP/WebSocket adapter，完成虚拟入金、Maker 挂单、Taker 成交、双边手续费、剩余撤单、优雅快照、整套服务重启、session 延续、跨重启幂等重试，以及重启前后 snapshot/event state hash 一致性检查。
 
-## 等待最终 S78 基线后再做
+共享集成还需执行：
 
-必须同时确认 MacBook Air claim 已释放、handoff 已记录、最终代码已推送，然后：
+```bash
+go test ./...
+go test -race ./trading/...
+go vet ./...
+./trading/scripts/verify-local.sh postgres
+cd frontend && npm test -- --run && npm run build
+cd frontend && npm audit --audit-level=high
+cd frontend && npx playwright test
+make verify-local
+```
 
-1. fetch 最终 `origin/main`，将交易分支 rebase 到 canonical commit；
-2. 若新版没有 `trading/**`，保留完整提交；若存在同名模块，逐提交移植；
-3. 把交易 DDL 接入正式 migration，并将 HTTP adapter 接入现有服务；
-4. 把 Vue 页面移入共享前端路由；
-5. 连接 S78 的新鲜参考价与 K 线，启动 `system:demo-maker`；
-6. 执行全仓、浏览器、重启恢复和账本对账后，才标记 `integration-verified`。
+2026-07-26 已完成：
+
+- MacBook Air claim/release/handoff/push gate；
+- 本地 rebase 到 `b1fafb4`，没有推送或合并 main；
+- migration、独立后端、共享 gateway、共享前端与可信参考；
+- 全仓 Go、race/vet/fuzz/benchmark、一次性 PostgreSQL restart E2E、前端单测/build/audit/Playwright。
+- 本机 S78 数据库与真实浏览器完成虚拟入金、挂单、成交、费用、撤单、WS、优雅快照及重启恢复；event/snapshot hash 一致，BTC/USDT 分资产 ledger 净额为零。
+
+详细架构与证据边界见 [`docs/trading-system.md`](../docs/trading-system.md)。
 
 ## 明确不在本目标内
 

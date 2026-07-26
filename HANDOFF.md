@@ -1,6 +1,6 @@
-# HANDOFF：Qiu Market 四家实时聚合、四家 K 线、V2+V3 DEX 与蓝白 UI
+# HANDOFF：Qiu Market 七源行情、K 线/DEX 与虚拟现货交易纵切片
 
-> 动态快照：2026-07-25。本文件只记录本次本地交付与剩余正式验收；长期行为以 README 和 canonical docs 为准。
+> 动态快照：2026-07-26。本文件只记录本次本地交付与剩余正式验收；长期行为以 README 和 canonical docs 为准。
 
 ## 可见结果
 
@@ -14,7 +14,19 @@
 - 全站已经从暗色终端改成 Apple 风格蓝白视觉：浅灰页面、白色内容卡、蓝色交互、独立红绿涨跌语义，并通过 1180/1280/1440 三档页面级无溢出验收。
 - 价格可用但 24h 参考缺失时显示明确原因；真实 `0%` 与 Unknown 分开。
 - Binance、Coinbase、Bybit、OKX 各把当前 selection version 的 50 个资产冻结到具体 USD-family Spot market；采原生 1m，并只在分钟连续完整时确定性汇总 15m/1h/1d。具体 market 可进入 K 线，综合资产不生成假图。
-- `make dev` 在一个 iTerm2 窗口中启动 API、RPC、Crawler、Worker、Hyperliquid DEX、DW、Frontend 七个标签，S78 固定使用 5174，不影响 5173 的 `xiuqiu-site`。
+- `make dev` 在一个 iTerm2 窗口中启动 API、Trading、RPC、Crawler、Worker、Hyperliquid DEX、DW、Frontend 八个标签，S78 固定使用 5174，不影响 5173 的 `xiuqiu-site`。
+
+## 2026-07-26 虚拟现货交易纵切片
+
+- 新增独立 `market-services trading` 进程，只监听 `127.0.0.1:9094`。单市场 `MarketRunner` 独占 BTC/USDT 撮合状态；现有 API 只负责会话、REST/WebSocket 与 loopback gRPC 适配，任一进程故障不拖垮另一个 bounded context。
+- 正式迁移 `2026082100023.sql` 创建 event batch、snapshot、outbox、order、trade、balance、ledger、checkpoint 与 session 等十张交易表。事件流是最终真值，投影可重建；运行时只校验迁移，不自行建表。
+- 浏览器入口为 `http://127.0.0.1:5174/trade/BTC-USDT`。页面只读取真实 S78 综合参考价和 reviewed venue K 线，不生成假行情；所有交易价格、数量、余额和序列都以十进制字符串跨 JavaScript 边界。
+- 本地免 OAuth 必须显式开启且 HTTP 绑定 IP loopback；共享环境只允许 GitHub `qianqiu0404`。写接口使用 HttpOnly/SameSite session、CSRF、Origin 白名单和限流；WebSocket 使用 30 秒一次性 ticket 与 `(sequence,event_index)` cursor。
+- `system:demo-maker` 只使用虚拟余额，在新鲜参考价的 ±10/25/50 bps 各挂三档。参考价超过 30 秒或跳变超过 5% 时，先撤单再停止做市。
+- 2026-07-26 真实本地浏览器完成：登录 → USDT/BTC 虚拟入金 → 限价挂单 → 撤单 → Market Buy → Maker/Taker 手续费 → WebSocket 增量。优雅退出时 event 与 snapshot 同停在 sequence `619`，状态哈希均为 `a2dfc64679475847568215c2276c3124bc2c5c08861fa9fd37201ddd52b6641b`；重启后余额、2 条历史委托、1 条成交、六档盘口与真实 K 线恢复。
+- 同一真实本地流中，BTC 与 USDT 的 `trading_ledger_entry.amount` 分资产求和都为 `0`。这是虚拟交易业务库的验收证据，不是生产资金证明。
+- 交易域的 canonical 说明、调用链、不变量、故障矩阵和闭卷题见 [`docs/trading-system.md`](docs/trading-system.md)；实现入口见 [`trading/README.md`](trading/README.md)。
+- 边界仍然固定：不接充值、提现、私钥、真实交易所下单或实盘资金；不自动推送、合并主分支或部署。杠杆、永续、期权和策略实验室属于后续目标。
 
 ## 设计边界
 
@@ -54,11 +66,11 @@ DEX 同样拒绝按 symbol 自动收录 token。AMM listed asset 可以来自 re
 
 ## 证据边界
 
-- `implemented`：迁移到 `2026082000022.sql`、七源独立 50 selection、All canonical union、四家 WS-first/REST-reconcile/5 秒写入、四家版本化 K 线 selection、原生 1m 与确定性大周期、V2+V3 mixed AMM、权威 DEX snapshot、公共只读本地回退、preview/正式隔离、蓝白 UI、HTTP/gRPC 和 iTerm2 七标签启动均已落地。
-- `build-verified`：2026-07-26 运行 `go build ./...`、`go vet ./...`、`go test ./...`、Vitest 6/6、Vue production build、Playwright 11/11、`make verify-local`、shell syntax 与 `git diff --check` 均通过。opt-in DEX snapshot 真实 PG 事务测试单独通过；其余假设空库的 integration fixtures 未拿共享业务库冒充隔离 harness。
-- `integration-verified`：七个本地角色正在运行。2026-07-25 23:19 CST 浏览器 All 显示 70/109 fresh、四家 CEX contributor，BTC 为 3 contributors 且 24h 为正常正值；真实 PG 中 Binance BTC open 约 64k，不再是时间戳。四家 K 线各 reconcile 50 个 market。真实公共 RPC、V2/V3 合约和 mixed protocol path 已交换数据；动态数量不是永久覆盖承诺。
-- `environment-pending`：Uniswap/Pancake route 同 route/名义金额尚未连续观察满 24h；正式 CEX/DEX 24/48/72 小时 rollout、私有 DEX 端点、四家 K 线长期缺口率、DW 长时安全门和最终七天仍未完成。任何状态不会自动晋级。
-- `production-recommendation`：综合资产 K 线、公开 API 鉴权/配额/SLA 和交易域都是后续独立切片。
+- `implemented`：迁移到 `2026082100023.sql`、七源独立 50 selection、All canonical union、四家 WS-first/REST-reconcile/5 秒写入、四家版本化 K 线 selection、原生 1m 与确定性大周期、V2+V3 mixed AMM、权威 DEX snapshot、公共只读本地回退、preview/正式隔离、蓝白 UI、独立交易进程、PostgreSQL 事件流、鉴权网关和虚拟交易终端均已落地。
+- `build-verified`：2026-07-26 运行 `go vet ./...`、`go test ./...`、`go test -race ./trading/...`、10 秒 fuzz、撮合 benchmark、Vitest 8/8、Vue production build、Playwright 16/16、npm audit、`make verify-local`、隔离 PostgreSQL 集成脚本、shell syntax 与 `git diff --check` 均通过。
+- `integration-verified`：真实本地 PostgreSQL 已按 canonical migration 初始化；七个 provider 各 50、All 为 109 个 canonical asset。Crawler、DEX、API、Trading 与 Frontend 的真实链路完成浏览器交易和重启恢复验收；交易状态哈希与分资产账本平衡证据如上。真实公共 RPC、V2/V3 合约和 mixed protocol path 已交换数据；动态行情数量不是永久覆盖承诺。
+- `environment-pending`：Uniswap/Pancake route 同 route/名义金额尚未连续观察满 24h；正式 CEX/DEX 24/48/72 小时 rollout、私有 DEX 端点、四家 K 线长期缺口率、DW 长时安全门、GitHub OAuth 生产凭据、HTTPS Cookie 与最终七天仍未完成。任何状态不会自动晋级。
+- `production-recommendation`：真实资金、充值提现、公开 API 配额/SLA、衍生品和策略实验室都必须作为后续独立切片。
 
 ## Owner 60 秒解释
 
@@ -92,4 +104,4 @@ make dev
 make dev-status
 ```
 
-浏览器入口是 `http://127.0.0.1:5174/markets`。正式验收时使用 `S78_CEX_PREVIEW=0 S78_DEX_PREVIEW=0 S78_DEX_PUBLIC_FALLBACK=0 make dev`，再按 CLI readiness 证据人工晋级；不要把本地完成版的证据冒充 24/48/72 小时生产级 soak。
+行情入口是 `http://127.0.0.1:5174/markets`，虚拟交易入口是 `http://127.0.0.1:5174/trade/BTC-USDT`。正式验收时使用 `S78_CEX_PREVIEW=0 S78_DEX_PREVIEW=0 S78_DEX_PUBLIC_FALLBACK=0 make dev`，再按 CLI readiness 证据人工晋级；不要把本地完成版的证据冒充 24/48/72 小时生产级 soak。

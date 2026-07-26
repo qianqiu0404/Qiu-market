@@ -12,7 +12,7 @@
 - DEX 明确显示链、V2/V3 protocol path、实际 `$10K/$1K/$100` 指示性报价金额、On-chain only/CEX corroborated、同区块 quote-side impact、spread/TVL；不得称为套利信号。
 - 综合资产 K 线未完成前，7D Chart 显示 `—`；四家 CEX 当前版本化 selection 中已有真实 K 线的具体 venue 可从抽屉进入。
 
-主导航保持 Markets、Insights、System。`/dashboard` 回到 `/markets`，`/analytics` 回到 `/insights`，Assets/Exchanges/Symbols/Catalog Audit 位于 System。
+主导航为 Markets、Trade、Insights、System。`/trade/BTC-USDT` 进入虚拟现货终端；`/dashboard` 回到 `/markets`，`/analytics` 回到 `/insights`，Assets/Exchanges/Symbols/Catalog Audit 位于 System。
 
 ## 页面数据流与契约
 
@@ -22,6 +22,7 @@
 | `/markets` | 七家 selection 并集首页与七源切换 | venue-aware v2 overview + asset dashboard | 30s / 15s |
 | `/markets?venue=...&asset=...` | 同页 venue 抽屉 | v2 asset venues，按需 | 打开时 |
 | `/markets/:marketId` | 现有 venue K 线详情 | v1 market + klines | 随周期 |
+| `/trade/BTC-USDT` | 虚拟现货交易终端 | 可信 BTC 参考 + venue K 线 + trading REST/WebSocket | 5s / WS |
 | `/insights` | 宽度、跨 venue、历史动量 | v1 insights + Doris momentum | 模块独立 |
 | `/system?tab=audit` | provider 目录审计 | v2 catalog audit | 手动/分页 |
 | `/system` | 进程、依赖、provider 状态 | v1 system overview | 15s |
@@ -39,6 +40,17 @@ v2 接口：
 | `get_provider_catalog_audit` | discovered/resolved/enabled/ambiguous/rejected |
 
 请求显式携带 `universe=provider_top50|provider_union`；All 接受七源 selection union，单 provider 读取自己的稳定 selection，不能静默回退。响应携带 `selection_version/selection_rank/freshness_status/freshness_age_seconds/last_attempt_at/last_success_at/last_error_class`。数值仍以十进制字符串跨网络，Unknown 使用 `{value:null, available:false}`，不得把缺值变成 `0`。
+
+### 虚拟交易页契约
+
+`Trade.vue` 同时读取两个边界：
+
+- 现有 market-data API 提供 S78 BTC 综合参考和当前可用 spot venue 的真实 K 线；
+- `/api/v1/trading/**` 提供虚拟订单簿、公共成交、状态、登录、余额、订单、个人成交、下单、撤单和管理虚拟入金。
+
+价格、数量、余额、费用和 sequence 在 TypeScript 中都保持十进制字符串，不先转成 JavaScript `number`。写请求由 `trading.ts` 自动读取 CSRF cookie 并发送 `X-CSRF-Token`，账户身份只来自 HttpOnly session。页面启动先读取 `/auth/capabilities`：只有后端显式开启本地模式才展示 Local login，只有 OAuth 配置完整才展示 GitHub login。
+
+WebSocket 连接前先领取一次性 ticket，并携带最后 cursor 重连。连接状态、撮合恢复状态和重试原因必须可见。可信参考或 K 线缺失时显示 unavailable；不得用静态 BTC、随机蜡烛或过期响应填图。
 
 ## 交互与信息层级
 
@@ -90,8 +102,10 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 1. `frontend/src/router.ts`：资产首页、market 详情、旧地址兼容和 System Catalog。
 2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal 与类型归一。
 3. `frontend/src/views/Markets.vue`：概览条、全局资产表、URL 抽屉和 venue K 线入口。
-4. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
-5. `frontend/src/composables/usePolling.ts`：可见性暂停、恢复刷新和卸载清理。
+4. `frontend/src/api/trading.ts`：十进制字符串 REST、CSRF 和 WebSocket cursor。
+5. `frontend/src/views/Trade.vue`：参考/K 线、订单簿、下单、余额、订单与成交。
+6. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
+7. `frontend/src/composables/usePolling.ts`：可见性暂停、恢复刷新和卸载清理。
 
 ## 术语
 
@@ -120,6 +134,10 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | Catalog ambiguous | 只在 Audit 展示原因，不进入首页 | 审核 alias 后刷新 |
 | Doris 不可达 | Insights 历史模块报错；Markets 不受影响 | Doris 模块独立重试 |
 | API 整体失败 | 对应模块 ErrorState + retry，不显示 mock | 服务恢复后轮询/手动重试 |
+| Trading gRPC 不可用 | Trade 显示服务 unavailable；Markets/Insights 正常 | trading 恢复后刷新/WS 重连 |
+| 可信 BTC 参考或 K 线缺失 | 对应卡片显示 unavailable，不生成假图 | 行情源产生新鲜可信数据 |
+| WebSocket 断开 | 显示重连状态并保留 cursor | 新 ticket 建连后补发 |
+| session/CSRF 失效 | 清除私有视图并要求重新登录 | 重新建立合法会话 |
 | provider 为 shadow/paused | 目录可见，正式 venue snapshot 为 unavailable | CLI 串行切入 canary/enabled |
 | venue 参数未知 | HTTP 400 / gRPC InvalidArgument，不静默回退 All | 调用方改用八个受支持值之一 |
 
@@ -136,11 +154,11 @@ npm run build
 npm run test:e2e
 ```
 
-Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not covered`、资产抽屉、Unknown 不变 0、显式 24h 原因、旧路由重定向，以及 1440/1280/1180 蓝白令牌和页面级无横向溢出。
+Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not covered`、资产抽屉、Unknown 不变 0、显式 24h 原因、旧路由重定向，以及交易页的无假 K 线、登录、虚拟入金、挂单、撤单、市价成交、费用证据和 1440/1180/768 页面级无横向溢出。2026-07-26 全量为 16 个场景。
 
 ## Owner 60 秒解释
 
-> 首页一行永远代表 canonical asset。七家各有稳定的 50 资产 selection，All 展示七张表的去重并集，所以总行数可能大于 50但不会重复 BTC。四家 CEX 用同一套表格，抽屉里的具体 market 才进入 venue K 线。AMM 的 50 是链上身份确认且有有效 V2/V3 pool 的 listed assets，只有通过最多两跳分级询价的子集显示真实报价和 protocol path。DEX 会扩展 All 成员，但不会贡献综合现货价。蓝白 UI 保持不透明内容卡、克制导航 blur 和独立红绿涨跌语义。
+> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Trade 是独立的虚拟 BTC/USDT 纵切片：共享真实 BTC 参考和 venue K 线，但订单、余额和成交来自交易服务；所有精确数字保持字符串，登录能力由后端声明，WebSocket 用一次性 ticket 和 cursor 恢复。任一真实数据缺失都显示 unavailable，不使用 mock。
 
 ## 闭卷自检
 
@@ -158,3 +176,7 @@ Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not cov
 12. 为什么 Stale 价格能展示但不能参与 Gainers/Losers？
 13. 为什么 DEX 的 `selected_count` 固定为 50，而 `priced_asset_count` 可以明显更少？
 14. 蓝白界面为什么只允许导航层使用 blur，而表格和图表保持白色实底？
+15. 为什么 Trade 的金额和 sequence 不能先转换成 JavaScript `number`？
+16. 为什么本地登录按钮必须由 `/auth/capabilities` 决定是否显示？
+17. 为什么 trading WebSocket 重连必须携带 cursor？
+18. 为什么行情参考不可用时不能影响用户撤单和撮合恢复？

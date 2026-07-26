@@ -11,11 +11,11 @@
 
 ## 系统边界
 
-S78 负责市场目录、行情快照、综合参考价、K 线和只读洞察，不拥有订单、订单簿、成交撮合、账户、账本或持仓。未来交易域可以消费版本化参考价或行情事件，但交易状态只能由交易域写。
+S78 的行情 bounded context 负责市场目录、行情快照、综合参考价、K 线和只读洞察，不拥有订单、订单簿、成交撮合、账户或账本。仓库现已新增独立 `trading` bounded context：它可以只读消费新鲜综合参考价和 K 线，但交易状态只能由 `market-services trading` 写；共享 HTTP API 只是 loopback gRPC gateway。详细实现见 [trading-system.md](trading-system.md)。
 
 ```text
 行情域：asset / provider market / snapshot / composite index / kline
-交易域：order / order book / match / account / ledger / position
+交易域：order / order book / match / account / ledger（当前只做虚拟现货，不做 position）
 ```
 
 这就是 bounded context：不是看代码是否放在同一仓库，而是看哪组业务术语对哪份状态拥有最终解释权。
@@ -185,7 +185,7 @@ K 线与 DEX 的后续入口是：
 - `build-verified`：以本次交付末尾记录的完整 Go、Vitest、Vue、Playwright 和 `git diff --check` 为准。
 - `integration-verified`：2026-07-25 本地七角色与真实 PostgreSQL/Redis/HTTP/gRPC/四家 CEX/Hyperliquid/公共只读 EVM RPC 已交换数据。All 页面现场显示 109 个 canonical 并集成员、四家 CEX contributor，四家 K 线各 reconcile 50 个 market；浏览器与数据库确认 Binance `o` 开盘价未再被 `O` 时间戳覆盖。AMM 现场出现 V2/V3 直连和 mixed route。动态覆盖不是永久承诺。
 - `environment-pending`：AMM 同 route 24h 观察、私有 DEX endpoints 正式路径、各 24h/48h/72h rollout 与最终七天。
-- `production-recommendation`：公开 API 鉴权、配额、SLA 与综合资产 K 线仍是后续切片。
+- `production-recommendation`：公开行情 API 鉴权、配额、SLA 与综合资产 K 线仍是后续切片；虚拟交易已有独立单用户鉴权，但不等于生产或真实资金能力。
 
 ## Owner 60 秒解释
 

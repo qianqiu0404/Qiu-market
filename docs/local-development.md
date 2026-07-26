@@ -1,6 +1,6 @@
 # S78 本地启动与停止手册
 
-这份文档是 S78 Market Services 的本地运行 canonical runbook。日常开发优先使用一条命令启动；启动器会自动创建七个服务终端，不要求你逐个启动。
+这份文档是 S78 Market Services 的本地运行 canonical runbook。日常开发优先使用一条命令启动；启动器会自动创建八个服务终端，不要求你逐个启动。
 
 ## 功能与最短答案
 
@@ -16,18 +16,19 @@ cd /Users/xiuqiu/WorkSpace/s78-market-services
 make dev-status
 ```
 
-- 如果七个角色都是 `running`，不要重复启动，直接打开 <http://127.0.0.1:5174/markets>。
+- 如果八个角色都是 `running`，不要重复启动，直接打开 <http://127.0.0.1:5174/markets> 或 <http://127.0.0.1:5174/trade/BTC-USDT>。
 - 如果全部是 `stopped` 或 `stale-pid`，执行：
 
 ```bash
 make dev
 ```
 
-`make dev` 会自动启动七个终端角色。本机安装 iTerm2 时，默认使用一个 iTerm2 窗口七个标签；没有 iTerm2 时才降级到 Terminal.app 标签或独立窗口：
+`make dev` 会自动启动八个终端角色。本机安装 iTerm2 时，默认使用一个 iTerm2 窗口八个标签；没有 iTerm2 时才降级到 Terminal.app 标签或独立窗口：
 
 | 标签 | 角色 | 做什么 |
 |---|---|---|
-| API | `api` | HTTP API，前端通过 9092 读取行情 |
+| API | `api` | HTTP API，前端通过 9092 读取行情并访问交易 gateway |
+| Trading | `trading` | BTC/USDT 虚拟撮合、账本与恢复，loopback gRPC 9094 |
 | RPC | `rpc` | gRPC 行情服务，监听 9091 |
 | Crawler | `crawler` | Top 200 候选池、四家独立 50 资产选择、WebSocket/REST Spot、综合价、法币与四家版本化 K 线 |
 | Worker | `worker` | 扫描 K 线缺口并生成 repair task |
@@ -145,9 +146,9 @@ S78_DEV_DRY_RUN=1 make dev
 可以明确指定布局：
 
 ```bash
-S78_DEV_TERMINAL_MODE=iterm make dev    # iTerm2 一个窗口七个标签
-S78_DEV_TERMINAL_MODE=tabs make dev     # Terminal.app 一个窗口七个标签，需要辅助功能权限
-S78_DEV_TERMINAL_MODE=windows make dev  # Terminal.app 七个独立窗口，不需要辅助功能权限
+S78_DEV_TERMINAL_MODE=iterm make dev    # iTerm2 一个窗口八个标签
+S78_DEV_TERMINAL_MODE=tabs make dev     # Terminal.app 一个窗口八个标签，需要辅助功能权限
+S78_DEV_TERMINAL_MODE=windows make dev  # Terminal.app 八个独立窗口，不需要辅助功能权限
 ```
 
 ## `make dev` 控制流程
@@ -167,7 +168,7 @@ S78_DEV_TERMINAL_MODE=windows make dev  # Terminal.app 七个独立窗口，不�
         ↓
 启动并初始化 Doris
         ↓
-优先打开一个 iTerm2 窗口和七个标签
+优先打开一个 iTerm2 窗口和八个标签
         ↓
 浏览器访问 127.0.0.1:5174/markets
 ```
@@ -175,7 +176,7 @@ S78_DEV_TERMINAL_MODE=windows make dev  # Terminal.app 七个独立窗口，不�
 几个重要边界：
 
 - 启动器只连接 `.env` 指向的 PostgreSQL/Redis，不会擅自切到 Compose 空库。
-- 发现 9091、9092 或 5174 被非托管进程占用时会拒绝启动并列出 PID，不会自动杀进程。
+- 发现 9091、9092、9094 或 5174 被非托管进程占用时会拒绝启动并列出 PID，不会自动杀进程。
 - 待执行迁移存在时，备份写到用户应用数据目录，不放进 Git 仓库。
 - Doris 未就绪时会停止启动流程，不会假装历史分析可用。
 - DEX endpoint 未配置或不可用时，只把对应 DEX 标为 Unavailable；Hyperliquid、四家 CEX 与首页其他模块继续运行。
@@ -183,7 +184,7 @@ S78_DEV_TERMINAL_MODE=windows make dev  # Terminal.app 七个独立窗口，不�
 
 ## 日常管理命令
 
-查看七个角色：
+查看八个角色：
 
 ```bash
 make dev-status
@@ -233,7 +234,7 @@ S78_SKIP_DORIS=1 make dev
 
 这时不会打开 DW 标签。Markets 和实时 Insights 仍可用；Historical Momentum 会明确显示不可用，不会返回 mock 数据。
 
-## 手动七终端兜底
+## 手动八终端兜底
 
 只有 Terminal 标签自动化权限暂时无法开启时，才使用这一节。
 
@@ -254,11 +255,16 @@ docker exec -i s78-market-doris mysql -h127.0.0.1 -P9030 -uroot < script/doris-i
 
 迁移器使用 `s78_schema_migrations` 保存文件名、SHA-256 和首次应用时间。已经登记的迁移不会在服务重启或再次执行 `make migrate` 时重放；已应用文件的内容若被修改，迁移会拒绝继续。对于首次引入迁移台账的既有数据库，第一次运行会顺序执行并登记现有 SQL，因此必须先按启动器提示备份；此后才具备稳定的幂等行为。这样可以避免初始化迁移意外重置 canary 观察窗口。
 
-然后分别打开七个终端，每个终端都先进入项目目录，再运行一个角色：
+然后分别打开八个终端，每个终端都先进入项目目录，再运行一个角色：
 
 ```bash
 cd /Users/xiuqiu/WorkSpace/s78-market-services
 bash script/dev-role.sh api
+```
+
+```bash
+cd /Users/xiuqiu/WorkSpace/s78-market-services
+bash script/dev-role.sh trading
 ```
 
 ```bash
@@ -302,9 +308,10 @@ curl http://127.0.0.1:9092/healthz
 
 预期：
 
-- `api/rpc/crawler/worker/dex/dw/frontend` 全部为 `running`；
+- `api/trading/rpc/crawler/worker/dex/dw/frontend` 全部为 `running`；
 - healthz 返回成功；
 - <http://127.0.0.1:5174/markets> 可以打开；
+- <http://127.0.0.1:5174/trade/BTC-USDT> 可匿名读取状态/订单簿，登录后可使用虚拟资金下单；
 - System 页面分别显示进程状态和数据源状态；
 - Binance/Coinbase/Bybit/OKX/CoinGecko/Hyperliquid/Uniswap/PancakeSwap 的 provider 状态根据真实请求显示 Healthy、Stale 或 Unavailable；
 - System 同时显示各 provider 的 `shadow/canary/enabled/paused`、rank limit 和观察截止时间；
@@ -318,7 +325,7 @@ curl http://127.0.0.1:9092/healthz
 make verify-local
 ```
 
-验证器先检查 PostgreSQL、Redis 和后端构建。9092 已有健康 API 时直接复用；只有端口尚未提供服务时才启动临时 API，并用自身记录的 PID 在退出时精确回收。随后它验证旧接口 smoke test、四家各自 50 个唯一 canonical asset 以及 All selection 并集的去重约束。这样验收不会误启第二个 API，也不会用宽泛进程匹配影响其他项目。
+验证器先检查 PostgreSQL、Redis、正式交易迁移和后端构建。9092/9094 已有服务时直接复用；缺失时才启动临时 API/Trading，并用自身记录的 PID 在退出时精确回收。随后它验证交易 ready 状态、字符串 sequence、订单簿数组契约、旧接口 smoke test、七家各自 50 个唯一 canonical asset 以及 All selection 并集去重。这样验收不会误启第二个服务，也不会用宽泛进程匹配影响其他项目。
 
 ## 常见故障与恢复
 
@@ -331,9 +338,9 @@ make dev-stop
 S78_DEV_TERMINAL_MODE=iterm make dev
 ```
 
-### 为什么 Terminal.app 没有打开成一个窗口七个标签
+### 为什么 Terminal.app 没有打开成一个窗口八个标签
 
-Terminal.app 的 AppleScript 接口可以无权限创建窗口，但创建标签需要 System Events 辅助功能权限。没有 iTerm2 时，默认 `make dev` 会自动使用七个 Terminal.app 窗口，不再失败。
+Terminal.app 的 AppleScript 接口可以无权限创建窗口，但创建标签需要 System Events 辅助功能权限。没有 iTerm2 时，默认 `make dev` 会自动使用八个 Terminal.app 窗口，不再失败。
 
 需要强制 Terminal.app 标签模式时，先开启权限，再执行：
 
@@ -372,6 +379,18 @@ curl http://127.0.0.1:9092/healthz
 
 API 停止时前端进入 Offline 是预期行为。crawler 存活但上游不可用时，System 应显示 `Running + Source Stale/Unavailable`，不能用进程心跳冒充行情健康。
 
+### Trade 显示 trading unavailable
+
+依次检查：
+
+```bash
+make dev-status
+lsof -nP -iTCP:9094 -sTCP:LISTEN
+curl http://127.0.0.1:9092/api/v1/trading/markets/BTC-USDT/status
+```
+
+`trading` 必须先通过正式 migration 恢复事件流并监听 9094。API 会保持行情接口健康，但把交易路由局部降级为 503；不要因为交易不可用而重建行情库，也不要绕过状态 hash 校验。
+
 ### DW 或 Historical Momentum 不可用
 
 先看：
@@ -387,7 +406,7 @@ Doris 故障只应影响 DW 和历史动量，不应拖垮实时 Markets。恢�
 
 | 术语 | 准确含义 | 大白话 | 当前项目位置 |
 |---|---|---|---|
-| role | 一个以前台方式运行、可独立停止的服务职责 | 七个标签中的一个工位 | `script/dev-role.sh` |
+| role | 一个以前台方式运行、可独立停止的服务职责 | 八个标签中的一个工位 | `script/dev-role.sh` |
 | managed PID | 启动器精确记录且只由 `dev-stop` 管理的进程号 | 有登记的本项目进程 | `/tmp/s78-market-services-$UID` |
 | source status | 上游目录、ticker、route 等独立成功/失败事实 | 人活着不代表电话线路通 | System source matrix |
 | rollout window | 一次状态切换后重新累计的尝试、成功和 soak 证据 | 换挡后重新计时验车 | `market_provider_status` |
@@ -403,14 +422,15 @@ Doris 故障只应影响 DW 和历史动量，不应拖垮实时 Markets。恢�
 1. `Makefile`：`dev/dev-status/dev-logs/dev-stop` 的公开命令入口。
 2. `script/dev.sh`：依赖检查、数据库探测、迁移备份、Doris 初始化和 Terminal 标签编排。
 3. `script/dev-role.sh`：单角色 PID、日志、标签名与进程启动。
-4. `cmd/market-services/cli.go`：`api/rpc/crawler/worker/dex/dw` 的 Go 角色接线。
+4. `cmd/market-services/cli.go`：`api/trading/rpc/crawler/worker/dex/dw` 的 Go 角色接线。
 5. `frontend/vite.config.ts`：前端固定 5174，以及 `/api` 到 9092 的代理。
+6. `trading/service/backend.go`：9094 撮合后端恢复、gRPC 和 demo-maker 生命周期。
 
 ## 设计决策
 
-选择“每个角色一个前台终端”，因为开发时需要分别观察和中断 API、采集、修复与数仓。默认用 iTerm2 原生接口把它们收进一个窗口的七个标签；iTerm2 不可用时才使用 Terminal.app。被拒绝的替代方案是把所有角色塞进一个后台命令：它看起来更短，但日志混在一起、无法单独停止，也更容易误杀其他项目。
+选择“每个角色一个前台终端”，因为开发时需要分别观察和中断 API、撮合、采集、修复与数仓。默认用 iTerm2 原生接口把它们收进一个窗口的八个标签；iTerm2 不可用时才使用 Terminal.app。被拒绝的替代方案是把所有角色塞进一个后台命令：它看起来更短，但日志混在一起、无法单独停止，也更容易误杀其他项目。
 
-iTerm2 AppleScript 本身不需要 System Events 辅助功能权限；Terminal.app 标签布局才需要。因此保留 Terminal 独立窗口降级、dry-run 和手动七终端兜底。PID 文件只是本机开发管理状态，不是分布式锁，也不是生产级 supervisor。
+iTerm2 AppleScript 本身不需要 System Events 辅助功能权限；Terminal.app 标签布局才需要。因此保留 Terminal 独立窗口降级、dry-run 和手动八终端兜底。PID 文件只是本机开发管理状态，不是分布式锁，也不是生产级 supervisor。
 
 启动器提交 iTerm2/Terminal 命令后会等待每个 `dev-role.sh` 写入 PID 且进程真实存活，最长 10 秒；因此紧接着执行 `make dev-status` 不会再因为 AppleScript 与 PID 文件的竞态把刚启动的角色误报为 stopped。任何角色未进入 running 都会让启动命令失败并指向 `make dev-logs`，不会静默宣称全部启动成功。
 
@@ -418,12 +438,12 @@ iTerm2 AppleScript 本身不需要 System Events 辅助功能权限；Terminal.a
 
 ## Owner 60 秒解释
 
-> 平时执行 `make dev` 会启动七个标签并为七源打开 Local Preview。四家 CEX 页面各读取自己的 50 资产选择；ticker 以 WebSocket 为主、REST 对账，K 线再把同一 selection version 固定到具体 market，采 1m 并汇总大周期。All 合并七张稳定选择并按 asset_id 去重，所以可能超过 50 行但 BTC 只出现一次。Uniswap/Pancake 展示链上核验的 V2/V3 最多两跳 route quote；不能报价的成员仍显示 `Not covered`。预览不改变正式 rollout。5173 留给 xiuqiu-site，S78 固定 5174。
+> 平时执行 `make dev` 会启动八个标签并为七源打开 Local Preview。Trading 在 9094 独立恢复虚拟 BTC/USDT 撮合和账本，API 只做 gateway；因此交易故障不会拖垮 Markets。四家 CEX 页面各读取自己的 50 资产选择，All 合并七张稳定选择并按 asset_id 去重。Uniswap/Pancake 展示链上核验的 route quote；预览不改变正式 rollout。5173 留给 xiuqiu-site，S78 固定 5174。
 
 ## 闭卷自检
 
-1. 日常启动为什么只需要 `make dev`，七个终端分别对应什么？
-2. 为什么启动器不能自动杀死占用 9091、9092 或 5174 的进程？
+1. 日常启动为什么只需要 `make dev`，八个终端分别对应什么？
+2. 为什么启动器不能自动杀死占用 9091、9092、9094 或 5174 的进程？
 3. `make dev-stop` 如何避免误停 `xiuqiu-site`？
 4. 跳过 Doris 后哪些页面仍能工作，哪个模块会降级？
 5. 为什么进程 Running 不能证明任一 provider 数据源 Healthy？
@@ -437,3 +457,5 @@ iTerm2 AppleScript 本身不需要 System Events 辅助功能权限；Terminal.a
 13. 为什么 DEX selection 固定 50 行仍不代表必须有 50 条当前报价？
 14. 为什么 CEX ticker 使用 WebSocket 主链路仍然保留 REST reconcile？
 15. 为什么 provider K 线 selection 不能直接等同于 provider 资产 selection？
+16. 为什么 Trading 必须独立进程并只在 9094 loopback 暴露 gRPC？
+17. 为什么交易服务失败时 API 仍要让 Markets 保持健康？
