@@ -2,7 +2,7 @@ version: 1
 quote_assets:
   - symbol: USD
     name: US Dollar
-    providers: [coinbase]
+    providers: [coinbase, hyperliquid]
     canonical_kind: fiat
 assets:
   - coingecko_id: bitcoin

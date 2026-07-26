@@ -93,7 +93,7 @@ func (m *Manifest) Validate() error {
 		}
 		for _, provider := range quote.Providers {
 			switch strings.ToLower(strings.TrimSpace(provider)) {
-			case "binance", "coinbase", "bybit", "okx":
+			case "binance", "coinbase", "bybit", "okx", "hyperliquid":
 			default:
 				return fmt.Errorf("unsupported quote provider %q", provider)
 			}

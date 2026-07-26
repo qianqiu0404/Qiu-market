@@ -49,6 +49,19 @@ func TestEmbeddedManifestCanSeedFourIndependentSelections(t *testing.T) {
 	require.Contains(t, aliases["coinbase"], "WLFI")
 }
 
+func TestEmbeddedManifestReviewsHyperliquidUSDQuote(t *testing.T) {
+	manifest, err := LoadEmbedded()
+	require.NoError(t, err)
+
+	for _, quote := range manifest.QuoteAssets {
+		if quote.Symbol == "USD" {
+			require.Contains(t, quote.Providers, "hyperliquid")
+			return
+		}
+	}
+	t.Fatal("reviewed USD quote asset is missing")
+}
+
 func TestManifestRejectsAliasAndContractCollisions(t *testing.T) {
 	manifest := Manifest{Version: 1, Assets: []ManifestAsset{
 		{CoinGeckoID: "one", Aliases: map[string][]string{"coinbase": {"ABC"}}},
