@@ -15,6 +15,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { to: '/markets', label: 'Markets', icon: 'markets' },
+  { to: '/trade/BTC-USDT', label: 'Trade', icon: 'trade' },
   { to: '/insights', label: 'Insights', icon: 'analytics' },
   { to: '/system', label: 'System', icon: 'system' },
 ]

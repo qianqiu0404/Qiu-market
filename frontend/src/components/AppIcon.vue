@@ -4,6 +4,7 @@ import { computed } from 'vue'
 export type IconName =
   | 'dashboard'
   | 'markets'
+  | 'trade'
   | 'klines'
   | 'analytics'
   | 'system'
@@ -24,6 +25,7 @@ export type IconName =
 const PATHS: Record<IconName, string> = {
   dashboard: 'M4 4h7v7H4z M13 4h7v4h-7z M13 10h7v10h-7z M4 13h7v7H4z',
   markets: 'M3 17l6-6 4 4 8-8 M15 7h6v6',
+  trade: 'M4 7h14 M15 4l3 3-3 3 M20 17H6 M9 14l-3 3 3 3',
   klines: 'M7 4v3 M7 17v3 M5 7h4v10H5z M17 2v4 M17 18v4 M15 6h4v12h-4z',
   analytics: 'M2 20h20 M5 20v-5 M10 20V8 M15 20v-8 M20 20v-3',
   system:

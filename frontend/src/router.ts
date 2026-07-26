@@ -22,6 +22,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('./views/Insights.vue'),
     meta: { title: 'Insights' },
   },
+  {
+    path: '/trade/BTC-USDT',
+    name: 'trade-btc-usdt',
+    component: () => import('./views/Trade.vue'),
+    meta: { title: 'Virtual Spot' },
+  },
   { path: '/analytics', redirect: '/insights' },
   {
     path: '/system',
