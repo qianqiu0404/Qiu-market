@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/http/routes"
 	"github.com/the-web3/s78-market-services/services/http/service"
+	tradinggateway "github.com/the-web3/s78-market-services/trading/gateway"
 )
 
 const (
@@ -51,12 +53,14 @@ type ApiConfig struct {
 }
 
 type API struct {
-	router   *chi.Mux
-	apiSvr   *httputil.HTTPServer
-	db       *database.DB
-	redisCli *redis.Client
-	dorisDB  *sql.DB
-	stopped  atomic.Bool
+	router         *chi.Mux
+	apiSvr         *httputil.HTTPServer
+	db             *database.DB
+	redisCli       *redis.Client
+	dorisDB        *sql.DB
+	trading        *tradinggateway.Gateway
+	tradingHandler http.Handler
+	stopped        atomic.Bool
 }
 
 func NewApi(ctx context.Context, cfg *config.Config) (*API, error) {
@@ -73,11 +77,38 @@ func (a *API) initFromConfig(ctx context.Context, cfg *config.Config) error {
 	}
 	a.initRedis(cfg)
 	a.initDoris(cfg)
+	a.initTrading(ctx, cfg)
 	a.initRouter(cfg.RestServer, cfg)
 	if err := a.startServer(cfg.RestServer); err != nil {
 		return fmt.Errorf("failed to start API server: %w", err)
 	}
 	return nil
+}
+
+// initTrading is deliberately fail-open for the market-data API. A missing
+// migration, invalid local-auth boundary, or unavailable trading process
+// degrades only /api/v1/trading/**; Markets and all existing read APIs still
+// start normally.
+func (a *API) initTrading(ctx context.Context, cfg *config.Config) {
+	bindAddress := net.JoinHostPort(cfg.RestServer.Host, strconv.Itoa(cfg.RestServer.Port))
+	gateway, err := tradinggateway.New(ctx, tradinggateway.Config{
+		PostgresURL:    cfg.MasterDB.PostgresURL(),
+		GRPCAddress:    cfg.Trading.GRPCAddress,
+		BindAddress:    bindAddress,
+		AllowedOrigins: cfg.Trading.AllowedOrigins,
+		LocalAuth:      cfg.Trading.LocalAuth,
+		SecureCookies:  cfg.Trading.SecureCookies,
+		GitHubClientID: cfg.Trading.GitHubClientID,
+		GitHubSecret:   cfg.Trading.GitHubSecret,
+		GitHubRedirect: cfg.Trading.GitHubRedirect,
+	})
+	if err != nil {
+		log.Warn("virtual trading gateway unavailable; market-data API remains healthy", "err", err)
+		a.tradingHandler = tradinggateway.UnavailableHandler()
+		return
+	}
+	a.trading = gateway
+	a.tradingHandler = gateway.Handler()
 }
 
 // initRedis 与 runCrawler 的 redis 初始化方式一致，但 API 侧容忍失败：
@@ -149,31 +180,40 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 	apiRouter := chi.NewRouter()
 	h := routes.NewRoutes(apiRouter, svc)
 
-	apiRouter.Use(middleware.Timeout(time.Second * 12))
 	apiRouter.Use(middleware.Recoverer)
-
 	apiRouter.Use(middleware.Heartbeat(HealthPath))
 
-	apiRouter.Post(fmt.Sprintf(SupportAssetPath), h.GetSupportAssets)
-	apiRouter.Post(fmt.Sprintf(MarketDashboardPath), h.GetMarketDashboard)
-	apiRouter.Post(fmt.Sprintf(AssetDashboardPath), h.GetAssetDashboard)
-	apiRouter.Post(fmt.Sprintf(MarketInsightsPath), h.GetMarketInsights)
-	apiRouter.Post(fmt.Sprintf(ExchangePath), h.GetExchanges)
-	apiRouter.Post(fmt.Sprintf(SymbolPath), h.GetSymbols)
-	apiRouter.Post(fmt.Sprintf(KlinePath), h.GetKlines)
-	apiRouter.Post(fmt.Sprintf(MarketSparklinesPath), h.GetMarketSparklines)
-	apiRouter.Post(fmt.Sprintf(SystemOverviewPath), h.GetSystemOverview)
-	apiRouter.Post(fmt.Sprintf(FiatRatePath), h.GetFiatRates)
-	apiRouter.Post(fmt.Sprintf(TopMoversPath), h.GetTopMovers)
-	apiRouter.Post(fmt.Sprintf(KlineAnalyticsPath), h.GetKlineAnalytics)
-	apiRouter.Post(fmt.Sprintf(AssetMomentumPath), h.GetAssetMomentum)
-	apiRouter.Post(fmt.Sprintf(MarketOverviewPath), h.GetMarketOverview)
-	apiRouter.Post(fmt.Sprintf(AssetDashboardV2Path), h.GetAssetDashboardV2)
-	apiRouter.Post(fmt.Sprintf(AssetMarketsPath), h.GetAssetMarkets)
-	apiRouter.Post(fmt.Sprintf(AssetVenuesPath), h.GetAssetVenues)
-	apiRouter.Post(fmt.Sprintf(ProviderCatalogAuditPath), h.GetProviderCatalogAudit)
+	// Unary market-data routes retain their bounded timeout. Trading WebSocket
+	// upgrades are mounted outside this group so a long-lived event stream is
+	// not terminated by the 12-second market-data middleware.
+	apiRouter.Group(func(router chi.Router) {
+		router.Use(middleware.Timeout(time.Second * 12))
+		router.Post(fmt.Sprintf(SupportAssetPath), h.GetSupportAssets)
+		router.Post(fmt.Sprintf(MarketDashboardPath), h.GetMarketDashboard)
+		router.Post(fmt.Sprintf(AssetDashboardPath), h.GetAssetDashboard)
+		router.Post(fmt.Sprintf(MarketInsightsPath), h.GetMarketInsights)
+		router.Post(fmt.Sprintf(ExchangePath), h.GetExchanges)
+		router.Post(fmt.Sprintf(SymbolPath), h.GetSymbols)
+		router.Post(fmt.Sprintf(KlinePath), h.GetKlines)
+		router.Post(fmt.Sprintf(MarketSparklinesPath), h.GetMarketSparklines)
+		router.Post(fmt.Sprintf(SystemOverviewPath), h.GetSystemOverview)
+		router.Post(fmt.Sprintf(FiatRatePath), h.GetFiatRates)
+		router.Post(fmt.Sprintf(TopMoversPath), h.GetTopMovers)
+		router.Post(fmt.Sprintf(KlineAnalyticsPath), h.GetKlineAnalytics)
+		router.Post(fmt.Sprintf(AssetMomentumPath), h.GetAssetMomentum)
+		router.Post(fmt.Sprintf(MarketOverviewPath), h.GetMarketOverview)
+		router.Post(fmt.Sprintf(AssetDashboardV2Path), h.GetAssetDashboardV2)
+		router.Post(fmt.Sprintf(AssetMarketsPath), h.GetAssetMarkets)
+		router.Post(fmt.Sprintf(AssetVenuesPath), h.GetAssetVenues)
+		router.Post(fmt.Sprintf(ProviderCatalogAuditPath), h.GetProviderCatalogAudit)
+	})
+	mountTradingRoutes(apiRouter, a.tradingHandler)
 
 	a.router = apiRouter
+}
+
+func mountTradingRoutes(router chi.Router, handler http.Handler) {
+	router.Handle("/api/v1/trading/*", handler)
 }
 
 func (a *API) initDB(ctx context.Context, cfg *config.Config) error {
@@ -210,6 +250,11 @@ func (a *API) Stop(ctx context.Context) error {
 	if a.dorisDB != nil {
 		if err := a.dorisDB.Close(); err != nil {
 			result = errors.Join(result, fmt.Errorf("failed to close doris: %w", err))
+		}
+	}
+	if a.trading != nil {
+		if err := a.trading.Close(); err != nil {
+			result = errors.Join(result, fmt.Errorf("failed to close trading gateway: %w", err))
 		}
 	}
 	a.stopped.Store(true)

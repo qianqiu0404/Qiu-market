@@ -129,9 +129,9 @@ func (s *Server) CancelOrder(
 	if order.AccountID != domain.AccountID(request.GetAccountId()) {
 		return nil, status.Error(codes.PermissionDenied, "order belongs to another account")
 	}
-	if !order.IsOpen() {
-		return nil, status.Error(codes.FailedPrecondition, "order is not open")
-	}
+	// Let the exchange perform the open-state check after its idempotency
+	// lookup. A retry of a committed cancellation must return the original
+	// result even though the projected order is now closed.
 	result, err := s.engine.Cancel(ctx, domain.CancelOrder{
 		RequestID: request.GetRequestId(),
 		AccountID: domain.AccountID(request.GetAccountId()),
@@ -139,6 +139,9 @@ func (s *Server) CancelOrder(
 	})
 	if err != nil {
 		return nil, mapError(err)
+	}
+	if result.Status == domain.OrderStatusRejected {
+		return nil, status.Error(codes.FailedPrecondition, "order is not open")
 	}
 	response, err := toCommandResult(market, result)
 	if err != nil {

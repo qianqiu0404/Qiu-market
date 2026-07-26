@@ -24,6 +24,9 @@ seed:
 api: market-services
 	. ./.env; ./market-services api
 
+trading: market-services
+	. ./.env; ./market-services trading
+
 rpc: market-services
 	. ./.env; ./market-services rpc
 
@@ -83,6 +86,7 @@ proto:
 	migrate \
 	seed \
 	api \
+	trading \
 	rpc \
 	crawler \
 	dex \

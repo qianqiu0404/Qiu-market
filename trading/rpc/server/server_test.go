@@ -136,6 +136,53 @@ func TestTradingGRPCDecimalContractAndOwnership(t *testing.T) {
 	}
 }
 
+func TestCancelOrderIdempotencyPrecedesClosedStateCheck(t *testing.T) {
+	client, runner := newTestClient(t, nil)
+	ctx := context.Background()
+
+	mustFund(t, ctx, client, "cancel-idem-fund", "alice", "USDT", "100")
+	order, err := client.SubmitOrder(ctx, &tradingv1.SubmitOrderRequest{
+		MarketId:      "BTC-USDT",
+		AccountId:     "alice",
+		ClientOrderId: "cancel-idem-order",
+		Side:          tradingv1.Side_SIDE_BUY,
+		Type:          tradingv1.OrderType_ORDER_TYPE_LIMIT,
+		TimeInForce:   tradingv1.TimeInForce_TIME_IN_FORCE_GTC,
+		Price:         "60000",
+		Quantity:      "0.001",
+		PostOnly:      true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &tradingv1.CancelOrderRequest{
+		MarketId:  "BTC-USDT",
+		AccountId: "alice",
+		RequestId: "cancel-idem-request",
+		OrderId:   order.OrderId,
+	}
+	first, err := client.CancelOrder(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := client.CancelOrder(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Sequence != retry.Sequence || first.Status != retry.Status ||
+		runner.Status().Sequence != 3 {
+		t.Fatalf("cancel retry first=%+v retry=%+v status=%+v", first, retry, runner.Status())
+	}
+
+	request.RequestId = "different-cancel-request"
+	if _, err := client.CancelOrder(ctx, request); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("fresh cancel of closed order error = %v", err)
+	}
+	if runner.Status().Sequence != 4 {
+		t.Fatalf("fresh rejected cancel sequence = %+v", runner.Status())
+	}
+}
+
 func TestTradingGRPCSubscribeEventsFromCursor(t *testing.T) {
 	source := &oneEventSource{event: tradingserver.StoredEvent{
 		MarketID: "BTC-USDT",

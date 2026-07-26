@@ -15,6 +15,7 @@ fi
 : "${MARKET_MASTER_DB_NAME:=s78_market}"
 : "${MARKET_HTTP_HOST:=127.0.0.1}"
 : "${MARKET_HTTP_PORT:=9092}"
+: "${MARKET_TRADING_GRPC_ADDR:=127.0.0.1:9094}"
 : "${MARKET_REDIS_ADDRESS:=127.0.0.1:6379}"
 
 echo "Checking PostgreSQL..."
@@ -39,16 +40,75 @@ go build -o market-services ./cmd/market-services
 base_url="http://${MARKET_HTTP_HOST}:${MARKET_HTTP_PORT}"
 api_log=""
 api_pid=""
+trading_log=""
+trading_pid=""
 cleanup() {
   if [ -n "$api_pid" ]; then
     kill "$api_pid" 2>/dev/null || true
     wait "$api_pid" 2>/dev/null || true
   fi
+  if [ -n "$trading_pid" ]; then
+    kill "$trading_pid" 2>/dev/null || true
+    wait "$trading_pid" 2>/dev/null || true
+  fi
   if [ -n "$api_log" ]; then
     rm -f "$api_log"
   fi
+  if [ -n "$trading_log" ]; then
+    rm -f "$trading_log"
+  fi
 }
 trap cleanup EXIT
+
+echo "Checking canonical trading migration..."
+export PGPASSWORD="${MARKET_MASTER_DB_PASSWORD:-}"
+trading_schema_ready="$(
+  psql \
+    -h "$MARKET_MASTER_DB_HOST" \
+    -p "$MARKET_MASTER_DB_PORT" \
+    -U "$MARKET_MASTER_DB_USER" \
+    -d "$MARKET_MASTER_DB_NAME" \
+    -Atqc "SELECT to_regclass('public.trading_market') IS NOT NULL
+      AND to_regclass('public.trading_event_batch') IS NOT NULL
+      AND to_regclass('public.trading_user_session') IS NOT NULL"
+)"
+if [ "$trading_schema_ready" != "t" ]; then
+  echo "Trading schema is missing; run the backed-up migration workflow before verification." >&2
+  exit 1
+fi
+
+trading_port="${MARKET_TRADING_GRPC_ADDR##*:}"
+case "$trading_port" in
+  ''|*[!0-9]*)
+    echo "MARKET_TRADING_GRPC_ADDR must end in a numeric port." >&2
+    exit 1
+    ;;
+esac
+if lsof -nP -iTCP:"$trading_port" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Using the trading service already listening at $MARKET_TRADING_GRPC_ADDR..."
+else
+  echo "Starting a temporary virtual trading service with demo-maker disabled..."
+  trading_log="$(mktemp /tmp/s78-market-trading.XXXXXX)"
+  MARKET_TRADING_DEMO_MAKER_ENABLED=false \
+    ./market-services trading > "$trading_log" 2>&1 &
+  trading_pid=$!
+  for _ in $(seq 1 30); do
+    if lsof -nP -iTCP:"$trading_port" -sTCP:LISTEN >/dev/null 2>&1; then
+      break
+    fi
+    if ! kill -0 "$trading_pid" 2>/dev/null; then
+      echo "Temporary trading service exited during startup:" >&2
+      tail -n 30 "$trading_log" >&2
+      exit 1
+    fi
+    sleep 0.25
+  done
+  if ! lsof -nP -iTCP:"$trading_port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Temporary trading service did not listen on $MARKET_TRADING_GRPC_ADDR:" >&2
+    tail -n 30 "$trading_log" >&2
+    exit 1
+  fi
+fi
 
 if curl -fsS "$base_url/healthz" >/dev/null 2>&1; then
   echo "Using the API already listening at $base_url..."
@@ -67,6 +127,44 @@ fi
 
 echo "Checking API health..."
 curl -fsS "$base_url/healthz" >/dev/null
+
+echo "Checking isolated trading gateway..."
+trading_status=""
+for _ in $(seq 1 20); do
+  if trading_status="$(
+    curl -fsS "$base_url/api/v1/trading/markets/BTC-USDT/status" 2>/dev/null
+  )"; then
+    break
+  fi
+  trading_status=""
+  sleep 0.25
+done
+if [ -z "$trading_status" ]; then
+  echo "Trading gateway did not become ready; restart a stale API if one was reused." >&2
+  if [ -n "$api_log" ]; then
+    tail -n 30 "$api_log" >&2
+  fi
+  exit 1
+fi
+printf '%s' "$trading_status" | node -e '
+  const fs = require("node:fs")
+  const payload = JSON.parse(fs.readFileSync(0, "utf8"))
+  if (payload.market_id !== "BTC-USDT" || payload.state !== "ready") {
+    throw new Error(`unexpected trading status: ${JSON.stringify(payload)}`)
+  }
+  if (!/^[0-9]+$/.test(String(payload.sequence))) {
+    throw new Error("trading sequence must be an exact decimal string")
+  }
+  console.log(`trading: ${payload.state}, sequence ${payload.sequence}`)
+'
+curl -fsS "$base_url/api/v1/trading/markets/BTC-USDT/orderbook?levels=5" \
+  | node -e '
+    const fs = require("node:fs")
+    const payload = JSON.parse(fs.readFileSync(0, "utf8"))
+    if (!Array.isArray(payload.bids) || !Array.isArray(payload.asks)) {
+      throw new Error("trading order book must expose explicit bid/ask arrays")
+    }
+  '
 
 echo "Checking dashboard API..."
 dashboard_json="$(

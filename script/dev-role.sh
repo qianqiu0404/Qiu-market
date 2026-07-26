@@ -7,7 +7,7 @@ runtime_dir="/tmp/s78-market-services-${UID}"
 mkdir -p "$runtime_dir"
 
 case "$role" in
-  api|rpc|crawler|worker|dex|dw|frontend) ;;
+  api|trading|rpc|crawler|worker|dex|dw|frontend) ;;
   *)
     echo "Unknown development role: $role" >&2
     exit 2

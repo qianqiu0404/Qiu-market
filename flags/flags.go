@@ -166,6 +166,51 @@ var (
 		Value:   false,
 		EnvVars: prefixEnvVars("DEX_PUBLIC_FALLBACK"),
 	}
+	TradingGRPCAddressFlag = &cli.StringFlag{
+		Name:    "trading-grpc-address",
+		Usage:   "loopback address of the virtual spot TradingService",
+		Value:   "127.0.0.1:9094",
+		EnvVars: prefixEnvVars("TRADING_GRPC_ADDR"),
+	}
+	TradingAllowedOriginsFlag = &cli.StringFlag{
+		Name:    "trading-allowed-origins",
+		Usage:   "comma-separated browser origins allowed by the trading REST/WebSocket gateway",
+		Value:   "http://127.0.0.1:5174",
+		EnvVars: prefixEnvVars("TRADING_ALLOWED_ORIGINS"),
+	}
+	TradingLocalAuthFlag = &cli.BoolFlag{
+		Name:    "trading-local-auth",
+		Usage:   "explicitly allow the loopback-only local trading login",
+		Value:   false,
+		EnvVars: prefixEnvVars("TRADING_LOCAL_AUTH"),
+	}
+	TradingSecureCookiesFlag = &cli.BoolFlag{
+		Name:    "trading-secure-cookies",
+		Usage:   "mark trading session and CSRF cookies Secure (required behind HTTPS)",
+		Value:   false,
+		EnvVars: prefixEnvVars("TRADING_SECURE_COOKIES"),
+	}
+	TradingGitHubClientIDFlag = &cli.StringFlag{
+		Name:    "trading-github-client-id",
+		Usage:   "GitHub OAuth client ID for the single-user virtual trading terminal",
+		EnvVars: prefixEnvVars("TRADING_GITHUB_CLIENT_ID"),
+	}
+	TradingGitHubSecretFlag = &cli.StringFlag{
+		Name:    "trading-github-client-secret",
+		Usage:   "GitHub OAuth client secret for the single-user virtual trading terminal",
+		EnvVars: prefixEnvVars("TRADING_GITHUB_CLIENT_SECRET"),
+	}
+	TradingGitHubRedirectFlag = &cli.StringFlag{
+		Name:    "trading-github-redirect-url",
+		Usage:   "GitHub OAuth callback URL for the trading gateway",
+		EnvVars: prefixEnvVars("TRADING_GITHUB_REDIRECT_URL"),
+	}
+	TradingDemoMakerFlag = &cli.BoolFlag{
+		Name:    "trading-demo-maker",
+		Usage:   "run the virtual system:demo-maker against a fresh S78 BTC composite reference",
+		Value:   true,
+		EnvVars: prefixEnvVars("TRADING_DEMO_MAKER_ENABLED"),
+	}
 
 	// Doris OLAP 数仓（全部可选）：默认值与 docker-compose 的 doris 服务匹配。
 	// 显式将 MARKET_DORIS_HOST 置空可禁用数仓；Doris 未运行时 dw 模式与
@@ -237,6 +282,14 @@ var optionalFlags = []cli.Flag{
 	UniswapV3SubgraphURLFlag,
 	PancakeV3SubgraphURLFlag,
 	DexPublicFallbackFlag,
+	TradingGRPCAddressFlag,
+	TradingAllowedOriginsFlag,
+	TradingLocalAuthFlag,
+	TradingSecureCookiesFlag,
+	TradingGitHubClientIDFlag,
+	TradingGitHubSecretFlag,
+	TradingGitHubRedirectFlag,
+	TradingDemoMakerFlag,
 	DorisHostFlag,
 	DorisHttpPortFlag,
 	DorisQueryPortFlag,

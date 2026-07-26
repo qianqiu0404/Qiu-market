@@ -58,6 +58,17 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 	client := &http.Client{Jar: jar}
 
 	response := do(t, client, http.MethodGet,
+		httpServer.URL+"/api/v1/trading/auth/capabilities", nil, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("auth capabilities status = %d: %s", response.StatusCode, readBody(t, response))
+	}
+	var capabilities map[string]bool
+	decodeResponse(t, response, &capabilities)
+	if !capabilities["local_login_enabled"] || capabilities["github_oauth_enabled"] {
+		t.Fatalf("auth capabilities = %+v", capabilities)
+	}
+
+	response = do(t, client, http.MethodGet,
 		httpServer.URL+"/api/v1/trading/markets/BTC-USDT/orderbook", nil, "", "")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("public order book status = %d: %s", response.StatusCode, readBody(t, response))

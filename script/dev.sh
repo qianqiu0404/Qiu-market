@@ -7,10 +7,10 @@ action="${1:-up}"
 requested_role="${2:-}"
 mkdir -p "$runtime_dir"
 
-all_roles=(api rpc crawler worker dex dw frontend)
+all_roles=(api trading rpc crawler worker dex dw frontend)
 roles=("${all_roles[@]}")
 if [ "${S78_SKIP_DORIS:-0}" = "1" ]; then
-  roles=(api rpc crawler worker dex frontend)
+  roles=(api trading rpc crawler worker dex frontend)
 fi
 restart_only=0
 
@@ -108,7 +108,7 @@ case "$action" in
       [ "$role" = "$requested_role" ] && valid_role=1
     done
     if [ "$valid_role" -ne 1 ]; then
-      echo "Usage: $0 restart {api|rpc|crawler|worker|dex|dw|frontend}" >&2
+      echo "Usage: $0 restart {api|trading|rpc|crawler|worker|dex|dw|frontend}" >&2
       exit 2
     fi
     roles=("$requested_role")
@@ -221,12 +221,14 @@ source .env
 : "${MARKET_MASTER_DB_NAME:=s78_market}"
 : "${MARKET_HTTP_PORT:=9092}"
 : "${MARKET_RPC_PORT:=9091}"
+: "${MARKET_TRADING_GRPC_ADDR:=127.0.0.1:9094}"
 : "${MARKET_REDIS_ADDRESS:=127.0.0.1:6379}"
 
 ports=()
 for role in "${roles[@]}"; do
   case "$role" in
     api) ports+=("$MARKET_HTTP_PORT") ;;
+    trading) ports+=("${MARKET_TRADING_GRPC_ADDR##*:}") ;;
     rpc) ports+=("$MARKET_RPC_PORT") ;;
     frontend) ports+=(5174) ;;
   esac
@@ -382,6 +384,10 @@ migrations_ready="$(
         SELECT 1 FROM information_schema.columns
         WHERE table_name='dex_quote_observation'
           AND column_name='quote_notional_usd'
+      )
+      AND EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name='trading_market'
       )"
 )"
 if [ "$migrations_ready" != "t" ]; then

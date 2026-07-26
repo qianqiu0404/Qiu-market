@@ -1,6 +1,11 @@
 package config
 
 import (
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
+
 	"github.com/urfave/cli/v2"
 
 	"github.com/the-web3/s78-market-services/flags"
@@ -24,6 +29,22 @@ type Config struct {
 	UniswapV3SubgraphURL  string
 	PancakeV3SubgraphURL  string
 	DexPublicFallback     bool
+	Trading               TradingConfig
+}
+
+// TradingConfig keeps the virtual spot bounded context on a separate
+// loopback-only gRPC endpoint. The existing HTTP API uses these values only as
+// a transport/authentication gateway; matching state remains owned by the
+// trading process.
+type TradingConfig struct {
+	GRPCAddress      string
+	AllowedOrigins   []string
+	LocalAuth        bool
+	SecureCookies    bool
+	GitHubClientID   string
+	GitHubSecret     string
+	GitHubRedirect   string
+	DemoMakerEnabled bool
 }
 
 // DorisConfig Apache Doris 连接配置。Host 为空表示未配置数仓：
@@ -67,6 +88,32 @@ type DBConfig struct {
 	Name     string
 	User     string
 	Password string
+}
+
+// PostgresURL returns a pgx-compatible URL without exposing credentials in
+// logs. URL escaping also keeps passwords containing spaces or punctuation
+// from corrupting the connection string.
+func (d DBConfig) PostgresURL() string {
+	host := strings.TrimSpace(d.Host)
+	if d.Port > 0 {
+		host = net.JoinHostPort(host, strconv.Itoa(d.Port))
+	}
+	connection := &url.URL{
+		Scheme: "postgres",
+		Host:   host,
+		Path:   "/" + strings.TrimPrefix(d.Name, "/"),
+	}
+	if d.User != "" {
+		if d.Password == "" {
+			connection.User = url.User(d.User)
+		} else {
+			connection.User = url.UserPassword(d.User, d.Password)
+		}
+	}
+	query := connection.Query()
+	query.Set("sslmode", "disable")
+	connection.RawQuery = query.Encode()
+	return connection.String()
 }
 
 type RedisConfig struct {
@@ -115,6 +162,16 @@ func NewConfig(ctx *cli.Context) Config {
 		UniswapV3SubgraphURL: ctx.String(flags.UniswapV3SubgraphURLFlag.Name),
 		PancakeV3SubgraphURL: ctx.String(flags.PancakeV3SubgraphURLFlag.Name),
 		DexPublicFallback:    ctx.Bool(flags.DexPublicFallbackFlag.Name),
+		Trading: TradingConfig{
+			GRPCAddress:      ctx.String(flags.TradingGRPCAddressFlag.Name),
+			AllowedOrigins:   splitCSV(ctx.String(flags.TradingAllowedOriginsFlag.Name)),
+			LocalAuth:        ctx.Bool(flags.TradingLocalAuthFlag.Name),
+			SecureCookies:    ctx.Bool(flags.TradingSecureCookiesFlag.Name),
+			GitHubClientID:   ctx.String(flags.TradingGitHubClientIDFlag.Name),
+			GitHubSecret:     ctx.String(flags.TradingGitHubSecretFlag.Name),
+			GitHubRedirect:   ctx.String(flags.TradingGitHubRedirectFlag.Name),
+			DemoMakerEnabled: ctx.Bool(flags.TradingDemoMakerFlag.Name),
+		},
 		Doris: DorisConfig{
 			Host:      ctx.String(flags.DorisHostFlag.Name),
 			HttpPort:  ctx.Int(flags.DorisHttpPortFlag.Name),
@@ -124,4 +181,15 @@ func NewConfig(ctx *cli.Context) Config {
 			Database:  ctx.String(flags.DorisDbFlag.Name),
 		},
 	}
+}
+
+func splitCSV(value string) []string {
+	values := make([]string, 0)
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
 }

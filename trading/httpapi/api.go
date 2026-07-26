@@ -144,6 +144,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /api/v1/trading/auth/capabilities", s.authCapabilities)
 	s.mux.HandleFunc("GET /api/v1/trading/auth/github/start", s.githubStart)
 	s.mux.HandleFunc("GET /api/v1/trading/auth/github/callback", s.githubCallback)
 	s.mux.HandleFunc("POST /api/v1/trading/auth/local", s.localLogin)
@@ -161,6 +162,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/trading/admin/fund", s.fundVirtual)
 	s.mux.HandleFunc("POST /api/v1/trading/ws-ticket", s.issueWebSocketTicket)
 	s.mux.HandleFunc("GET /api/v1/trading/events/ws", s.serveWebSocket)
+}
+
+func (s *Server) authCapabilities(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusOK, map[string]bool{
+		"github_oauth_enabled": s.github != nil,
+		"local_login_enabled":  s.config.LocalMode,
+	})
 }
 
 func (s *Server) githubStart(writer http.ResponseWriter, request *http.Request) {

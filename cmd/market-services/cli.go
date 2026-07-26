@@ -18,6 +18,7 @@ import (
 	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/grpc"
 	rest "github.com/the-web3/s78-market-services/services/http"
+	tradingservice "github.com/the-web3/s78-market-services/trading/service"
 	"github.com/the-web3/s78-market-services/worker"
 )
 
@@ -75,6 +76,16 @@ func runMigrations(ctx *cli.Context) error {
 func runRestApi(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
 	cfg := config.NewConfig(ctx)
 	return rest.NewApi(context.Background(), &cfg)
+}
+
+func runTrading(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
+	log.Info("run isolated virtual BTC/USDT trading service...")
+	cfg := config.NewConfig(ctx)
+	return tradingservice.New(ctx.Context, tradingservice.Config{
+		PostgresURL:      cfg.MasterDB.PostgresURL(),
+		GRPCAddress:      cfg.Trading.GRPCAddress,
+		DemoMakerEnabled: cfg.Trading.DemoMakerEnabled,
+	}, shutdown)
 }
 
 func runCrawler(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
@@ -199,8 +210,14 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 			{
 				Name:        "api",
 				Flags:       flags,
-				Description: "Run rpc services",
+				Description: "Run HTTP market-data API and trading gateway",
 				Action:      cliapp.LifecycleCmd(runRestApi),
+			},
+			{
+				Name:        "trading",
+				Flags:       flags,
+				Description: "Run isolated virtual BTC/USDT matching and ledger service",
+				Action:      cliapp.LifecycleCmd(runTrading),
 			},
 			{
 				Name:        "crawler",

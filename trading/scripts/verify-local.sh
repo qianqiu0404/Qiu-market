@@ -37,7 +37,9 @@ prepare_postgres() {
 	createdb "$verify_db_name"
 	created_verify_db=true
 	S78_TEST_POSTGRES_DSN="postgresql:///$verify_db_name"
+	S78_TEST_POSTGRES_ISOLATED=1
 	export S78_TEST_POSTGRES_DSN
+	export S78_TEST_POSTGRES_ISOLATED
 }
 
 verify_postgres() {
@@ -46,8 +48,9 @@ verify_postgres() {
 	go test -count=1 -p 1 -v \
 		./trading/auth \
 		./trading/store/postgres \
-		./trading/e2e
-	go test -race -count=1 -p 1 ./trading/e2e
+		./trading/e2e \
+		./trading/integration
+	go test -race -count=1 -p 1 ./trading/e2e ./trading/integration
 }
 
 verify_npm_audit() {

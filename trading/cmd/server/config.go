@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/the-web3/s78-market-services/trading/netutil"
 )
 
 type config struct {
@@ -32,7 +33,7 @@ func loadConfig() (config, error) {
 	if result.postgresDSN == "" {
 		return config{}, fmt.Errorf("S78_TRADING_POSTGRES_DSN is required")
 	}
-	if !isIPLoopbackAddress(result.grpcAddress) {
+	if !netutil.IsIPLoopbackAddress(result.grpcAddress) {
 		return config{}, fmt.Errorf("trading gRPC must bind to an IP loopback address")
 	}
 	var err error
@@ -88,13 +89,4 @@ func optionalBool(name string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s must be true or false", name)
 	}
 	return parsed, nil
-}
-
-func isIPLoopbackAddress(address string) bool {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
