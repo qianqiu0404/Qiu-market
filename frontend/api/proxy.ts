@@ -4,7 +4,7 @@ import {
   PublicReadCache,
   type PublicReadCacheLookup,
   isPublicMarketRead,
-} from './public-read-cache.js'
+} from '../server/public-read-cache.js'
 
 const MAX_BODY_BYTES = 1 << 20
 const TOTAL_UPSTREAM_TIMEOUT_MS = 8_000
