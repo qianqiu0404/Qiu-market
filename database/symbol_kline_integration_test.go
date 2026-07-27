@@ -1,7 +1,9 @@
 package database
 
 import (
+	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,5 +158,98 @@ func TestIntegrationCompletedRepairTaskReopensWhenGapStillExists(t *testing.T) {
 	if reopened.Status != "pending" || reopened.AttemptCount != 0 {
 		t.Fatalf("reopened repair task = status %q attempts %d; want pending/0",
 			reopened.Status, reopened.AttemptCount)
+	}
+}
+
+func TestIntegrationKlineRetentionDeletesOnlyExpiredBoundedIntervals(t *testing.T) {
+	dsn := os.Getenv("S78_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("S78_TEST_DATABASE_DSN is not set")
+	}
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var databaseName string
+	if err := gormDB.Raw("SELECT current_database()").Scan(&databaseName).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(databaseName, "qiu_market_retention_test_") {
+		t.Skip("K-line retention integration test requires a disposable qiu_market_retention_test_* database")
+	}
+
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	fixtures := []struct {
+		guid     string
+		interval string
+		openTime time.Time
+	}{
+		{guid: "retention-old-1m", interval: "1m", openTime: now.Add(-8 * 24 * time.Hour)},
+		{guid: "retention-new-1m", interval: "1m", openTime: now.Add(-6 * 24 * time.Hour)},
+		{guid: "retention-old-15m", interval: "15m", openTime: now.Add(-91 * 24 * time.Hour)},
+		{guid: "retention-old-1h", interval: "1h", openTime: now.Add(-366 * 24 * time.Hour)},
+		{guid: "retention-old-1d", interval: "1d", openTime: now.Add(-10 * 365 * 24 * time.Hour)},
+	}
+	for _, fixture := range fixtures {
+		if err := gormDB.Exec(`
+INSERT INTO symbol_kline(
+	guid, symbol_guid, market_id, "interval", open_time,
+	open_price, high_price, low_price, close_price, volume, market_cap,
+	is_active, created_at, updated_at, ingested_at
+) VALUES (?, 'retention-symbol', ?, ?, ?, 1, 1, 1, 1, 0, 0, TRUE, ?, ?, ?)
+`, fixture.guid, "retention-market-"+fixture.interval, fixture.interval, fixture.openTime,
+			fixture.openTime, fixture.openTime, fixture.openTime).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store := NewKlineRetentionDB(gormDB)
+	result, err := store.Run(
+		context.Background(),
+		now,
+		ExtremeSpaceKlineRetentionPolicies(),
+		2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted["1m"] < 1 || result.Deleted["15m"] < 1 || result.Deleted["1h"] < 1 {
+		t.Fatalf("deleted rows = %+v", result.Deleted)
+	}
+	var remaining []string
+	if err := gormDB.Model(&SymbolKline{}).
+		Where("guid LIKE 'retention-%'").
+		Order("guid").
+		Pluck("guid", &remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"retention-new-1m", "retention-old-1d"}
+	if len(remaining) != len(want) {
+		t.Fatalf("remaining = %v; want %v", remaining, want)
+	}
+	for index := range want {
+		if remaining[index] != want[index] {
+			t.Fatalf("remaining = %v; want %v", remaining, want)
+		}
+	}
+}
+
+func TestIntegrationKlineStorageStatsReadOnly(t *testing.T) {
+	dsn := os.Getenv("S78_TEST_STORAGE_DSN")
+	if dsn == "" {
+		t.Skip("S78_TEST_STORAGE_DSN is not set")
+	}
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stats, err := NewKlineRetentionDB(gormDB).QueryStorageStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.DatabaseBytes <= 0 || stats.TableBytes <= 0 || len(stats.Intervals) != 4 {
+		t.Fatalf("storage stats = %+v", stats)
 	}
 }

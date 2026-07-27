@@ -43,14 +43,27 @@ make mac-production-install
 make mac-production-status
 ```
 
-五个 LaunchAgent 为 `com.qiumarket.trading|api|crawler|worker|dex`。它们使用固定构建
-的私有 binary、失败自动重启和 10 秒退避；日志位于
-`~/Library/Application Support/Qiu Market/logs`。卸载只停止 LaunchAgent，不删除
-私有配置、binary 或日志：
+五个业务角色先以 LaunchAgent 运行；正式的“无人登录也能恢复”形态使用
+LaunchDaemon。Guardian、备份和恢复演练可以先安装为当前用户的安全回退，不需要
+管理员权限：
 
 ```bash
-bash ops/macos/manage-services.sh uninstall
+bash ops/macos/manage-user-resilience.sh install
+bash ops/macos/manage-user-resilience.sh status
 ```
+
+完成验收后，由机器所有者输入一次管理员密码，把五个业务角色、专用 tailscaled、
+guardian、备份与恢复演练整体提升为 `xiuqiu` 用户身份运行的 LaunchDaemon，并开启
+断电自动开机：
+
+```bash
+sudo bash ops/macos/manage-system-daemons.sh install
+sudo bash ops/macos/manage-system-daemons.sh status
+```
+
+脚本不会删除私有配置、备份或日志。日志位于
+`~/Library/Application Support/Qiu Market/logs`，Guardian 每 60 秒检查 API、
+trading、Funnel、PostgreSQL 与磁盘；数据库异常不会触发共享 PostgreSQL 的盲目重启。
 
 ## 3. Tailscale Funnel
 
@@ -80,10 +93,17 @@ VITE_TRADING_WS_ORIGIN=https://<node>.<tailnet>.ts.net
 
 ## 4. Vercel
 
-项目名固定为 `qiu-market`，Root Directory 为 `frontend`，Node 为 24.x。
-Preview 与 Production 使用同一组三个变量。先从本地精确 commit 构建 Preview，
-完成页面、API、WebSocket、鉴权和恢复验收后，再将同一 deployment promote 到
-Production，不重新构建。
+项目名固定为 `qiu-market`，Root Directory 为 `frontend`，Node 为 24.x，Function
+固定运行在 `sfo1`。Preview 与 Production 使用同一组三个后端变量，并设置：
+
+```text
+VITE_TRADING_EVENT_MODE=polling
+```
+
+当前账号环境先使用同源 cursor polling；Vercel WebSocket beta 未完成实测前不宣称
+WebSocket 已验收。先从本地精确 commit 构建 Preview，完成页面、API、鉴权和恢复
+验收后，再将同一 deployment promote 到 Production，不重新构建。BFF 的完整
+upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请求从不自动重试。
 
 ## 5. 最小安全验收
 
@@ -98,13 +118,35 @@ curl -i -X POST https://<node>.<tailnet>.ts.net/api/v2/get_market_overview \
 Cookie 带 Secure，错误 Origin、过期 WebSocket ticket 与伪造 CSRF 均被拒绝。
 交易仍只使用虚拟资金，不接充值、提现、私钥或实盘。
 
-## 6. 24/48/72 小时生产观察
+## 6. 极省空间 K 线治理
 
-生产观察器是只读验收定时器，不是第六个业务服务。它每 5 分钟检查：
+保留策略固定为 `1m=7天`、`15m=90天`、`1h=365天`、`1d=永久`。Worker 启动时及
+之后每 24 小时执行一次；使用同一 PostgreSQL 专用连接持有 advisory lock，每批最多
+删除 10,000 行并设置 5 秒 statement timeout。生产维护命令为：
+
+```bash
+bash ops/macos/backup-production.sh full
+bash ops/macos/restore-drill.sh
+bash ops/macos/optimize-kline-indexes.sh
+bash ops/macos/compact-kline-indexes.sh
+```
+
+索引优化保留主键、business unique、`sync_seq` 和紧凑
+`(interval, open_time)` 索引。只执行普通 `VACUUM (ANALYZE)` 与逐索引
+`REINDEX CONCURRENTLY`，不执行 `VACUUM FULL`。
+
+系统页公开数据库大小、K 线 heap/index 大小、各周期最早/最新时间、磁盘余量和保留
+任务结果。磁盘低于 25GiB 告警；低于 15GiB 时暂停 crawler/worker/DEX，交易服务仍
+保留只读查询，但下单、撤单、虚拟入金与 demo maker fail-closed。
+
+## 7. 24/48/72 小时与 7 天生产观察
+
+生产观察器是只读验收定时器，不是第六个业务服务。它每 60 秒检查：
 
 - Production 页面和 Vercel BFF；
 - Funnel `/healthz` 以及未签名 REST 必须返回 401；
 - 虚拟交易状态必须为 `ready`、队列无错误；
+- 系统存储状态、磁盘至少 25GiB、保留任务无错误；
 - Uniswap/PancakeSwap 的动态 route 数与 reference-only 数；
 - PostgreSQL 中同 provider、asset、route、`quote_notional_usd` 的 24/48/72
   小时历史窗口。
@@ -118,6 +160,7 @@ freshness。任一窗口只有在至少一条同 route、同名义金额曲线�
 ```bash
 bash ops/macos/manage-observer.sh install
 bash ops/macos/manage-observer.sh status
+bash ops/macos/summarize-production-slo.sh
 ```
 
 证据保存在私有运行目录，不进入仓库：
@@ -127,10 +170,16 @@ bash ops/macos/manage-observer.sh status
 ~/Library/Application Support/Qiu Market/observations/production-soak.jsonl
 ```
 
-`latest.json` 是当前状态，JSONL 是追加式审计历史。顶层 `status = observing`
+`latest.json` 是当前状态，JSONL 是追加式审计历史。滚动汇总只有在至少 10,080 个
+一分钟样本、可用率不低于 99.5%、REST 5xx 低于 0.5%、REST p95 低于 5 秒、单次
+中断不超过 5 分钟且磁盘始终不少于 25GiB 时，才输出
+`production-recommendation`。顶层 `status = observing`
 表示当前检查通过但长窗口仍在积累；只有六个 provider/window 组合全部通过才成为
 `passed`，当前检查失败则为 `failed`。停止观察器不会删除历史：
 
 ```bash
 bash ops/macos/manage-observer.sh uninstall
 ```
+
+同盘备份只能覆盖短期误操作和逻辑恢复，不能覆盖整盘损坏；灾难恢复保持
+`risk-accepted / environment-pending`。

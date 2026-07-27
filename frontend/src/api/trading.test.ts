@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { eventSocketURL, tradingAPI } from './trading'
+import {
+  eventSocketURL,
+  tradingAPI,
+  tradingEventMode,
+} from './trading'
 
 describe('trading API', () => {
   afterEach(() => {
@@ -45,5 +49,29 @@ describe('trading API', () => {
       'wss://qiu-market.example.ts.net/api/v1/trading/events/ws' +
       '?ticket=opaque-ticket&sequence=42&event_index=3',
     )
+  })
+
+  it('marks a write transport failure as submitted unknown without retrying', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('network disconnected'))
+    vi.stubGlobal('fetch', fetchMock)
+    const request = tradingAPI.submit({
+      client_order_id: 'stable-order-id',
+      side: 'buy',
+      type: 'limit',
+      time_in_force: 'gtc',
+      price: '60000',
+      quantity: '0.001',
+    })
+    await expect(request).rejects.toMatchObject({
+      code: 'network_error',
+      status: 0,
+      uncertain: true,
+    })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('supports explicit same-origin polling fallback', () => {
+    vi.stubEnv('VITE_TRADING_EVENT_MODE', 'polling')
+    expect(tradingEventMode()).toBe('polling')
   })
 })

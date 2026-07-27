@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,6 +30,8 @@ type Config struct {
 	GitHubClientID string
 	GitHubSecret   string
 	GitHubRedirect string
+	DiskPath       string
+	MinWriteBytes  int64
 }
 
 // Gateway owns browser authentication and protocol adaptation, but no trading
@@ -114,7 +117,11 @@ func New(ctx context.Context, config Config) (*Gateway, error) {
 	return &Gateway{
 		pool:       pool,
 		connection: connection,
-		handler:    boundedREST(server.Handler()),
+		handler: boundedREST(diskWriteGuard(
+			server.Handler(),
+			config.DiskPath,
+			config.MinWriteBytes,
+		)),
 	}, nil
 }
 
@@ -130,6 +137,10 @@ func validateConfig(config Config) error {
 	}
 	if (config.GitHubClientID == "") != (config.GitHubSecret == "") {
 		return fmt.Errorf("GitHub OAuth client id and secret must be configured together")
+	}
+	if config.MinWriteBytes < 0 ||
+		(config.MinWriteBytes > 0 && strings.TrimSpace(config.DiskPath) == "") {
+		return fmt.Errorf("trading disk write guard requires a path and non-negative floor")
 	}
 	return nil
 }
@@ -159,6 +170,50 @@ func boundedREST(next http.Handler) http.Handler {
 		ctx, cancel := context.WithTimeout(request.Context(), 10*time.Second)
 		defer cancel()
 		next.ServeHTTP(writer, request.WithContext(ctx))
+	})
+}
+
+func diskWriteGuard(next http.Handler, path string, minimum int64) http.Handler {
+	if minimum <= 0 {
+		return next
+	}
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !isTradingMutation(request) {
+			next.ServeHTTP(writer, request)
+			return
+		}
+		var fileSystem syscall.Statfs_t
+		if err := syscall.Statfs(path, &fileSystem); err != nil {
+			writeDiskPaused(writer)
+			return
+		}
+		available := int64(fileSystem.Bavail) * int64(fileSystem.Bsize)
+		if available < minimum {
+			writeDiskPaused(writer)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func isTradingMutation(request *http.Request) bool {
+	if request.Method != http.MethodPost {
+		return false
+	}
+	path := request.URL.Path
+	return path == "/api/v1/trading/orders" ||
+		path == "/api/v1/trading/admin/fund" ||
+		(strings.HasPrefix(path, "/api/v1/trading/orders/") &&
+			strings.HasSuffix(path, "/cancel"))
+}
+
+func writeDiskPaused(writer http.ResponseWriter) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(writer).Encode(map[string]string{
+		"code":    "trading_write_paused",
+		"message": "virtual trading writes are paused because local storage is critical",
 	})
 }
 

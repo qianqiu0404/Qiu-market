@@ -20,6 +20,26 @@ export interface SystemOverview {
   updated_at: number
   data_delay_seconds: number
   provider_statuses: ProviderStatusItem[]
+  storage: StorageStatus
+}
+
+export interface StorageStatus {
+  database_bytes: number
+  kline_table_bytes: number
+  kline_heap_bytes: number
+  kline_index_bytes: number
+  kline_estimated_rows: number
+  disk_free_bytes: number
+  disk_state: 'healthy' | 'warning' | 'critical' | 'unknown' | string
+  retention_last_started_at: number
+  retention_last_success_at: number
+  retention_last_error: string
+  retention_deleted_rows: Record<string, number>
+  kline_intervals: Array<{
+    interval: string
+    oldest_at: number
+    newest_at: number
+  }>
 }
 
 export interface ProviderStatusItem {
@@ -466,6 +486,8 @@ function toAvailableDecimal(value: unknown): AvailableDecimal {
 export async function getSystemOverview(): Promise<SystemOverview> {
   const { result } = await request<Record<string, unknown>>('/api/v1/get_system_overview')
   const r = result ?? {}
+  const storage = (r.storage ?? {}) as Record<string, unknown>
+  const deletedRows = (storage.retention_deleted_rows ?? {}) as Record<string, unknown>
   return {
     crawler_status: toStr(r.crawler_status),
     dex_status: toStr(r.dex_status),
@@ -483,6 +505,29 @@ export async function getSystemOverview(): Promise<SystemOverview> {
     total_volume: toNum(r.total_volume),
     updated_at: toNum(r.updated_at),
     data_delay_seconds: toNum(r.data_delay_seconds),
+    storage: {
+      database_bytes: toNum(storage.database_bytes),
+      kline_table_bytes: toNum(storage.kline_table_bytes),
+      kline_heap_bytes: toNum(storage.kline_heap_bytes),
+      kline_index_bytes: toNum(storage.kline_index_bytes),
+      kline_estimated_rows: toNum(storage.kline_estimated_rows),
+      disk_free_bytes: toNum(storage.disk_free_bytes),
+      disk_state: toStr(storage.disk_state),
+      retention_last_started_at: toNum(storage.retention_last_started_at),
+      retention_last_success_at: toNum(storage.retention_last_success_at),
+      retention_last_error: toStr(storage.retention_last_error),
+      retention_deleted_rows: Object.fromEntries(
+        Object.entries(deletedRows).map(([key, value]) => [key, toNum(value)]),
+      ),
+      kline_intervals: toArray(storage.kline_intervals).map((raw) => {
+        const item = (raw ?? {}) as Record<string, unknown>
+        return {
+          interval: toStr(item.interval),
+          oldest_at: toNum(item.oldest_at),
+          newest_at: toNum(item.newest_at),
+        }
+      }),
+    },
     provider_statuses: toArray(r.provider_statuses).map((raw): ProviderStatusItem => {
       const item = (raw ?? {}) as Record<string, unknown>
       return {

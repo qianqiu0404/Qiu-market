@@ -2,6 +2,18 @@
 
 > 动态快照：2026-07-26。本文件只记录本次本地交付与剩余正式验收；长期行为以 README 和 canonical docs 为准。
 
+## 2026-07-27 单机生产稳定与极省空间收口
+
+- `symbol_kline` 的长期策略固定为 `1m=7天`、`15m=90天`、`1h=365天`、`1d=永久`。Binance 回填水位已从 symbol identity 改为 `market_id + interval`；不同交易所同名资产不会互相截断。
+- 保留任务使用专用 PostgreSQL connection 持有 session advisory lock，按 10,000 行小批量删除并设置短 statement timeout；状态、每周期边界和存储体积进入 System API/UI。
+- 生产库已在备份和临时库恢复演练通过后完成首次清理。K 线总关系由约 7.57GB 降为约 2.36GB，其中索引由约 5.6GB 降为约 391MB；过期 1m 行为 0。未执行 `VACUUM FULL`。
+- Vercel BFF 完整截止时间为 8 秒，只有只读接口允许一次有界重试；所有写请求不重试并透传 request ID。Trade 面板独立降级、保留 last-good，状态超过 10 秒或 polling/WS 尚未 reconcile 时禁用写操作。
+- 订单写超时进入 `submitted/unknown`，沿用原 client order ID 查询权威订单视图，不生成新 ID、不盲目重下。Demo maker 在不安全参考价或低磁盘时撤单暂停，连续三个新鲜样本后恢复。
+- 低于 25GiB 告警，低于 15GiB 暂停 crawler/worker/DEX；交易读路径继续可用，而下单、撤单、虚拟入金和 demo maker fail-closed。Guardian 不会盲目重启共享 PostgreSQL。
+- 全库每日备份保留 2 份、`trading_*` 每小时备份保留 24 份；每周恢复临时库并校验事件、快照和分资产账本平衡。当前备份仍在同一块物理磁盘，灾难恢复风险已接受但未消除。
+- Vercel WebSocket beta 尚无账号环境证据，生产默认降级为同源 cursor polling；WebSocket 验收保持 `environment-pending`。
+- 当前仍需机器所有者一次管理员授权，才能把用户 LaunchAgent 提升为无需桌面登录的 LaunchDaemon，并执行 `pmset autorestart 1`。GitHub OAuth 凭据、Preview/Production 同产物晋级和连续 7 天外部 SLO 也必须以真实证据单独收口。
+
 ## 可见结果
 
 - Binance、Coinbase、Bybit、OKX 各自从已审核、可交易的 CoinGecko Top 200 候选中冻结 50 个唯一资产，四家不是被迫共用同一张榜。

@@ -440,7 +440,7 @@ func (b *BinanceTickerCrawler) backfillKline(market database.ProviderMarket, int
 	}
 	startTime := time.Now().Add(-lookback).UnixMilli()
 
-	latest, err := b.db.SymbolKline.QueryLatestSymbolKline(guid, interval)
+	latest, err := b.db.SymbolKline.QueryLatestMarketKline(market.MarketID, interval)
 	if err != nil {
 		log.Error("kline backfill query latest failed, fallback to lookback window", "symbol", symbol, "interval", interval, "err", err)
 	} else if latest != nil {

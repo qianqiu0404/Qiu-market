@@ -1,5 +1,14 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_TRADING_WS_ORIGIN?: string
+  readonly VITE_TRADING_EVENT_MODE?: 'websocket' | 'polling'
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}
+
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
 

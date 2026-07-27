@@ -34,6 +34,7 @@ type DB struct {
 	DWAcceptance      DWAcceptanceDB
 	ProviderStatus    ProviderStatusDB
 	KlineRepair       KlineRepairDB
+	KlineRetention    KlineRetentionDB
 	MarketAggregation MarketAggregationDB
 }
 
@@ -90,6 +91,7 @@ func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
 		DWAcceptance:      NewDWAcceptanceDB(gorm),
 		ProviderStatus:    NewProviderStatusDB(gorm),
 		KlineRepair:       NewKlineRepairDB(gorm),
+		KlineRetention:    NewKlineRetentionDB(gorm),
 		MarketAggregation: NewMarketAggregationDB(gorm),
 	}
 	return db, nil
@@ -110,6 +112,7 @@ func (db *DB) Transaction(fn func(db *DB) error) error {
 			DWAcceptance:      NewDWAcceptanceDB(tx),
 			ProviderStatus:    NewProviderStatusDB(tx),
 			KlineRepair:       NewKlineRepairDB(tx),
+			KlineRetention:    NewKlineRetentionDB(tx),
 			MarketAggregation: NewMarketAggregationDB(tx),
 		}
 		return fn(txDB)

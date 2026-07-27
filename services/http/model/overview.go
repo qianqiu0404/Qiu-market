@@ -24,6 +24,28 @@ type SystemOverview struct {
 	UpdatedAt        int64                `json:"updated_at"`
 	DataDelaySeconds int64                `json:"data_delay_seconds"`
 	ProviderStatuses []ProviderStatusItem `json:"provider_statuses"`
+	Storage          StorageStatus        `json:"storage"`
+}
+
+type StorageStatus struct {
+	DatabaseBytes          int64                  `json:"database_bytes"`
+	KlineTableBytes        int64                  `json:"kline_table_bytes"`
+	KlineHeapBytes         int64                  `json:"kline_heap_bytes"`
+	KlineIndexBytes        int64                  `json:"kline_index_bytes"`
+	KlineEstimatedRows     int64                  `json:"kline_estimated_rows"`
+	DiskFreeBytes          int64                  `json:"disk_free_bytes"`
+	DiskState              string                 `json:"disk_state"`
+	RetentionLastStartedAt int64                  `json:"retention_last_started_at"`
+	RetentionLastSuccessAt int64                  `json:"retention_last_success_at"`
+	RetentionLastError     string                 `json:"retention_last_error"`
+	RetentionDeletedRows   map[string]int64       `json:"retention_deleted_rows"`
+	KlineIntervals         []KlineIntervalStorage `json:"kline_intervals"`
+}
+
+type KlineIntervalStorage struct {
+	Interval string `json:"interval"`
+	OldestAt int64  `json:"oldest_at"`
+	NewestAt int64  `json:"newest_at"`
 }
 
 type ProviderStatusItem struct {

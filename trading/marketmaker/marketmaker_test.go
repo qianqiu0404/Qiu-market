@@ -122,6 +122,26 @@ func TestDemoMakerQuotesThreeLevelsAndStopsOnStaleOrJump(t *testing.T) {
 	if err := maker.Refresh(context.Background()); !errors.Is(err, marketmaker.ErrUnsafeReference) {
 		t.Fatalf("stale error = %v", err)
 	}
+	for sample := 1; sample <= 3; sample++ {
+		source.reference = marketmaker.Reference{
+			Price:      60_000_000_000 + int64(sample),
+			ObservedAt: time.Now(),
+		}
+		if err := maker.Refresh(context.Background()); err != nil {
+			t.Fatalf("recovery sample %d: %v", sample, err)
+		}
+		orders, err = runner.Orders("system:demo-maker", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if sample == 3 {
+			want = 6
+		}
+		if len(orders) != want {
+			t.Fatalf("recovery sample %d orders = %d, want %d", sample, len(orders), want)
+		}
+	}
 }
 
 type referenceSource struct {

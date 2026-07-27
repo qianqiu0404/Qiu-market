@@ -58,6 +58,9 @@ type Maker struct {
 	now           func() time.Time
 	counter       uint64
 	previousPrice int64
+	paused        bool
+	recoveryPrice int64
+	freshSamples  int
 }
 
 func New(
@@ -94,7 +97,7 @@ func New(
 }
 
 func (m *Maker) Run(ctx context.Context) error {
-	if err := m.refresh(ctx); err != nil {
+	if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) {
 		return err
 	}
 	ticker := time.NewTicker(m.config.RefreshEvery)
@@ -110,7 +113,7 @@ func (m *Maker) Run(ctx context.Context) error {
 			}
 			return nil
 		case <-ticker.C:
-			if err := m.refresh(ctx); err != nil {
+			if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) {
 				return err
 			}
 		}
@@ -124,10 +127,34 @@ func (m *Maker) Refresh(ctx context.Context) error {
 func (m *Maker) refresh(ctx context.Context) error {
 	reference, err := m.source.Current(ctx)
 	if err != nil {
-		return m.stopUnsafe(ctx, fmt.Errorf("%w: source error: %v", ErrUnsafeReference, err))
+		return m.pauseUnsafe(ctx, fmt.Errorf("%w: source error: %v", ErrUnsafeReference, err))
 	}
-	if err := m.validateReference(reference); err != nil {
-		return m.stopUnsafe(ctx, err)
+	if err := m.validateBasicReference(reference); err != nil {
+		return m.pauseUnsafe(ctx, err)
+	}
+	if m.paused {
+		if m.recoveryPrice == 0 {
+			m.recoveryPrice = reference.Price
+			m.freshSamples = 1
+			return nil
+		}
+		jumpBPS, err := priceMovementBPS(reference.Price, m.recoveryPrice)
+		if err != nil || jumpBPS > m.config.MaxJumpBPS {
+			m.recoveryPrice = reference.Price
+			m.freshSamples = 1
+			return nil
+		}
+		m.recoveryPrice = reference.Price
+		m.freshSamples++
+		if m.freshSamples < 3 {
+			return nil
+		}
+		m.paused = false
+		m.recoveryPrice = 0
+		m.freshSamples = 0
+	}
+	if err := m.validateReferenceJump(reference); err != nil {
+		return m.pauseUnsafe(ctx, err)
 	}
 	openOrders, err := m.engine.Orders(m.config.AccountID, true)
 	if err != nil {
@@ -149,7 +176,7 @@ func (m *Maker) refresh(ctx context.Context) error {
 	for _, spread := range m.config.SpreadsBPS {
 		bid, ask, err := m.quotePrices(reference.Price, spread)
 		if err != nil {
-			return m.stopUnsafe(ctx, err)
+			return m.pauseUnsafe(ctx, err)
 		}
 		for _, quote := range []struct {
 			side  domain.Side
@@ -205,18 +232,18 @@ func (m *Maker) shouldReprice(referencePrice int64) bool {
 	return movementBPS >= m.config.MinRepriceBPS
 }
 
-func (m *Maker) validateReference(reference Reference) error {
+func (m *Maker) validateBasicReference(reference Reference) error {
 	if reference.Price <= 0 || reference.ObservedAt.IsZero() ||
 		m.now().UTC().Sub(reference.ObservedAt.UTC()) > m.config.MaxAge ||
 		reference.ObservedAt.After(m.now().UTC().Add(time.Second)) {
 		return fmt.Errorf("%w: stale or invalid observation", ErrUnsafeReference)
 	}
+	return nil
+}
+
+func (m *Maker) validateReferenceJump(reference Reference) error {
 	if m.previousPrice > 0 {
-		difference := reference.Price - m.previousPrice
-		if difference < 0 {
-			difference = -difference
-		}
-		jumpBPS, err := domain.CheckedMulDivCeil(difference, 10_000, m.previousPrice)
+		jumpBPS, err := priceMovementBPS(reference.Price, m.previousPrice)
 		if err != nil {
 			return fmt.Errorf("%w: jump calculation: %v", ErrUnsafeReference, err)
 		}
@@ -225,6 +252,14 @@ func (m *Maker) validateReference(reference Reference) error {
 		}
 	}
 	return nil
+}
+
+func priceMovementBPS(current, previous int64) (int64, error) {
+	difference := current - previous
+	if difference < 0 {
+		difference = -difference
+	}
+	return domain.CheckedMulDivCeil(difference, 10_000, previous)
 }
 
 func (m *Maker) quotePrices(referencePrice, spreadBPS int64) (int64, int64, error) {
@@ -247,8 +282,12 @@ func (m *Maker) quotePrices(referencePrice, spreadBPS int64) (int64, int64, erro
 	return bid, ask, nil
 }
 
-func (m *Maker) stopUnsafe(ctx context.Context, cause error) error {
+func (m *Maker) pauseUnsafe(ctx context.Context, cause error) error {
 	cancelErr := m.cancelAll(ctx)
+	m.paused = true
+	m.previousPrice = 0
+	m.recoveryPrice = 0
+	m.freshSamples = 0
 	if cancelErr != nil {
 		return errors.Join(cause, fmt.Errorf("cancel unsafe demo-maker quotes: %w", cancelErr))
 	}

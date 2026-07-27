@@ -85,6 +85,8 @@ func runTrading(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 		PostgresURL:      cfg.MasterDB.PostgresURL(),
 		GRPCAddress:      cfg.Trading.GRPCAddress,
 		DemoMakerEnabled: cfg.Trading.DemoMakerEnabled,
+		DiskPath:         "/",
+		MinWriteBytes:    15 << 30,
 	}, shutdown)
 }
 

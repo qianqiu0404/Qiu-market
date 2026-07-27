@@ -120,6 +120,18 @@ function feedModeLabel(value: string): string {
   }
   return labels[value] ?? value ?? '—'
 }
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let amount = value
+  let unit = 0
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024
+    unit += 1
+  }
+  return `${amount.toFixed(unit >= 3 ? 1 : 0)} ${units[unit]}`
+}
 </script>
 
 <template>
@@ -174,6 +186,65 @@ function feedModeLabel(value: string): string {
           </span>
           <span class="detail-meta mono">
             delay {{ overview.data.value ? formatDelay(overview.data.value.data_delay_seconds) : '—' }}
+          </span>
+        </div>
+      </div>
+
+      <div class="section-heading provider-heading">
+        <div>
+          <h2>Storage & retention</h2>
+          <p>Minute candles are bounded; daily candles are retained indefinitely. Disk state is measured on the Mac mini.</p>
+        </div>
+      </div>
+      <div class="card detail-card">
+        <div class="detail-row">
+          <span class="detail-name">Mac mini free disk</span>
+          <StatusBadge
+            :variant="overview.data.value?.storage.disk_state === 'healthy' ? 'live' : 'error'"
+            :label="overview.data.value?.storage.disk_state || 'unknown'"
+          />
+          <span class="detail-meta mono">{{ formatBytes(overview.data.value?.storage.disk_free_bytes || 0) }}</span>
+          <span class="detail-meta mono">warning &lt;25 GB · critical &lt;15 GB</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-name">PostgreSQL / K-lines</span>
+          <StatusBadge
+            :variant="overview.data.value?.storage.retention_last_error ? 'error' : 'live'"
+            :label="overview.data.value?.storage.retention_last_error ? 'degraded' : 'bounded'"
+          />
+          <span class="detail-meta mono">
+            DB {{ formatBytes(overview.data.value?.storage.database_bytes || 0) }} ·
+            K-lines {{ formatBytes(overview.data.value?.storage.kline_table_bytes || 0) }}
+          </span>
+          <span class="detail-meta mono">
+            heap {{ formatBytes(overview.data.value?.storage.kline_heap_bytes || 0) }} ·
+            indexes {{ formatBytes(overview.data.value?.storage.kline_index_bytes || 0) }}
+          </span>
+        </div>
+        <div
+          v-for="item in overview.data.value?.storage.kline_intervals ?? []"
+          :key="item.interval"
+          class="detail-row"
+        >
+          <span class="detail-name mono">{{ item.interval }} candles</span>
+          <StatusBadge variant="accent" :label="item.interval === '1d' ? 'indefinite' : 'bounded'" />
+          <span class="detail-meta mono">oldest {{ formatTime(item.oldest_at || null) }}</span>
+          <span class="detail-meta mono">newest {{ formatTime(item.newest_at || null) }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-name">Retention job</span>
+          <StatusBadge
+            :variant="overview.data.value?.storage.retention_last_error ? 'error' : 'live'"
+            :label="overview.data.value?.storage.retention_last_error ? 'failed' : 'healthy'"
+          />
+          <span class="detail-meta mono">
+            success {{ formatTime(overview.data.value?.storage.retention_last_success_at || null) }}
+          </span>
+          <span class="detail-meta mono">
+            deleted
+            1m {{ overview.data.value?.storage.retention_deleted_rows?.['1m'] || 0 }} ·
+            15m {{ overview.data.value?.storage.retention_deleted_rows?.['15m'] || 0 }} ·
+            1h {{ overview.data.value?.storage.retention_deleted_rows?.['1h'] || 0 }}
           </span>
         </div>
       </div>

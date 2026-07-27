@@ -173,7 +173,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     if (path === '/api/v1/trading/markets/BTC-USDT/status') {
       await json(200, {
         market_id: 'BTC-USDT',
-        state: 'running',
+        state: 'ready',
         sequence: String(sequence),
         queue_depth: 0,
         recovery_count: '1',

@@ -49,13 +49,21 @@ Vue Dashboard（Qiu Market，蓝白金融产品风）
 
 虚拟交易是独立故障域：共享 HTTP API 通过本机 `127.0.0.1:9094` gRPC 调用 `market-services trading`，撮合事件与账本写 PostgreSQL。交易进程异常只降级 `/api/v1/trading/**`，行情页面继续工作；行情参考异常只会让虚拟 demo-maker 撤单停机，不阻断撮合恢复。
 
+Mac mini 单机生产、极省空间 K 线保留、备份恢复、Guardian 与 Vercel 验收见
+[`docs/qiu-market-vercel-mac.md`](docs/qiu-market-vercel-mac.md)。滚动生产证据使用：
+
+```bash
+bash ops/macos/manage-observer.sh status
+bash ops/macos/summarize-production-slo.sh
+```
+
 ## 核心能力
 
 | 模块 | 作用 |
 |---|---|
 | `crawler` | 刷新 CoinGecko Top 200 候选池、维护四家独立 selection、以 WebSocket 主链路 + REST 对账采集 Spot、计算综合现货价，并维护四家版本化 K 线 |
 | `dex` | 在同一进程内隔离运行 Hyperliquid Perp、Ethereum Uniswap V2+V3、BNB Chain PancakeSwap V2+V3；都不参与 All 综合现货价（详见 [docs/dex-hyperliquid.md](docs/dex-hyperliquid.md)） |
-| `worker` | 只扫描 `exchange_symbol.kline_enabled=true` 的 K 线市场并生成持久化 `kline_repair_task`；不访问交易所、不写价格 |
+| `worker` | 扫描 K 线缺口并生成持久化 `kline_repair_task`；每日执行 `1m=7天 / 15m=90天 / 1h=1年 / 1d=永久` 的有界保留，不访问交易所、不写价格 |
 | `dw` | PostgreSQL → Apache Doris 数仓同步进程；旧公开流旁边已增加 `sync_seq` 固定回看 + UNIQUE KEY 的 v2 影子流（详见 [docs/doris-analytics.md](docs/doris-analytics.md)） |
 | `database` | GORM + PostgreSQL 表模型和查询 |
 | `services/http` | v1 市场/Insights/K 线与 v2 综合资产首页、按需市场抽屉、Catalog Audit |

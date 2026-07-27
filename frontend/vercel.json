@@ -4,6 +4,7 @@
   "installCommand": "npm ci",
   "outputDirectory": "dist",
   "framework": "vite",
+  "regions": ["sfo1"],
   "rewrites": [
     {
       "source": "/api/:path*",

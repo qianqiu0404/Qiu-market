@@ -35,7 +35,7 @@ install_observer() {
     echo "Failed to install Qiu Market production observer." >&2
     return 1
   fi
-  echo "Installed Qiu Market production observer (every 300 seconds)."
+  echo "Installed Qiu Market production observer (every 60 seconds)."
 }
 
 case "$action" in

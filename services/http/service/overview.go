@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/the-web3/s78-market-services/database"
@@ -82,6 +83,7 @@ func (h HandleSvc) GetSystemOverview(request *model.CommonRequest) (*model.Syste
 			}
 		}
 	}
+	overview.Storage = h.storageStatus()
 
 	assets, err := h.assetView.QueryAssets()
 	if err != nil {
@@ -141,6 +143,60 @@ func (h HandleSvc) GetSystemOverview(request *model.CommonRequest) (*model.Syste
 		Message: "success",
 		Result:  overview,
 	}, nil
+}
+
+func (h HandleSvc) storageStatus() model.StorageStatus {
+	result := model.StorageStatus{
+		DiskState:            "unknown",
+		RetentionDeletedRows: map[string]int64{},
+		KlineIntervals:       []model.KlineIntervalStorage{},
+	}
+	var fileSystem syscall.Statfs_t
+	if err := syscall.Statfs("/", &fileSystem); err == nil {
+		result.DiskFreeBytes = int64(fileSystem.Bavail) * int64(fileSystem.Bsize)
+		switch {
+		case result.DiskFreeBytes < 15<<30:
+			result.DiskState = "critical"
+		case result.DiskFreeBytes < 25<<30:
+			result.DiskState = "warning"
+		default:
+			result.DiskState = "healthy"
+		}
+	}
+	if h.db == nil || h.db.KlineRetention == nil {
+		return result
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stats, err := h.db.KlineRetention.QueryStorageStats(ctx)
+	if err != nil {
+		result.RetentionLastError = "storage metrics unavailable"
+		return result
+	}
+	result.DatabaseBytes = stats.DatabaseBytes
+	result.KlineTableBytes = stats.TableBytes
+	result.KlineHeapBytes = stats.HeapBytes
+	result.KlineIndexBytes = stats.IndexBytes
+	result.KlineEstimatedRows = stats.Rows
+	result.RetentionLastError = stats.Retention.LastError
+	result.RetentionDeletedRows = stats.Retention.Deleted
+	if stats.Retention.LastStartedAt != nil {
+		result.RetentionLastStartedAt = stats.Retention.LastStartedAt.UnixMilli()
+	}
+	if stats.Retention.LastSuccessAt != nil {
+		result.RetentionLastSuccessAt = stats.Retention.LastSuccessAt.UnixMilli()
+	}
+	for _, interval := range stats.Intervals {
+		item := model.KlineIntervalStorage{Interval: interval.Interval}
+		if interval.Oldest != nil {
+			item.OldestAt = interval.Oldest.UnixMilli()
+		}
+		if interval.Newest != nil {
+			item.NewestAt = interval.Newest.UnixMilli()
+		}
+		result.KlineIntervals = append(result.KlineIntervals, item)
+	}
+	return result
 }
 
 func aggregateProviderStatuses(

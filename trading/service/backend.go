@@ -9,6 +9,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -35,6 +36,8 @@ type Config struct {
 	PostgresURL      string
 	GRPCAddress      string
 	DemoMakerEnabled bool
+	DiskPath         string
+	MinWriteBytes    int64
 }
 
 // Backend is the only integrated process that owns the in-memory matching
@@ -136,13 +139,21 @@ func New(
 		if err != nil {
 			return nil, err
 		}
+		var makerSource marketmaker.ReferenceSource = source
+		if config.MinWriteBytes > 0 {
+			makerSource = diskAwareReferenceSource{
+				next:    source,
+				path:    config.DiskPath,
+				minimum: config.MinWriteBytes,
+			}
+		}
 		makerConfig := marketmaker.DefaultConfig()
 		makerConfig.AccountID = demoMakerAccount
 		makerConfig.RequestPrefix, err = randomRequestPrefix()
 		if err != nil {
 			return nil, err
 		}
-		maker, err = marketmaker.New(market, runner, source, makerConfig)
+		maker, err = marketmaker.New(market, runner, makerSource, makerConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +180,33 @@ func validateConfig(config Config) error {
 	if !netutil.IsIPLoopbackAddress(config.GRPCAddress) {
 		return fmt.Errorf("trading gRPC must bind to an explicit IP loopback address")
 	}
+	if config.MinWriteBytes < 0 ||
+		(config.MinWriteBytes > 0 && config.DiskPath == "") {
+		return fmt.Errorf("demo maker disk guard requires a path and non-negative floor")
+	}
 	return nil
+}
+
+type diskAwareReferenceSource struct {
+	next    marketmaker.ReferenceSource
+	path    string
+	minimum int64
+}
+
+func (s diskAwareReferenceSource) Current(ctx context.Context) (marketmaker.Reference, error) {
+	var fileSystem syscall.Statfs_t
+	if err := syscall.Statfs(s.path, &fileSystem); err != nil {
+		return marketmaker.Reference{}, fmt.Errorf("check demo maker disk capacity: %w", err)
+	}
+	available := int64(fileSystem.Bavail) * int64(fileSystem.Bsize)
+	if available < s.minimum {
+		return marketmaker.Reference{}, fmt.Errorf(
+			"demo maker paused: free disk %d is below %d",
+			available,
+			s.minimum,
+		)
+	}
+	return s.next.Current(ctx)
 }
 
 func (b *Backend) Start(ctx context.Context) error {
@@ -193,9 +230,9 @@ func (b *Backend) Start(ctx context.Context) error {
 		go func() {
 			defer close(b.makerDone)
 			if err := b.maker.Run(makerContext); err != nil && !errors.Is(err, context.Canceled) {
-				// A missing, stale, or discontinuous reference stops only the
-				// maker after it has canceled its quotes. Matching stays ready.
-				log.Warn("virtual demo maker stopped safely", "err", err)
+				// Unsafe references pause and recover inside the maker. Only
+				// an infrastructure error can terminate this goroutine.
+				log.Warn("virtual demo maker terminated after infrastructure failure", "err", err)
 			}
 		}()
 	}

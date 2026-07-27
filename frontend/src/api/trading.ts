@@ -102,6 +102,18 @@ interface APIError {
   message: string
 }
 
+export class TradingRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status: number,
+    readonly uncertain: boolean,
+  ) {
+    super(message)
+    this.name = 'TradingRequestError'
+  }
+}
+
 const base = '/api/v1/trading'
 
 function cookie(name: string): string {
@@ -123,11 +135,21 @@ async function request<T>(
   const headers = new Headers(options.headers)
   if (options.body) headers.set('Content-Type', 'application/json')
   if (write) headers.set('X-CSRF-Token', cookie('s78_trading_csrf'))
-  const response = await fetch(`${base}${path}`, {
-    ...options,
-    headers,
-    credentials: 'same-origin',
-  })
+  let response: Response
+  try {
+    response = await fetch(`${base}${path}`, {
+      ...options,
+      headers,
+      credentials: 'same-origin',
+    })
+  } catch (error) {
+    throw new TradingRequestError(
+      error instanceof Error ? error.message : 'Network request failed',
+      'network_error',
+      0,
+      write,
+    )
+  }
   if (!response.ok) {
     let failure: APIError = {
       code: 'request_failed',
@@ -138,7 +160,18 @@ async function request<T>(
     } catch {
       // Keep the bounded fallback; never surface an HTML proxy body as data.
     }
-    throw new Error(failure.message)
+    throw new TradingRequestError(
+      failure.message,
+      failure.code,
+      response.status,
+      write && (
+        response.status === 502 ||
+        response.status === 503 ||
+        response.status === 504 ||
+        failure.code === 'backend_timeout' ||
+        failure.code === 'backend_unavailable'
+      ),
+    )
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
@@ -208,4 +241,10 @@ export function eventSocketURL(ticket: string, cursor?: EventEnvelope): string {
   socketURL.search = query.toString()
   socketURL.hash = ''
   return socketURL.toString()
+}
+
+export function tradingEventMode(): 'websocket' | 'polling' {
+  return import.meta.env.VITE_TRADING_EVENT_MODE === 'polling'
+    ? 'polling'
+    : 'websocket'
 }

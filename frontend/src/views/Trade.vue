@@ -17,6 +17,8 @@ import {
 } from '../api/market'
 import {
   eventSocketURL,
+  TradingRequestError,
+  tradingEventMode,
   tradingAPI,
   type AuthCapabilities,
   type Balance,
@@ -61,8 +63,12 @@ const status = ref<TradingStatus>({
 const errorMessage = ref('')
 const notice = ref('')
 const busy = ref(false)
-const wsState = ref<'offline' | 'connecting' | 'live' | 'retrying'>('offline')
+const wsState = ref<'offline' | 'connecting' | 'live' | 'retrying' | 'polling'>('offline')
 const cursor = ref<EventEnvelope>()
+const lastStatusAt = ref(0)
+const lastPrivateAt = ref(0)
+const publicPanelErrors = reactive({ orderbook: '', trades: '', status: '' })
+const unknownClientOrderID = ref('')
 
 const referencePrice = ref<number | null>(null)
 const referenceFreshness = ref('unavailable')
@@ -110,6 +116,32 @@ const referenceIsFresh = computed(() =>
 )
 const bestAsk = computed(() => book.value.asks[0]?.price ?? '')
 const bestBid = computed(() => book.value.bids[0]?.price ?? '')
+const statusAgeSeconds = computed(() =>
+  lastStatusAt.value ? Math.max(0, Math.floor((Date.now() - lastStatusAt.value) / 1000)) : -1,
+)
+const matchingState = computed(() => {
+  if (statusAgeSeconds.value < 0 || statusAgeSeconds.value > 10) return 'degraded'
+  return status.value.state
+})
+const liquidityState = computed(() =>
+  book.value.bids.length > 0 && book.value.asks.length > 0 ? 'active' : 'paused',
+)
+const transportState = computed(() => {
+  const failures = Object.values(publicPanelErrors).filter(Boolean).length
+  if (failures === 0 && statusAgeSeconds.value >= 0 && statusAgeSeconds.value <= 10) return 'live'
+  if (lastStatusAt.value > 0) return 'degraded'
+  return 'offline'
+})
+const writesEnabled = computed(() => {
+  if (!loggedIn.value || busy.value || unknownClientOrderID.value) return false
+  if (statusAgeSeconds.value < 0 || statusAgeSeconds.value > 10 || status.value.state !== 'ready') {
+    return false
+  }
+  if (tradingEventMode() === 'polling') {
+    return lastPrivateAt.value > 0 && Date.now() - lastPrivateAt.value <= 10_000
+  }
+  return wsState.value === 'live'
+})
 
 function randomID(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
@@ -156,38 +188,66 @@ function showError(error: unknown): void {
 }
 
 async function loadPublic(): Promise<void> {
-  try {
-    const [nextBook, trades, nextStatus] = await Promise.all([
-      tradingAPI.orderBook(),
-      tradingAPI.publicTrades(),
-      tradingAPI.status(),
-    ])
+  const [bookResult, tradesResult, statusResult] = await Promise.allSettled([
+    tradingAPI.orderBook(),
+    tradingAPI.publicTrades(),
+    tradingAPI.status(),
+  ])
+  if (bookResult.status === 'fulfilled') {
+    const nextBook = bookResult.value
     book.value = {
       ...nextBook,
       bids: nextBook.bids ?? [],
       asks: nextBook.asks ?? [],
     }
-    publicTrades.value = trades.trades ?? []
-    status.value = nextStatus
-  } catch (error) {
-    status.value = { ...status.value, state: 'unavailable' }
-    showError(error)
+    publicPanelErrors.orderbook = ''
+  } else {
+    publicPanelErrors.orderbook = bookResult.reason instanceof Error
+      ? bookResult.reason.message
+      : String(bookResult.reason)
+  }
+  if (tradesResult.status === 'fulfilled') {
+    publicTrades.value = tradesResult.value.trades ?? []
+    publicPanelErrors.trades = ''
+  } else {
+    publicPanelErrors.trades = tradesResult.reason instanceof Error
+      ? tradesResult.reason.message
+      : String(tradesResult.reason)
+  }
+  if (statusResult.status === 'fulfilled') {
+    status.value = statusResult.value
+    lastStatusAt.value = Date.now()
+    publicPanelErrors.status = ''
+  } else {
+    publicPanelErrors.status = statusResult.reason instanceof Error
+      ? statusResult.reason.message
+      : String(statusResult.reason)
+  }
+  if (Object.values(publicPanelErrors).every(Boolean)) {
+    showError('Qiu Market transport is offline; last known data remains visible.')
   }
 }
 
 async function loadPrivate(): Promise<void> {
   if (!principal.value) return
-  try {
-    const [nextBalances, nextOrders, nextTrades] = await Promise.all([
-      tradingAPI.balances(),
-      tradingAPI.orders(false),
-      tradingAPI.trades(),
-    ])
-    balances.value = nextBalances.balances ?? []
-    orders.value = nextOrders.orders ?? []
-    privateTrades.value = nextTrades.trades ?? []
-  } catch (error) {
-    showError(error)
+  const results = await Promise.allSettled([
+    tradingAPI.balances(),
+    tradingAPI.orders(false),
+    tradingAPI.trades(),
+  ])
+  if (results[0].status === 'fulfilled') balances.value = results[0].value.balances ?? []
+  if (results[1].status === 'fulfilled') orders.value = results[1].value.orders ?? []
+  if (results[2].status === 'fulfilled') privateTrades.value = results[2].value.trades ?? []
+  if (results.every((result) => result.status === 'fulfilled')) {
+    lastPrivateAt.value = Date.now()
+    if (
+      unknownClientOrderID.value &&
+      orders.value.some((order) => order.client_order_id === unknownClientOrderID.value)
+    ) {
+      notice.value = `请求 ${unknownClientOrderID.value} 已从权威订单视图确认`
+      unknownClientOrderID.value = ''
+      form.clientOrderID = crypto.randomUUID()
+    }
   }
 }
 
@@ -244,6 +304,7 @@ async function logout(): Promise<void> {
 async function submitOrder(): Promise<void> {
   busy.value = true
   notice.value = ''
+  const submittedID = form.clientOrderID
   try {
     await tradingAPI.submit({
       client_order_id: form.clientOrderID,
@@ -255,11 +316,17 @@ async function submitOrder(): Promise<void> {
       quantity: marketBuy.value ? '' : form.quantity,
       quote_budget: marketBuy.value ? form.quoteBudget : '',
     })
-    notice.value = `请求 ${form.clientOrderID} 已处理`
+    notice.value = `请求 ${submittedID} 已处理`
     form.clientOrderID = crypto.randomUUID()
     await refreshAll()
   } catch (error) {
-    showError(error)
+    if (error instanceof TradingRequestError && error.uncertain) {
+      unknownClientOrderID.value = submittedID
+      notice.value = `请求 ${submittedID} 为 submitted/unknown；不会自动重下，正在查询权威订单事实`
+      window.setTimeout(() => void loadPrivate(), 1500)
+    } else {
+      showError(error)
+    }
   } finally {
     busy.value = false
   }
@@ -302,6 +369,10 @@ function scheduleRefresh(): void {
 }
 
 async function connectEvents(): Promise<void> {
+  if (tradingEventMode() === 'polling') {
+    wsState.value = 'polling'
+    return
+  }
   if (!principal.value || wsState.value === 'connecting' || wsState.value === 'live') return
   wsState.value = wsState.value === 'offline' ? 'connecting' : 'retrying'
   try {
@@ -405,7 +476,6 @@ async function loadKline(): Promise<void> {
     await nextTick()
     renderChart()
   } catch (error) {
-    klines.value = []
     klineError.value = error instanceof Error ? error.message : String(error)
     renderChart()
   }
@@ -484,7 +554,10 @@ onMounted(async () => {
   ) {
     await discoverSession()
   }
-  publicTimer = window.setInterval(() => void loadPublic(), 3000)
+  publicTimer = window.setInterval(
+    () => void (tradingEventMode() === 'polling' ? refreshAll() : loadPublic()),
+    3000,
+  )
   marketTimer = window.setInterval(() => void refreshMarketData(), 15_000)
   window.addEventListener('resize', resizeChart)
 })
@@ -542,8 +615,8 @@ onBeforeUnmount(() => {
       </article>
       <article class="trade-metric card">
         <span>撮合运行时</span>
-        <strong>{{ status.state }}</strong>
-        <em>sequence {{ status.sequence }} · queue {{ status.queue_depth }}</em>
+        <strong>{{ matchingState }}</strong>
+        <em>sequence {{ status.sequence }} · age {{ statusAgeSeconds < 0 ? '—' : `${statusAgeSeconds}s` }}</em>
       </article>
       <article class="trade-metric card">
         <span>恢复与事件</span>
@@ -551,9 +624,9 @@ onBeforeUnmount(() => {
         <em>recovery count · hash replay guarded</em>
       </article>
       <article class="trade-metric card">
-        <span>WebSocket</span>
-        <strong>{{ wsState }}</strong>
-        <em>cursor {{ cursor?.sequence ?? '0' }}:{{ cursor?.event_index ?? 0 }}</em>
+        <span>传输 / 流动性</span>
+        <strong>{{ transportState }}</strong>
+        <em>{{ wsState }} · liquidity {{ liquidityState }}</em>
       </article>
     </section>
 
@@ -606,7 +679,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="book-spread">
           <button :disabled="!bestBid" @click="useBookPrice('bid')">Bid {{ bestBid || '—' }}</button>
-          <strong>{{ status.state.toUpperCase() }}</strong>
+          <strong>{{ matchingState.toUpperCase() }}</strong>
           <button :disabled="!bestAsk" @click="useBookPrice('ask')">Ask {{ bestAsk || '—' }}</button>
         </div>
         <div class="book-side book-side--bids">
@@ -644,7 +717,7 @@ onBeforeUnmount(() => {
             Client Order ID
             <span class="input-pair">
               <input v-model="form.clientOrderID" class="input" autocomplete="off" />
-              <button class="btn" @click="resetClientOrderID">重置</button>
+              <button class="btn" :disabled="Boolean(unknownClientOrderID)" @click="resetClientOrderID">重置</button>
             </span>
           </label>
           <label v-if="form.type === 'limit'">
@@ -680,10 +753,14 @@ onBeforeUnmount(() => {
           <button
             class="submit-order"
             :class="`submit-order--${form.side}`"
-            :disabled="busy || !loggedIn"
+            :disabled="!writesEnabled"
             @click="submitOrder"
           >
-            {{ loggedIn ? `${form.side === 'buy' ? '买入' : '卖出'} BTC` : '登录后下单' }}
+            {{ unknownClientOrderID
+              ? '订单状态确认中'
+              : loggedIn
+                ? `${form.side === 'buy' ? '买入' : '卖出'} BTC`
+                : '登录后下单' }}
           </button>
         </div>
       </article>
@@ -714,7 +791,7 @@ onBeforeUnmount(() => {
             <label>目标账户（留空为自己）
               <input v-model="funding.accountID" class="input" placeholder="github:qianqiu0404" />
             </label>
-            <button class="btn btn--accent" :disabled="busy || !principal?.admin" @click="fundVirtual">
+            <button class="btn btn--accent" :disabled="!principal?.admin || !writesEnabled" @click="fundVirtual">
               发放虚拟资金
             </button>
           </div>
@@ -754,7 +831,7 @@ onBeforeUnmount(() => {
           <div v-for="order in openOrders" :key="order.id" class="record-row">
             <code>{{ shortID(order.id) }}</code><span :class="order.side">{{ order.side }}</span>
             <span>{{ order.price || 'Market' }}</span><span>{{ order.remaining_quantity }}</span>
-            <span>{{ order.status }}</span><button class="cancel-link" @click="cancelOrder(order)">撤单</button>
+            <span>{{ order.status }}</span><button class="cancel-link" :disabled="!writesEnabled" @click="cancelOrder(order)">撤单</button>
           </div>
           <div v-if="!openOrders.length" class="empty-line">暂无当前委托</div>
         </div>

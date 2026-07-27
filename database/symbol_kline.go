@@ -195,6 +195,7 @@ ORDER BY market_id ASC, open_time ASC`
 }
 
 func (s *symbolKlineDB) StoreSymbolKlines(list []SymbolKline) error {
+	list = RetainedKlines(list, time.Now().UTC())
 	if len(list) == 0 {
 		return nil
 	}
@@ -208,6 +209,13 @@ func (s *symbolKlineDB) StoreSymbolKlines(list []SymbolKline) error {
 }
 
 func (s *symbolKlineDB) StoreSymbolKline(data *SymbolKline) error {
+	if data == nil {
+		return nil
+	}
+	if cutoff, bounded := KlineRetentionCutoff(data.Interval, time.Now().UTC()); bounded &&
+		data.OpenTime.UTC().Before(cutoff) {
+		return nil
+	}
 	if err := s.gorm.Table("symbol_kline").
 		Clauses(klineUpsertClause()).
 		Create(data).Error; err != nil {
@@ -215,6 +223,24 @@ func (s *symbolKlineDB) StoreSymbolKline(data *SymbolKline) error {
 		return err
 	}
 	return nil
+}
+
+// RetainedKlines is the write-side guard for late repair tasks and provider
+// backfills. The daily retention worker reclaims existing rows, while this
+// filter prevents bounded intervals from being reintroduced afterwards.
+func RetainedKlines(list []SymbolKline, now time.Time) []SymbolKline {
+	if len(list) == 0 {
+		return nil
+	}
+	retained := make([]SymbolKline, 0, len(list))
+	for _, item := range list {
+		cutoff, bounded := KlineRetentionCutoff(item.Interval, now)
+		if bounded && item.OpenTime.UTC().Before(cutoff) {
+			continue
+		}
+		retained = append(retained, item)
+	}
+	return retained
 }
 
 func klineUpsertClause() clause.OnConflict {

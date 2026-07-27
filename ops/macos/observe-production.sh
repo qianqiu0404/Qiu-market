@@ -9,6 +9,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 support_dir="$HOME/Library/Application Support/Qiu Market"
 observation_dir="${QIU_MARKET_OBSERVATION_DIR:-$support_dir/observations}"
+production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
 funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
 lock_dir="$observation_dir/.observer.lock"
@@ -32,21 +33,33 @@ for command in curl jq psql; do
     exit 1
   fi
 done
-if [ ! -f "$repo_root/.env" ]; then
-  echo "Qiu Market repository .env is unavailable: $repo_root/.env" >&2
+if [ ! -f "$repo_root/.env" ] || [ ! -f "$production_env" ]; then
+  echo "Qiu Market private database or production environment is unavailable." >&2
   exit 1
 fi
 
 # shellcheck disable=SC1091
 source "$repo_root/.env"
+# shellcheck disable=SC1091
+source "$production_env"
 
 curl_code() {
   local output="$1"
   shift
+  local result
   local code
-  code="$(curl --silent --show-error --max-time 20 \
-    --output "$output" --write-out '%{http_code}' "$@" \
+  local duration
+  result="$(curl --silent --show-error --max-time 20 \
+    --output "$output" --write-out '%{http_code} %{time_total}' "$@" \
     2>>"$temp_dir/curl-errors.log" || true)"
+  code="${result%% *}"
+  duration="${result#* }"
+  if [[ "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    awk -v seconds="$duration" 'BEGIN { printf "%.0f\n", seconds * 1000 }' \
+      > "$output.latency-ms"
+  else
+    printf '20000\n' > "$output.latency-ms"
+  fi
   if [[ "$code" =~ ^[0-9]{3}$ ]]; then
     printf '%s' "$code"
   else
@@ -63,6 +76,11 @@ unsigned_http="$(curl_code "$temp_dir/unsigned.json" \
   "$funnel_origin/api/v2/get_market_overview")"
 trading_http="$(curl_code "$temp_dir/trading.json" \
   "$production_origin/api/v1/trading/markets/BTC-USDT/status")"
+system_http="$(curl_code "$temp_dir/system.json" \
+  --request POST \
+  --header 'content-type: application/json' \
+  --data '{"consumer_token":"production-observer"}' \
+  "$production_origin/api/v1/get_system_overview")"
 
 dashboard_body() {
   local venue="$1"
@@ -134,6 +152,17 @@ if [ "$trading_http" = 200 ]; then
   trading_state="$(jq -r '.state // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_sequence="$(jq -r '.sequence // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_last_error="$(jq -r '.last_error // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
+fi
+
+disk_free_bytes=0
+disk_state=""
+retention_last_success_at=0
+retention_last_error=""
+if [ "$system_http" = 200 ]; then
+  disk_free_bytes="$(jq -r '.result.storage.disk_free_bytes // 0' "$temp_dir/system.json" 2>/dev/null || echo 0)"
+  disk_state="$(jq -r '.result.storage.disk_state // ""' "$temp_dir/system.json" 2>/dev/null || true)"
+  retention_last_success_at="$(jq -r '.result.storage.retention_last_success_at // 0' "$temp_dir/system.json" 2>/dev/null || echo 0)"
+  retention_last_error="$(jq -r '.result.storage.retention_last_error // ""' "$temp_dir/system.json" 2>/dev/null || true)"
 fi
 
 psql_command=(
@@ -252,10 +281,13 @@ if [ "$site_http" = 200 ] &&
   [ "$funnel_health_http" = 200 ] &&
   [ "$unsigned_http" = 401 ] &&
   [ "$trading_http" = 200 ] &&
+  [ "$system_http" = 200 ] &&
   [ "$uniswap_http" = 200 ] &&
   [ "$pancake_http" = 200 ] &&
   [ "$trading_state" = ready ] &&
   [ -z "$trading_last_error" ] &&
+  [ "$disk_free_bytes" -ge $((25 * 1024 * 1024 * 1024)) ] &&
+  [ -z "$retention_last_error" ] &&
   [ "$database_ok" = true ]; then
   sample_ok=true
 fi
@@ -269,6 +301,10 @@ if jq -e '
 fi
 
 observed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+site_latency_ms="$(cat "$temp_dir/site.html.latency-ms")"
+funnel_latency_ms="$(cat "$temp_dir/funnel-health.txt.latency-ms")"
+trading_latency_ms="$(cat "$temp_dir/trading.json.latency-ms")"
+system_latency_ms="$(cat "$temp_dir/system.json.latency-ms")"
 latest_report="$observation_dir/latest.json"
 history_file="$observation_dir/production-soak.jsonl"
 jq -n \
@@ -279,17 +315,26 @@ jq -n \
   --arg funnel_health_http "$funnel_health_http" \
   --arg unsigned_http "$unsigned_http" \
   --arg trading_http "$trading_http" \
+  --arg system_http "$system_http" \
   --arg trading_state "$trading_state" \
   --arg trading_sequence "$trading_sequence" \
   --arg trading_last_error "$trading_last_error" \
   --arg sample_ok "$sample_ok" \
   --arg database_ok "$database_ok" \
   --arg historical_complete "$historical_complete" \
+  --arg disk_free_bytes "$disk_free_bytes" \
+  --arg disk_state "$disk_state" \
+  --arg retention_last_success_at "$retention_last_success_at" \
+  --arg retention_last_error "$retention_last_error" \
+  --arg site_latency_ms "$site_latency_ms" \
+  --arg funnel_latency_ms "$funnel_latency_ms" \
+  --arg trading_latency_ms "$trading_latency_ms" \
+  --arg system_latency_ms "$system_latency_ms" \
   --argjson uniswap "$uniswap_summary" \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
   '{
-    schema_version: 1,
+    schema_version: 2,
     observed_at: $observed_at,
     status: (
       if $sample_ok != "true" then "failed"
@@ -310,10 +355,21 @@ jq -n \
       funnel_health_http: ($funnel_health_http | tonumber? // 0),
       unsigned_funnel_rest_http: ($unsigned_http | tonumber? // 0),
       trading_bff_http: ($trading_http | tonumber? // 0),
+      system_bff_http: ($system_http | tonumber? // 0),
       trading_state: $trading_state,
       trading_sequence: $trading_sequence,
       trading_last_error: $trading_last_error,
-      database_ok: ($database_ok == "true")
+      database_ok: ($database_ok == "true"),
+      disk_free_bytes: ($disk_free_bytes | tonumber? // 0),
+      disk_state: $disk_state,
+      retention_last_success_at: ($retention_last_success_at | tonumber? // 0),
+      retention_last_error: $retention_last_error
+    },
+    latency_ms: {
+      production_page: ($site_latency_ms | tonumber? // 20000),
+      funnel_health: ($funnel_latency_ms | tonumber? // 20000),
+      trading_bff: ($trading_latency_ms | tonumber? // 20000),
+      system_bff: ($system_latency_ms | tonumber? // 20000)
     },
     dex: [$uniswap, $pancakeswap],
     historical_windows: $coverage

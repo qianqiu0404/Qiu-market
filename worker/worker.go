@@ -29,8 +29,47 @@ func (w *Worker) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	go w.runGapScanner(runCtx)
-	log.Info("Starting worker (K-line gap scanner only; no market snapshot writes)")
+	go w.runKlineRetention(runCtx)
+	log.Info("Starting worker (K-line gap scanner and bounded retention; no market snapshot writes)")
 	return nil
+}
+
+func (w *Worker) runKlineRetention(ctx context.Context) {
+	w.applyKlineRetention(ctx, time.Now().UTC())
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			w.applyKlineRetention(ctx, now.UTC())
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (w *Worker) applyKlineRetention(ctx context.Context, now time.Time) {
+	result, err := w.db.KlineRetention.Run(
+		ctx,
+		now,
+		database.ExtremeSpaceKlineRetentionPolicies(),
+		10_000,
+	)
+	if err != nil {
+		log.Error("worker K-line retention failed", "error", err)
+		return
+	}
+	if result.Skipped {
+		log.Info("worker K-line retention skipped; another owner holds the advisory lock")
+		return
+	}
+	log.Info(
+		"worker K-line retention complete",
+		"deleted_1m", result.Deleted["1m"],
+		"deleted_15m", result.Deleted["15m"],
+		"deleted_1h", result.Deleted["1h"],
+		"duration", result.FinishedAt.Sub(result.StartedAt),
+	)
 }
 
 func (w *Worker) Stop(ctx context.Context) error {
