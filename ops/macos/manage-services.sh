@@ -71,8 +71,21 @@ case "$action" in
     mkdir -p "$launch_dir"
     for role in "${roles[@]}"; do
       render_plist "$role"
+    done
+    for role in "${roles[@]}"; do
       launchctl bootout "gui/$UID/com.qiumarket.$role" >/dev/null 2>&1 || true
-      launchctl bootstrap "gui/$UID" "$launch_dir/com.qiumarket.$role.plist"
+      bootstrapped=false
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if launchctl bootstrap "gui/$UID" "$launch_dir/com.qiumarket.$role.plist" >/dev/null 2>&1; then
+          bootstrapped=true
+          break
+        fi
+        sleep 1
+      done
+      if [ "$bootstrapped" != true ]; then
+        echo "Failed to bootstrap Qiu Market role after reload: $role" >&2
+        exit 1
+      fi
     done
     echo "Reloaded Qiu Market LaunchAgents with current definitions."
     ;;
