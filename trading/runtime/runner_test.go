@@ -52,6 +52,20 @@ func (s *blockingStore) Append(ctx context.Context, expectedSequence uint64, rec
 	return s.Memory.Append(ctx, expectedSequence, record)
 }
 
+type deadlineSnapshotStore struct {
+	*store.Memory
+	deadlines chan time.Duration
+}
+
+func (s *deadlineSnapshotStore) Save(ctx context.Context, snapshot store.Snapshot) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("snapshot context has no deadline")
+	}
+	s.deadlines <- time.Until(deadline)
+	return s.Memory.Save(ctx, snapshot)
+}
+
 func TestMarketRunnerRecoversUnknownCommitAndRetryIsIdempotent(t *testing.T) {
 	t.Parallel()
 
@@ -186,6 +200,48 @@ func TestMarketRunnerBackpressureAndGracefulSnapshot(t *testing.T) {
 		Amount:    1,
 	}); !errors.Is(err, runtime.ErrClosed) {
 		t.Fatalf("after-close error = %v", err)
+	}
+}
+
+func TestMarketRunnerUsesConfiguredSnapshotTimeout(t *testing.T) {
+	t.Parallel()
+
+	persistence := &deadlineSnapshotStore{
+		Memory:    store.NewMemory(),
+		deadlines: make(chan time.Duration, 2),
+	}
+	const snapshotTimeout = 45 * time.Second
+	runner, err := runtime.NewMarketRunner(
+		context.Background(),
+		testMarket(),
+		persistence,
+		persistence,
+		runtime.Config{
+			QueueSize:       8,
+			SnapshotEvery:   1,
+			SnapshotTimeout: snapshotTimeout,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRunner(t, runner)
+
+	if _, err := runner.Fund(context.Background(), domain.FundRequest{
+		RequestID: "fund-snapshot-timeout",
+		AccountID: "alice",
+		Asset:     "USDT",
+		Amount:    1_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	remaining := <-persistence.deadlines
+	if remaining < 40*time.Second || remaining > snapshotTimeout {
+		t.Fatalf("snapshot deadline remaining = %s, want close to %s", remaining, snapshotTimeout)
+	}
+	if status := runner.Status(); status.LastError != "" {
+		t.Fatalf("runner status after snapshot = %+v", status)
 	}
 }
 

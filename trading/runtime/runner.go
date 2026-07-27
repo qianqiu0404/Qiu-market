@@ -29,14 +29,16 @@ const (
 )
 
 type Config struct {
-	QueueSize     int
-	SnapshotEvery uint64
+	QueueSize       int
+	SnapshotEvery   uint64
+	SnapshotTimeout time.Duration
 }
 
 func DefaultConfig() Config {
 	return Config{
-		QueueSize:     256,
-		SnapshotEvery: 100,
+		QueueSize:       256,
+		SnapshotEvery:   100,
+		SnapshotTimeout: 2 * time.Minute,
 	}
 }
 
@@ -109,6 +111,12 @@ func NewMarketRunner(
 	}
 	if config.SnapshotEvery == 0 {
 		return nil, fmt.Errorf("snapshot interval must be positive")
+	}
+	if config.SnapshotTimeout < 0 {
+		return nil, fmt.Errorf("snapshot timeout must not be negative")
+	}
+	if config.SnapshotTimeout == 0 {
+		config.SnapshotTimeout = DefaultConfig().SnapshotTimeout
 	}
 	restored, err := exchange.Restore(ctx, market, eventLog, snapshots)
 	if err != nil {
@@ -291,7 +299,7 @@ func (r *MarketRunner) drainAndClose() {
 			r.mu.RLock()
 			trading := r.trading
 			r.mu.RUnlock()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), r.config.SnapshotTimeout)
 			_, err := trading.SaveSnapshot(ctx)
 			cancel()
 			r.mu.Lock()
@@ -340,7 +348,10 @@ func (r *MarketRunner) handle(request command) {
 		r.sequence = after
 		r.mu.Unlock()
 		if after > before && after%r.config.SnapshotEvery == 0 {
-			snapshotContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			snapshotContext, cancel := context.WithTimeout(
+				context.Background(),
+				r.config.SnapshotTimeout,
+			)
 			_, snapshotErr := trading.SaveSnapshot(snapshotContext)
 			cancel()
 			if snapshotErr != nil {
