@@ -32,6 +32,7 @@ type Config struct {
 	Quantity      int64
 	MaxAge        time.Duration
 	MaxJumpBPS    int64
+	MinRepriceBPS int64
 	RefreshEvery  time.Duration
 	RequestPrefix string
 }
@@ -43,6 +44,7 @@ func DefaultConfig() Config {
 		Quantity:      1_000_000,
 		MaxAge:        30 * time.Second,
 		MaxJumpBPS:    500,
+		MinRepriceBPS: 10,
 		RefreshEvery:  5 * time.Second,
 		RequestPrefix: "demo-maker",
 	}
@@ -70,6 +72,7 @@ func New(
 	if engine == nil || source == nil || config.AccountID == "" ||
 		config.Quantity <= 0 || config.MaxAge <= 0 || config.RefreshEvery <= 0 ||
 		config.MaxJumpBPS <= 0 || config.MaxJumpBPS >= 10_000 ||
+		config.MinRepriceBPS <= 0 || config.MinRepriceBPS > config.MaxJumpBPS ||
 		config.RequestPrefix == "" || len(config.SpreadsBPS) == 0 {
 		return nil, fmt.Errorf("invalid demo maker configuration")
 	}
@@ -126,6 +129,19 @@ func (m *Maker) refresh(ctx context.Context) error {
 	if err := m.validateReference(reference); err != nil {
 		return m.stopUnsafe(ctx, err)
 	}
+	openOrders, err := m.engine.Orders(m.config.AccountID, true)
+	if err != nil {
+		return fmt.Errorf("read current demo-maker quotes: %w", err)
+	}
+	// Safety is checked on every refresh, but a small reference-price movement
+	// should not create twelve cancel/submit commands every five seconds.
+	// Existing quotes remain within MinRepriceBPS until the cumulative movement
+	// from the last quoted reference reaches the configured threshold.
+	if len(openOrders) == 2*len(m.config.SpreadsBPS) &&
+		m.previousPrice > 0 &&
+		!m.shouldReprice(reference.Price) {
+		return nil
+	}
 	if err := m.cancelAll(ctx); err != nil {
 		return fmt.Errorf("cancel previous demo-maker quotes: %w", err)
 	}
@@ -175,6 +191,18 @@ func (m *Maker) refresh(ctx context.Context) error {
 	}
 	m.previousPrice = reference.Price
 	return nil
+}
+
+func (m *Maker) shouldReprice(referencePrice int64) bool {
+	difference := referencePrice - m.previousPrice
+	if difference < 0 {
+		difference = -difference
+	}
+	movementBPS, err := domain.CheckedMulDivCeil(difference, 10_000, m.previousPrice)
+	if err != nil {
+		return true
+	}
+	return movementBPS >= m.config.MinRepriceBPS
 }
 
 func (m *Maker) validateReference(reference Reference) error {

@@ -2,6 +2,8 @@ package exchange
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
@@ -358,10 +360,8 @@ func (e *Exchange) SaveSnapshot(ctx context.Context) (store.Snapshot, error) {
 	if err != nil {
 		return store.Snapshot{}, err
 	}
-	hash, err := e.state.hash()
-	if err != nil {
-		return store.Snapshot{}, err
-	}
+	sum := sha256.Sum256(payload)
+	hash := hex.EncodeToString(sum[:])
 	snapshot := store.Snapshot{
 		SchemaVersion: store.CurrentSchemaVersion,
 		MarketID:      e.state.market.ID,

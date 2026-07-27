@@ -78,6 +78,19 @@ func TestDemoMakerQuotesThreeLevelsAndStopsOnStaleOrJump(t *testing.T) {
 	assertQuote(t, orders, domain.SideBuy, 59_700_000_000)
 	assertQuote(t, orders, domain.SideSell, 60_300_000_000)
 
+	sequenceBeforeSmallMove := runner.Status().Sequence
+	source.reference = marketmaker.Reference{
+		Price:      60_030_000_000,
+		ObservedAt: time.Now(),
+	}
+	if err := maker.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.Status().Sequence != sequenceBeforeSmallMove {
+		t.Fatalf("small reference movement churned quotes: sequence=%d want=%d",
+			runner.Status().Sequence, sequenceBeforeSmallMove)
+	}
+
 	source.reference = marketmaker.Reference{
 		Price:      60_600_000_000,
 		ObservedAt: time.Now(),

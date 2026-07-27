@@ -62,7 +62,29 @@ func newState(market domain.Market) (*state, error) {
 }
 
 func (s *state) clone() (*state, error) {
-	return stateFromPersisted(s.persisted())
+	book, err := orderbook.FromSnapshot(s.market, s.book.Snapshot())
+	if err != nil {
+		return nil, fmt.Errorf("clone order book: %w", err)
+	}
+	cloned := &state{
+		market:   s.market,
+		sequence: s.sequence,
+		book:     book,
+		ledger:   s.ledger.Clone(),
+		orders:   make(map[domain.OrderID]domain.Order, len(s.orders)),
+		trades:   append([]domain.Trade(nil), s.trades...),
+		requests: make(map[domain.IdempotencyKey]requestRecord, len(s.requests)),
+	}
+	for orderID, order := range s.orders {
+		cloned.orders[orderID] = order
+	}
+	for key, record := range s.requests {
+		cloned.requests[key] = requestRecord{
+			Fingerprint: record.Fingerprint,
+			Result:      cloneResult(record.Result),
+		}
+	}
+	return cloned, nil
 }
 
 func (s *state) persisted() persistedState {
