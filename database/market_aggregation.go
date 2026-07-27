@@ -125,41 +125,49 @@ type AssetIndexDashboardQuery struct {
 }
 
 type AssetIndexDashboardRow struct {
-	AssetID             string     `gorm:"column:asset_id"`
-	AssetSymbol         string     `gorm:"column:asset_symbol"`
-	AssetName           string     `gorm:"column:asset_name"`
-	Logo                string     `gorm:"column:logo"`
-	Rank                *int       `gorm:"column:rank"`
-	SelectionVersion    int64      `gorm:"column:selection_version"`
-	SelectionRank       int        `gorm:"column:selection_rank"`
-	Price               *string    `gorm:"column:price"`
-	CompositePrice      *string    `gorm:"column:composite_price"`
-	Change24hPct        *string    `gorm:"column:change_24h_pct"`
-	MarketCapUSD        *string    `gorm:"column:market_cap_usd"`
-	Turnover24hUSD      *string    `gorm:"column:turnover_24h_usd"`
-	CirculatingSupply   *string    `gorm:"column:circulating_supply"`
-	SpotMarketCount     int64      `gorm:"column:spot_market_count"`
-	PerpMarketCount     int64      `gorm:"column:perp_market_count"`
-	DexRouteCount       int64      `gorm:"column:dex_route_count"`
-	ContributorCount    int        `gorm:"column:contributor_count"`
-	PricedVenueCount    int        `gorm:"column:priced_venue_count"`
-	Confidence          string     `gorm:"column:confidence"`
-	Quality             string     `gorm:"column:quality"`
-	PriceKind           string     `gorm:"column:price_kind"`
-	PriceSource         string     `gorm:"column:price_source"`
-	CoverageStatus      string     `gorm:"column:coverage_status"`
-	CoverageReason      string     `gorm:"column:coverage_reason"`
-	FreshnessStatus     string     `gorm:"column:freshness_status"`
-	FreshnessAgeSeconds *int64     `gorm:"column:freshness_age_seconds"`
-	Available           bool       `gorm:"column:available"`
-	SourceTime          *time.Time `gorm:"column:source_time"`
-	ObservedAt          *time.Time `gorm:"column:observed_at"`
-	ProviderUpdatedAt   *time.Time `gorm:"column:provider_updated_at"`
-	LatestAvailable     bool       `gorm:"column:latest_available"`
-	LatestObservedAt    *time.Time `gorm:"column:latest_observed_at"`
-	LastAttemptAt       *time.Time `gorm:"column:last_attempt_at"`
-	LastSuccessAt       *time.Time `gorm:"column:last_success_at"`
-	LastErrorClass      *string    `gorm:"column:last_error_class"`
+	AssetID              string     `gorm:"column:asset_id"`
+	AssetSymbol          string     `gorm:"column:asset_symbol"`
+	AssetName            string     `gorm:"column:asset_name"`
+	Logo                 string     `gorm:"column:logo"`
+	Rank                 *int       `gorm:"column:rank"`
+	SelectionVersion     int64      `gorm:"column:selection_version"`
+	SelectionRank        int        `gorm:"column:selection_rank"`
+	Price                *string    `gorm:"column:price"`
+	CompositePrice       *string    `gorm:"column:composite_price"`
+	MarketReferencePrice *string    `gorm:"column:market_reference_price"`
+	DisplayPrice         *string    `gorm:"column:display_price"`
+	DisplayPriceKind     string     `gorm:"column:display_price_kind"`
+	DisplayChange24hPct  *string    `gorm:"column:display_change_24h_pct"`
+	DisplayChangeKind    string     `gorm:"column:display_change_kind"`
+	DisplayAvailable     bool       `gorm:"column:display_available"`
+	DisplayObservedAt    *time.Time `gorm:"column:display_observed_at"`
+	DexRouteAvailable    bool       `gorm:"column:dex_route_available"`
+	Change24hPct         *string    `gorm:"column:change_24h_pct"`
+	MarketCapUSD         *string    `gorm:"column:market_cap_usd"`
+	Turnover24hUSD       *string    `gorm:"column:turnover_24h_usd"`
+	CirculatingSupply    *string    `gorm:"column:circulating_supply"`
+	SpotMarketCount      int64      `gorm:"column:spot_market_count"`
+	PerpMarketCount      int64      `gorm:"column:perp_market_count"`
+	DexRouteCount        int64      `gorm:"column:dex_route_count"`
+	ContributorCount     int        `gorm:"column:contributor_count"`
+	PricedVenueCount     int        `gorm:"column:priced_venue_count"`
+	Confidence           string     `gorm:"column:confidence"`
+	Quality              string     `gorm:"column:quality"`
+	PriceKind            string     `gorm:"column:price_kind"`
+	PriceSource          string     `gorm:"column:price_source"`
+	CoverageStatus       string     `gorm:"column:coverage_status"`
+	CoverageReason       string     `gorm:"column:coverage_reason"`
+	FreshnessStatus      string     `gorm:"column:freshness_status"`
+	FreshnessAgeSeconds  *int64     `gorm:"column:freshness_age_seconds"`
+	Available            bool       `gorm:"column:available"`
+	SourceTime           *time.Time `gorm:"column:source_time"`
+	ObservedAt           *time.Time `gorm:"column:observed_at"`
+	ProviderUpdatedAt    *time.Time `gorm:"column:provider_updated_at"`
+	LatestAvailable      bool       `gorm:"column:latest_available"`
+	LatestObservedAt     *time.Time `gorm:"column:latest_observed_at"`
+	LastAttemptAt        *time.Time `gorm:"column:last_attempt_at"`
+	LastSuccessAt        *time.Time `gorm:"column:last_success_at"`
+	LastErrorClass       *string    `gorm:"column:last_error_class"`
 }
 
 type AssetMarketReadRow struct {
@@ -209,6 +217,10 @@ type AssetIndexSummary struct {
 	EligibleAssetCount          int64      `gorm:"column:eligible_asset_count"`
 	PublishedAssetCount         int64      `gorm:"column:published_asset_count"`
 	PricedAssetCount            int64      `gorm:"column:priced_asset_count"`
+	DisplayedAssetCount         int64      `gorm:"column:displayed_asset_count"`
+	RoutableAssetCount          int64      `gorm:"column:routable_asset_count"`
+	ReferenceOnlyAssetCount     int64      `gorm:"column:reference_only_asset_count"`
+	UnpricedAssetCount          int64      `gorm:"column:unpriced_asset_count"`
 	ChangeAvailableCount        int64      `gorm:"column:change_available_count"`
 	Advancers                   int64      `gorm:"column:advancers"`
 	Decliners                   int64      `gorm:"column:decliners"`
@@ -550,7 +562,74 @@ func (m *marketAggregationDB) UpsertAssetPriceIndexes(items []AssetPriceIndex) e
 	}).CreateInBatches(items, 250).Error
 }
 
-func assetDashboardOrder(sortBy, direction string) string {
+type dashboardDisplayExpressions struct {
+	price      string
+	priceKind  string
+	change     string
+	changeKind string
+	available  string
+	observedAt string
+	dexRoute   string
+}
+
+func dashboardDisplay(venue string) dashboardDisplayExpressions {
+	if venue == "uniswap" || venue == "pancakeswap" {
+		const routeFresh = "venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '60 seconds'"
+		return dashboardDisplayExpressions{
+			price: `CASE
+				WHEN ` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL THEN venue_snapshot.price_usd
+				WHEN composite.price_usd IS NOT NULL THEN composite.price_usd
+				WHEN am.reference_price_usd IS NOT NULL
+				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
+				THEN am.reference_price_usd
+			END`,
+			priceKind: `CASE
+				WHEN ` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL THEN 'dex_route'
+				WHEN composite.price_usd IS NOT NULL THEN 'composite_reference'
+				WHEN am.reference_price_usd IS NOT NULL
+				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
+				THEN 'market_reference'
+				ELSE 'unavailable'
+			END`,
+			change: `CASE
+				WHEN ` + routeFresh + ` AND venue_snapshot.change_24h_pct IS NOT NULL
+				THEN venue_snapshot.change_24h_pct
+				WHEN composite.change_24h_pct IS NOT NULL THEN composite.change_24h_pct
+			END`,
+			changeKind: `CASE
+				WHEN ` + routeFresh + ` AND venue_snapshot.change_24h_pct IS NOT NULL
+				THEN 'dex_route'
+				WHEN composite.change_24h_pct IS NOT NULL THEN 'composite_reference'
+				ELSE 'unavailable'
+			END`,
+			available: `(` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL)
+				OR composite.price_usd IS NOT NULL
+				OR (am.reference_price_usd IS NOT NULL
+					AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes')`,
+			observedAt: `CASE
+				WHEN ` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL
+				THEN venue_snapshot.last_success_at
+				WHEN composite.price_usd IS NOT NULL THEN composite.observed_at
+				WHEN am.reference_price_usd IS NOT NULL
+				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
+				THEN am.observed_at
+			END`,
+			dexRoute: `(` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL)`,
+		}
+	}
+	const venueVisible = "venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'"
+	return dashboardDisplayExpressions{
+		price:      `CASE WHEN ` + venueVisible + ` THEN venue_snapshot.price_usd END`,
+		priceKind:  `CASE WHEN ` + venueVisible + ` AND venue_snapshot.price_usd IS NOT NULL THEN COALESCE(venue_snapshot.price_kind, 'unavailable') ELSE 'unavailable' END`,
+		change:     `CASE WHEN ` + venueVisible + ` THEN venue_snapshot.change_24h_pct END`,
+		changeKind: `CASE WHEN ` + venueVisible + ` AND venue_snapshot.change_24h_pct IS NOT NULL THEN COALESCE(venue_snapshot.price_kind, 'unavailable') ELSE 'unavailable' END`,
+		available:  `(` + venueVisible + ` AND venue_snapshot.price_usd IS NOT NULL)`,
+		observedAt: `CASE WHEN ` + venueVisible + ` AND venue_snapshot.price_usd IS NOT NULL THEN venue_snapshot.last_success_at END`,
+		dexRoute:   "FALSE",
+	}
+}
+
+func assetDashboardOrder(sortBy, direction string, display dashboardDisplayExpressions) string {
 	dir := "DESC"
 	if strings.EqualFold(direction, "asc") {
 		dir = "ASC"
@@ -559,9 +638,9 @@ func assetDashboardOrder(sortBy, direction string) string {
 	case "asset", "symbol":
 		return "upper(a.asset_symbol) " + dir + ", am.asset_guid ASC"
 	case "price":
-		return "CASE WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' THEN venue_snapshot.price_usd END " + dir + " NULLS LAST, am.asset_guid ASC"
+		return display.price + " " + dir + " NULLS LAST, am.asset_guid ASC"
 	case "change24h":
-		return "CASE WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' THEN venue_snapshot.change_24h_pct END " + dir + " NULLS LAST, am.asset_guid ASC"
+		return display.change + " " + dir + " NULLS LAST, am.asset_guid ASC"
 	case "volume", "turnover24h":
 		return "CASE WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' THEN venue_snapshot.turnover_24h_usd END " + dir + " NULLS LAST, am.asset_guid ASC"
 	case "market_cap":
@@ -644,6 +723,11 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 	if err != nil {
 		return nil, 0, err
 	}
+	display := dashboardDisplay(venue)
+	venueStatisticFresh := "venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'"
+	if venue == "uniswap" || venue == "pancakeswap" {
+		venueStatisticFresh = display.dexRoute
+	}
 	published := map[string]struct{}{}
 	eligible := map[string]struct{}{}
 	if venue != "all" {
@@ -717,18 +801,16 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 	}
 	switch strings.ToLower(strings.TrimSpace(query.Filter)) {
 	case "gainers":
-		base = base.Where(`venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds'
-			AND venue_snapshot.change_24h_pct > 0`)
+		base = base.Where("(" + display.change + ") > 0")
 	case "losers":
-		base = base.Where(`venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds'
-			AND venue_snapshot.change_24h_pct < 0`)
+		base = base.Where("(" + display.change + ") < 0")
 	}
 	var total int64
 	if err := base.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 	var rows []AssetIndexDashboardRow
-	err = base.Select(`am.asset_guid AS asset_id,
+	selectSQL := `am.asset_guid AS asset_id,
 			a.asset_symbol,
 			a.asset_name,
 			COALESCE(NULLIF(am.image_url, ''), a.asset_logo) AS logo,
@@ -741,12 +823,24 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 			END AS price,
 			composite.price_usd AS composite_price,
 			CASE
+				WHEN am.reference_price_usd IS NOT NULL
+				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
+				THEN am.reference_price_usd
+			END AS market_reference_price,
+			` + display.price + ` AS display_price,
+			` + display.priceKind + ` AS display_price_kind,
+			` + display.change + ` AS display_change_24h_pct,
+			` + display.changeKind + ` AS display_change_kind,
+			(` + display.available + `) AS display_available,
+			` + display.observedAt + ` AS display_observed_at,
+			(` + display.dexRoute + `) AS dex_route_available,
+			CASE
 				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'
 				THEN venue_snapshot.change_24h_pct
 			END AS change_24h_pct,
 			am.market_cap_usd,
 			CASE
-				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'
+				WHEN ` + venueStatisticFresh + `
 				THEN venue_snapshot.turnover_24h_usd
 			END AS turnover_24h_usd,
 			am.circulating_supply,
@@ -818,11 +912,15 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 				  AND published_route.provider = route.provider
 				  AND published_route.price_kind = 'dex_route'
 				  AND published_route.available = TRUE
-				  AND published_route.observed_at >= clock_timestamp() - INTERVAL '30 seconds'
+				  AND published_route.last_success_at >= clock_timestamp() - INTERVAL '60 seconds'
 				  )
 			) AS dex_route_count,
-			COALESCE(venue_snapshot.contributor_count, 0) AS contributor_count,
-			COALESCE(venue_snapshot.contributor_count, 0) AS priced_venue_count,
+			CASE WHEN ` + venueStatisticFresh + `
+				THEN COALESCE(venue_snapshot.contributor_count, 0) ELSE 0
+			END AS contributor_count,
+			CASE WHEN ` + venueStatisticFresh + `
+				THEN COALESCE(venue_snapshot.contributor_count, 0) ELSE 0
+			END AS priced_venue_count,
 			COALESCE(venue_snapshot.confidence, 'unknown') AS confidence,
 			COALESCE(venue_snapshot.quality, 'unknown') AS quality,
 			COALESCE(venue_snapshot.price_kind, ?) AS price_kind,
@@ -850,16 +948,21 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 			CASE
 				WHEN venue_snapshot.last_success_at IS NULL THEN NULL
 				ELSE GREATEST(0, EXTRACT(EPOCH FROM (clock_timestamp() - venue_snapshot.last_success_at)))::bigint
-			END AS freshness_age_seconds`,
+			END AS freshness_age_seconds`
+	err = base.Select(selectSQL,
 		venue, venue, venue, venue, venue, venue,
 		priceKind, venue).
-		Order(assetDashboardOrder(query.SortBy, query.SortDirection)).
+		Order(assetDashboardOrder(query.SortBy, query.SortDirection, display)).
 		Limit(int(query.PageSize)).
 		Offset(int((query.Page - 1) * query.PageSize)).
 		Scan(&rows).Error
 	for index := range rows {
 		row := &rows[index]
 		switch {
+		case (venue == "uniswap" || venue == "pancakeswap") &&
+			row.DisplayAvailable && !row.DexRouteAvailable:
+			row.CoverageStatus = "reference_only"
+			row.CoverageReason = "no_current_route"
 		case row.FreshnessStatus == "fresh":
 			row.CoverageStatus = "covered"
 			if row.Change24hPct == nil {
@@ -1158,20 +1261,58 @@ func (m *marketAggregationDB) QueryAssetIndexSummary(venue string) (*AssetIndexS
 			localPreviewEnabled = true
 		}
 	}
+	isDex := provider == "uniswap" || provider == "pancakeswap"
+	routeFreshCondition := "snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds'"
+	displayPriceCondition := routeFreshCondition
+	displayChange := "CASE WHEN " + routeFreshCondition + " THEN snapshot.change_24h_pct END"
+	referenceOnlyCondition := "FALSE"
+	displayObservedAt := "CASE WHEN " + routeFreshCondition + " THEN snapshot.last_success_at END"
+	if isDex {
+		routeFreshCondition = "snapshot.last_success_at >= clock_timestamp() - INTERVAL '60 seconds' AND snapshot.price_usd IS NOT NULL"
+		displayPriceCondition = `(` + routeFreshCondition + `)
+			OR (composite.available = TRUE
+				AND composite.observed_at >= clock_timestamp() - INTERVAL '30 seconds'
+				AND composite.price_usd IS NOT NULL)
+			OR (am.reference_price_usd IS NOT NULL
+				AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes')`
+		displayChange = `CASE
+			WHEN ` + routeFreshCondition + ` AND snapshot.change_24h_pct IS NOT NULL
+			THEN snapshot.change_24h_pct
+			WHEN composite.available = TRUE
+			  AND composite.observed_at >= clock_timestamp() - INTERVAL '30 seconds'
+			THEN composite.change_24h_pct
+		END`
+		referenceOnlyCondition = `(NOT (` + routeFreshCondition + `)) AND (` + displayPriceCondition + `)`
+		displayObservedAt = `CASE
+			WHEN ` + routeFreshCondition + ` THEN snapshot.last_success_at
+			WHEN composite.available = TRUE
+			  AND composite.observed_at >= clock_timestamp() - INTERVAL '30 seconds'
+			THEN composite.observed_at
+			WHEN am.reference_price_usd IS NOT NULL
+			  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
+			THEN am.observed_at
+		END`
+	}
 	var row AssetIndexSummary
+	summarySelect := `COUNT(*) AS asset_count,
+			COUNT(*) FILTER (WHERE ` + routeFreshCondition + `) AS priced_asset_count,
+			COUNT(*) FILTER (WHERE ` + displayPriceCondition + `) AS displayed_asset_count,
+			COUNT(*) FILTER (WHERE ` + routeFreshCondition + `) AS routable_asset_count,
+			COUNT(*) FILTER (WHERE ` + referenceOnlyCondition + `) AS reference_only_asset_count,
+			COUNT(*) FILTER (WHERE NOT (` + displayPriceCondition + `)) AS unpriced_asset_count,
+			COUNT(*) FILTER (WHERE ` + routeFreshCondition + ` AND snapshot.contributor_count = 1) AS single_venue_priced_asset_count,
+			COUNT(*) FILTER (WHERE ` + routeFreshCondition + ` AND snapshot.contributor_count >= 2) AS multi_venue_priced_asset_count,
+			COUNT(*) FILTER (WHERE (` + displayChange + `) IS NOT NULL) AS change_available_count,
+			COUNT(*) FILTER (WHERE (` + displayChange + `) > 0) AS advancers,
+			COUNT(*) FILTER (WHERE (` + displayChange + `) < 0) AS decliners,
+			COUNT(*) FILTER (WHERE (` + displayChange + `) = 0) AS flat,
+			COUNT(*) FILTER (WHERE (` + displayChange + `) IS NULL) AS unknown,
+			COALESCE(SUM(snapshot.turnover_24h_usd) FILTER (WHERE ` + routeFreshCondition + `), 0) AS covered_volume,
+			MAX(` + displayObservedAt + `) AS observed_at`
 	base := m.gorm.Table("(?) universe", universeQuery).
 		Joins("JOIN asset_metric_current am ON am.asset_guid = universe.asset_guid").
-		Select(`COUNT(*) AS asset_count,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds') AS priced_asset_count,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' AND snapshot.contributor_count = 1) AS single_venue_priced_asset_count,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' AND snapshot.contributor_count >= 2) AS multi_venue_priced_asset_count,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' AND snapshot.change_24h_pct IS NOT NULL) AS change_available_count,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' AND snapshot.change_24h_pct > 0) AS advancers,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' AND snapshot.change_24h_pct < 0) AS decliners,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' AND snapshot.change_24h_pct = 0) AS flat,
-			COUNT(*) FILTER (WHERE snapshot.last_success_at IS NULL OR snapshot.last_success_at < clock_timestamp() - INTERVAL '30 seconds' OR snapshot.change_24h_pct IS NULL) AS unknown,
-			COALESCE(SUM(snapshot.turnover_24h_usd) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds'), 0) AS covered_volume,
-			MAX(snapshot.last_success_at) FILTER (WHERE snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds') AS observed_at`).
+		Joins("LEFT JOIN asset_price_index composite ON composite.asset_guid = am.asset_guid").
+		Select(summarySelect).
 		Joins(`LEFT JOIN asset_venue_snapshot snapshot
 			ON snapshot.asset_guid = am.asset_guid
 			AND snapshot.provider = ?

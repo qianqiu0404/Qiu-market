@@ -143,6 +143,39 @@ func TestBuildAMMRoutesCapsCandidatesPerAsset(t *testing.T) {
 	require.Len(t, routes, dexMaxRoutesPerAsset)
 }
 
+func TestMergeDeferredAMMRoutesRetainsOnlyAffectedReviewedRoutes(t *testing.T) {
+	deferredToken := database.AssetRepresentation{
+		AssetGuid:       "deferred",
+		ContractAddress: "0x0000000000000000000000000000000000000001",
+	}
+	healthyToken := database.AssetRepresentation{
+		AssetGuid:       "healthy",
+		ContractAddress: "0x0000000000000000000000000000000000000002",
+	}
+	current := []ammRoute{{
+		Asset: healthyToken, Tokens: []database.AssetRepresentation{healthyToken},
+		RouteKey: "healthy-current",
+	}}
+	previous := []ammRoute{
+		{
+			Asset:    deferredToken,
+			Tokens:   []database.AssetRepresentation{deferredToken},
+			RouteKey: "deferred-previous",
+		},
+		{
+			Asset:    healthyToken,
+			Tokens:   []database.AssetRepresentation{healthyToken},
+			RouteKey: "healthy-obsolete",
+		},
+	}
+	merged := mergeDeferredAMMRoutes(current, previous, map[string]struct{}{
+		deferredToken.ContractAddress: {},
+	})
+	require.Len(t, merged, 2)
+	require.Equal(t, "deferred-previous", merged[0].RouteKey)
+	require.Equal(t, "healthy-current", merged[1].RouteKey)
+}
+
 func TestBetterDexRoutePrefersAvailabilityThenQuality(t *testing.T) {
 	lowTVL := "100"
 	highTVL := "1000"

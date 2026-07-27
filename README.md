@@ -1,6 +1,8 @@
-# S78 Market Services
+# Qiu Market
 
-S78 Market Services 是一个行情与虚拟交易后端项目：从外部交易所与行情平台采集加密货币价格、K 线、市值和法币汇率，经过精度转换与聚合后存入 PostgreSQL / Redis，并通过 HTTP API、gRPC 和 Vue 管理前端（Qiu Market）对外提供行情能力；独立 `trading` 进程还提供仅使用虚拟资金的 BTC/USDT 撮合、账本和恢复教学纵切片。
+Qiu Market 是一个行情与虚拟交易学习产品：从外部交易所与行情平台采集加密货币价格、K 线、市值和法币汇率，经过精度转换与聚合后存入 PostgreSQL / Redis，并通过 HTTP API、gRPC 和 Vue 前端提供多场所行情；独立 `trading` 进程还提供仅使用虚拟资金的 BTC/USDT 撮合、账本和恢复教学纵切片。
+
+仓库中的 Go module、可执行文件 `market-services`、数据库表和 `MARKET_*` 环境变量暂时保留原技术标识，避免一次品牌更名破坏迁移与现有运行环境；用户可见产品、Vercel 项目和运维服务统一使用 **Qiu Market**。
 
 ## 架构
 

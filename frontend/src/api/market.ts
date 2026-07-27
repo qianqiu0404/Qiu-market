@@ -106,11 +106,16 @@ export interface MarketOverviewV2 {
   eligible_asset_count: number
   published_asset_count: number
   priced_asset_count: number
+  displayed_asset_count: number
+  routable_asset_count: number
+  reference_only_asset_count: number
+  unpriced_asset_count: number
   change_available_count: number
   contributing_provider_count: number
   single_venue_priced_asset_count: number
   multi_venue_priced_asset_count: number
   coverage_ratio_pct: AvailableDecimal
+  display_coverage_ratio_pct: AvailableDecimal
   local_preview_enabled: boolean
   preview_source_key: string
   preview_covered_count: number
@@ -139,6 +144,14 @@ export interface AssetDashboardV2Item {
   logo: string
   price_usd: AvailableDecimal
   composite_price_usd: AvailableDecimal
+  market_reference_price_usd: AvailableDecimal
+  display_price_usd: AvailableDecimal
+  display_price_kind: 'dex_route' | 'composite_reference' | 'market_reference' | 'unavailable' | string
+  display_change_24h_pct: AvailableDecimal
+  display_change_kind: string
+  display_available: boolean
+  display_observed_at: number
+  dex_route_available: boolean
   change_24h_pct: AvailableDecimal
   market_cap_usd: AvailableDecimal
   covered_turnover_24h_usd: AvailableDecimal
@@ -540,11 +553,17 @@ export async function getSystemOverview(): Promise<SystemOverview> {
 export async function getMarketOverviewV2(venue: MarketVenue = 'all'): Promise<MarketOverviewV2> {
   const { result } = await request<Record<string, unknown>>('/api/v2/get_market_overview', { venue })
   const item = result ?? {}
+  const assetCount = toNum(item.asset_count)
+  const pricedAssetCount = toNum(item.priced_asset_count)
+  const displayedAssetCount = item.displayed_asset_count == null
+    ? pricedAssetCount
+    : toNum(item.displayed_asset_count)
+  const coverageRatio = toAvailableDecimal(item.coverage_ratio_pct)
   return {
     global_market_cap_usd: toAvailableDecimal(item.global_market_cap_usd),
     covered_spot_volume_24h_usd: toAvailableDecimal(item.covered_spot_volume_24h_usd),
     btc_dominance_pct: toAvailableDecimal(item.btc_dominance_pct),
-    asset_count: toNum(item.asset_count),
+    asset_count: assetCount,
     advancers: toNum(item.advancers),
     decliners: toNum(item.decliners),
     flat: toNum(item.flat),
@@ -557,12 +576,23 @@ export async function getMarketOverviewV2(venue: MarketVenue = 'all'): Promise<M
     top50_universe_count: toNum(item.top50_universe_count),
     eligible_asset_count: toNum(item.eligible_asset_count),
     published_asset_count: toNum(item.published_asset_count),
-    priced_asset_count: toNum(item.priced_asset_count),
+    priced_asset_count: pricedAssetCount,
+    displayed_asset_count: displayedAssetCount,
+    routable_asset_count: item.routable_asset_count == null
+      ? pricedAssetCount
+      : toNum(item.routable_asset_count),
+    reference_only_asset_count: toNum(item.reference_only_asset_count),
+    unpriced_asset_count: item.unpriced_asset_count == null
+      ? Math.max(0, assetCount - displayedAssetCount)
+      : toNum(item.unpriced_asset_count),
     change_available_count: toNum(item.change_available_count),
     contributing_provider_count: toNum(item.contributing_provider_count),
     single_venue_priced_asset_count: toNum(item.single_venue_priced_asset_count),
     multi_venue_priced_asset_count: toNum(item.multi_venue_priced_asset_count),
-    coverage_ratio_pct: toAvailableDecimal(item.coverage_ratio_pct),
+    coverage_ratio_pct: coverageRatio,
+    display_coverage_ratio_pct: item.display_coverage_ratio_pct == null
+      ? coverageRatio
+      : toAvailableDecimal(item.display_coverage_ratio_pct),
     local_preview_enabled: Boolean(item.local_preview_enabled),
     preview_source_key: toStr(item.preview_source_key),
     preview_covered_count: toNum(item.preview_covered_count),
@@ -598,6 +628,14 @@ export async function getAssetDashboardV2(
   const items = toArray(result).map((raw): AssetDashboardV2Item => {
     const item = (raw ?? {}) as Record<string, unknown>
     const rank = item.rank == null ? null : toNum(item.rank)
+    const priceUSD = toAvailableDecimal(item.price_usd)
+    const change24hPct = toAvailableDecimal(item.change_24h_pct)
+    const displayPriceUSD = item.display_price_usd == null
+      ? priceUSD
+      : toAvailableDecimal(item.display_price_usd)
+    const displayChange24hPct = item.display_change_24h_pct == null
+      ? change24hPct
+      : toAvailableDecimal(item.display_change_24h_pct)
     return {
       rank,
       selection_version: toNum(item.selection_version),
@@ -606,8 +644,18 @@ export async function getAssetDashboardV2(
       asset_symbol: toStr(item.asset_symbol),
       asset_name: toStr(item.asset_name),
       logo: toStr(item.logo),
-      price_usd: toAvailableDecimal(item.price_usd),
+      price_usd: priceUSD,
       composite_price_usd: toAvailableDecimal(item.composite_price_usd),
+      market_reference_price_usd: toAvailableDecimal(item.market_reference_price_usd),
+      display_price_usd: displayPriceUSD,
+      display_price_kind: toStr(item.display_price_kind) || toStr(item.price_kind) || 'unavailable',
+      display_change_24h_pct: displayChange24hPct,
+      display_change_kind: toStr(item.display_change_kind),
+      display_available: item.display_available == null
+        ? displayPriceUSD.available
+        : Boolean(item.display_available),
+      display_observed_at: toNum(item.display_observed_at),
+      dex_route_available: Boolean(item.dex_route_available),
       change_24h_pct: toAvailableDecimal(item.change_24h_pct),
       market_cap_usd: toAvailableDecimal(item.market_cap_usd),
       covered_turnover_24h_usd: toAvailableDecimal(item.covered_turnover_24h_usd),

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -32,8 +33,8 @@ import (
 const (
 	dexDiscoveryInterval = 6 * time.Hour
 	dexQuoteInterval     = 15 * time.Second
-	dexMinimumTVLUSD     = int64(1_000_000)
-	dexMinimumVolumeUSD  = int64(100_000)
+	dexMinimumTVLUSD     = int64(100_000)
+	dexMinimumVolumeUSD  = int64(5_000)
 	dexMaxRoutesPerAsset = 12
 	publicEthereumRPCURL = "https://ethereum-rpc.publicnode.com"
 	publicBSCRPCURL      = "https://bsc-rpc.publicnode.com"
@@ -75,6 +76,17 @@ type ammProviderConfig struct {
 	SubgraphURL      string
 	PublicDiscovery  bool
 	DiscoveryURL     string
+}
+
+type dexIdentityError struct {
+	message string
+}
+
+func (e *dexIdentityError) Error() string { return e.message }
+
+func isDexIdentityError(err error) bool {
+	var identityErr *dexIdentityError
+	return errors.As(err, &identityErr)
 }
 
 // DexSupervisor keeps the historical Hyperliquid process name while isolating
@@ -399,10 +411,18 @@ func (a *AMMAdapter) discover(ctx context.Context) error {
 				return
 			}
 			if err := a.verifyRepresentation(ctx, representation); err != nil {
-				log.Warn("reviewed token representation skipped after onchain validation failed",
+				if isDexIdentityError(err) {
+					log.Warn("reviewed token representation skipped after deterministic identity mismatch",
+						"provider", a.config.Provider,
+						"asset_id", representation.AssetGuid)
+					return
+				}
+				// A reviewed representation is durable identity data. A public
+				// RPC timeout must degrade this refresh, not erase the token
+				// and every route that depends on it.
+				log.Warn("reviewed token representation retained after transient validation failure",
 					"provider", a.config.Provider,
 					"asset_id", representation.AssetGuid)
-				return
 			}
 			verificationResults <- representation
 		}()
@@ -427,6 +447,7 @@ func (a *AMMAdapter) discover(ctx context.Context) error {
 		"verified_assets", len(verifiedRepresentations))
 	poolsByAddress := make(map[string]discoveredPool)
 	type tokenDiscoveryResult struct {
+		token string
 		pools []discoveredPool
 		err   error
 	}
@@ -452,15 +473,17 @@ func (a *AMMAdapter) discover(ctx context.Context) error {
 				return
 			}
 			pools, err := a.discoverPoolsForToken(ctx, address)
-			discoveryResults <- tokenDiscoveryResult{pools: pools, err: err}
+			discoveryResults <- tokenDiscoveryResult{token: address, pools: pools, err: err}
 		}()
 	}
 	discoveryWait.Wait()
 	close(discoveryResults)
 	discoveryFailures := 0
+	deferredTokens := make(map[string]struct{})
 	for result := range discoveryResults {
 		if result.err != nil {
 			discoveryFailures++
+			deferredTokens[result.token] = struct{}{}
 			log.Warn("AMM token pool discovery skipped",
 				"provider", a.config.Provider, "error", result.err)
 			continue
@@ -488,8 +511,15 @@ func (a *AMMAdapter) discover(ctx context.Context) error {
 		status := "resolved"
 		var reason *string
 		if err := a.verifyPool(ctx, pool); err != nil {
-			status = "rejected"
-			reason = textPtr("onchain_pool_identity_mismatch")
+			if isDexIdentityError(err) {
+				status = "rejected"
+				reason = textPtr("onchain_pool_identity_mismatch")
+			} else {
+				status = "discovered"
+				reason = textPtr("onchain_validation_temporarily_unavailable")
+				deferredTokens[pool.Token0] = struct{}{}
+				deferredTokens[pool.Token1] = struct{}{}
+			}
 		}
 		_, token0Reviewed := byAddress[pool.Token0]
 		_, token1Reviewed := byAddress[pool.Token1]
@@ -526,6 +556,7 @@ func (a *AMMAdapter) discover(ctx context.Context) error {
 	}
 	routes := buildAMMRoutes(a.config, verifiedRepresentations, resolved)
 	a.mu.Lock()
+	routes = mergeDeferredAMMRoutes(routes, a.routes, deferredTokens)
 	a.routes = routes
 	a.mu.Unlock()
 	sourceTime := newestPoolTime(resolved)
@@ -645,8 +676,11 @@ func (a *AMMAdapter) refreshProviderMappedRepresentations(ctx context.Context) e
 
 func (a *AMMAdapter) readTokenDecimals(ctx context.Context, address string) (int, error) {
 	values, err := a.callView(ctx, address, erc20MetadataABI, "decimals")
-	if err != nil || len(values) != 1 {
-		return 0, fmt.Errorf("token decimals call failed")
+	if err != nil {
+		return 0, fmt.Errorf("token decimals call failed: %w", err)
+	}
+	if len(values) != 1 {
+		return 0, &dexIdentityError{message: "token decimals returned an invalid response"}
 	}
 	switch value := values[0].(type) {
 	case uint8:
@@ -654,7 +688,7 @@ func (a *AMMAdapter) readTokenDecimals(ctx context.Context, address string) (int
 	case *big.Int:
 		return int(value.Int64()), nil
 	default:
-		return 0, fmt.Errorf("token decimals returned unexpected type")
+		return 0, &dexIdentityError{message: "token decimals returned unexpected type"}
 	}
 }
 
@@ -667,7 +701,7 @@ func (a *AMMAdapter) verifyRepresentation(
 		return err
 	}
 	if decimals != representation.Decimals {
-		return fmt.Errorf("token decimals mismatch")
+		return &dexIdentityError{message: "token decimals mismatch"}
 	}
 	return nil
 }
@@ -982,16 +1016,19 @@ func (a *AMMAdapter) verifyPool(ctx context.Context, pool discoveredPool) error 
 			common.HexToAddress(pool.Token1),
 		)
 		if err != nil || len(values) != 1 {
-			return fmt.Errorf("V2 factory getPair failed")
+			if err != nil {
+				return fmt.Errorf("V2 factory getPair failed: %w", err)
+			}
+			return &dexIdentityError{message: "V2 factory getPair returned an invalid response"}
 		}
 		address, ok := values[0].(common.Address)
 		if !ok || !strings.EqualFold(address.Hex(), pool.Address) {
-			return fmt.Errorf("V2 factory pair identity mismatch")
+			return &dexIdentityError{message: "V2 factory pair identity mismatch"}
 		}
 		return nil
 	}
 	if pool.ProtocolVersion != "v3" {
-		return fmt.Errorf("unsupported AMM protocol")
+		return &dexIdentityError{message: "unsupported AMM protocol"}
 	}
 	values, err := a.callView(
 		ctx,
@@ -1003,11 +1040,14 @@ func (a *AMMAdapter) verifyPool(ctx context.Context, pool discoveredPool) error 
 		big.NewInt(int64(pool.Fee)),
 	)
 	if err != nil || len(values) != 1 {
-		return fmt.Errorf("factory getPool failed")
+		if err != nil {
+			return fmt.Errorf("factory getPool failed: %w", err)
+		}
+		return &dexIdentityError{message: "factory getPool returned an invalid response"}
 	}
 	address, ok := values[0].(common.Address)
 	if !ok || !strings.EqualFold(address.Hex(), pool.Address) {
-		return fmt.Errorf("factory pool identity mismatch")
+		return &dexIdentityError{message: "factory pool identity mismatch"}
 	}
 	return nil
 }
@@ -1055,7 +1095,7 @@ func (a *AMMAdapter) callView(
 	if client == nil {
 		return nil, fmt.Errorf("RPC session unavailable")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	output, err := client.CallContract(callCtx, ethereum.CallMsg{To: &target, Data: input}, nil)
 	if err != nil {
@@ -1146,6 +1186,43 @@ func buildAMMRoutes(
 	return routes
 }
 
+func mergeDeferredAMMRoutes(
+	current []ammRoute,
+	previous []ammRoute,
+	deferredTokens map[string]struct{},
+) []ammRoute {
+	if len(previous) == 0 || len(deferredTokens) == 0 {
+		return current
+	}
+	seen := make(map[string]struct{}, len(current)+len(previous))
+	for _, route := range current {
+		seen[route.RouteKey] = struct{}{}
+	}
+	for _, route := range previous {
+		if _, exists := seen[route.RouteKey]; exists {
+			continue
+		}
+		deferred := false
+		for _, token := range route.Tokens {
+			if _, affected := deferredTokens[strings.ToLower(token.ContractAddress)]; affected {
+				deferred = true
+				break
+			}
+		}
+		if deferred {
+			current = append(current, route)
+			seen[route.RouteKey] = struct{}{}
+		}
+	}
+	sort.Slice(current, func(i, j int) bool {
+		if current[i].Asset.AssetGuid != current[j].Asset.AssetGuid {
+			return current[i].Asset.AssetGuid < current[j].Asset.AssetGuid
+		}
+		return current[i].RouteKey < current[j].RouteKey
+	})
+	return current
+}
+
 func newAMMRoute(
 	provider string,
 	tokens []database.AssetRepresentation,
@@ -1213,7 +1290,7 @@ func (a *AMMAdapter) quoteAll(ctx context.Context) {
 		sourceKey = "route-quotes-preview"
 	}
 	a.reporter.Attempt(a.config.Provider, sourceKey, now)
-	semaphore := make(chan struct{}, 4)
+	semaphore := make(chan struct{}, 12)
 	results := make(chan database.DexRouteCurrent, len(routes))
 	var wait sync.WaitGroup
 	for _, route := range routes {

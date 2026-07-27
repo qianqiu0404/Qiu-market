@@ -67,6 +67,15 @@ dev-restart:
 verify-local:
 	bash script/verify-local.sh
 
+mac-production-build:
+	bash ops/macos/manage-services.sh prepare
+
+mac-production-install:
+	bash ops/macos/manage-services.sh install
+
+mac-production-status:
+	bash ops/macos/manage-services.sh status
+
 clean:
 	rm market-services
 
@@ -100,6 +109,9 @@ proto:
 	dev-logs \
 	dev-restart \
 	verify-local \
+	mac-production-build \
+	mac-production-install \
+	mac-production-status \
 	clean \
 	test \
 	lint \

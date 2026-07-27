@@ -192,11 +192,20 @@ export const tradingAPI = {
 }
 
 export function eventSocketURL(ticket: string, cursor?: EventEnvelope): string {
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const configuredOrigin = (import.meta.env.VITE_TRADING_WS_ORIGIN ?? '').trim()
+  const socketURL = new URL(configuredOrigin || location.origin)
+  if (socketURL.protocol === 'https:') socketURL.protocol = 'wss:'
+  if (socketURL.protocol === 'http:') socketURL.protocol = 'ws:'
+  if (socketURL.protocol !== 'ws:' && socketURL.protocol !== 'wss:') {
+    throw new Error('VITE_TRADING_WS_ORIGIN must use HTTPS or WSS')
+  }
   const query = new URLSearchParams({ ticket })
   if (cursor) {
     query.set('sequence', cursor.sequence)
     query.set('event_index', String(cursor.event_index))
   }
-  return `${protocol}//${location.host}${base}/events/ws?${query}`
+  socketURL.pathname = `${base}/events/ws`
+  socketURL.search = query.toString()
+  socketURL.hash = ''
+  return socketURL.toString()
 }

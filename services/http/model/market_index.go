@@ -29,11 +29,16 @@ type MarketOverviewResult struct {
 	EligibleAssetCount          int64            `json:"eligible_asset_count"`
 	PublishedAssetCount         int64            `json:"published_asset_count"`
 	PricedAssetCount            int64            `json:"priced_asset_count"`
+	DisplayedAssetCount         int64            `json:"displayed_asset_count"`
+	RoutableAssetCount          int64            `json:"routable_asset_count"`
+	ReferenceOnlyAssetCount     int64            `json:"reference_only_asset_count"`
+	UnpricedAssetCount          int64            `json:"unpriced_asset_count"`
 	ChangeAvailableCount        int64            `json:"change_available_count"`
 	ContributingProviderCount   int64            `json:"contributing_provider_count"`
 	SingleVenuePricedAssetCount int64            `json:"single_venue_priced_asset_count"`
 	MultiVenuePricedAssetCount  int64            `json:"multi_venue_priced_asset_count"`
 	CoverageRatioPct            AvailableDecimal `json:"coverage_ratio_pct"`
+	DisplayCoverageRatioPct     AvailableDecimal `json:"display_coverage_ratio_pct"`
 	LocalPreviewEnabled         bool             `json:"local_preview_enabled"`
 	PreviewSourceKey            string           `json:"preview_source_key"`
 	PreviewCoveredCount         int64            `json:"preview_covered_count"`
@@ -61,41 +66,49 @@ type AssetDashboardV2Request struct {
 }
 
 type AssetDashboardV2Item struct {
-	Rank                *int             `json:"rank"`
-	SelectionVersion    int64            `json:"selection_version"`
-	SelectionRank       int              `json:"selection_rank"`
-	AssetID             string           `json:"asset_id"`
-	AssetSymbol         string           `json:"asset_symbol"`
-	AssetName           string           `json:"asset_name"`
-	Logo                string           `json:"logo"`
-	PriceUSD            AvailableDecimal `json:"price_usd"`
-	CompositePriceUSD   AvailableDecimal `json:"composite_price_usd"`
-	Change24hPct        AvailableDecimal `json:"change_24h_pct"`
-	MarketCapUSD        AvailableDecimal `json:"market_cap_usd"`
-	Turnover24hUSD      AvailableDecimal `json:"covered_turnover_24h_usd"`
-	CirculatingSupply   AvailableDecimal `json:"circulating_supply"`
-	SpotMarketCount     int64            `json:"spot_market_count"`
-	PerpMarketCount     int64            `json:"perp_market_count"`
-	DexRouteCount       int64            `json:"dex_route_count"`
-	ContributorCount    int              `json:"contributor_count"`
-	PricedVenueCount    int              `json:"priced_venue_count"`
-	Confidence          string           `json:"confidence"`
-	Quality             string           `json:"quality"`
-	PriceKind           string           `json:"price_kind"`
-	PriceSource         string           `json:"price_source"`
-	CoverageStatus      string           `json:"coverage_status"`
-	CoverageReason      string           `json:"coverage_reason"`
-	FreshnessStatus     string           `json:"freshness_status"`
-	FreshnessAgeSeconds int64            `json:"freshness_age_seconds"`
-	LastAttemptAt       int64            `json:"last_attempt_at"`
-	LastSuccessAt       int64            `json:"last_success_at"`
-	LastErrorClass      string           `json:"last_error_class"`
-	Available           bool             `json:"available"`
-	SourceTime          int64            `json:"source_time"`
-	ObservedAt          int64            `json:"observed_at"`
-	IndexUpdatedAt      int64            `json:"index_updated_at"`
-	ProviderUpdatedAt   int64            `json:"provider_updated_at"`
-	SparklineAvailable  bool             `json:"sparkline_available"`
+	Rank                    *int             `json:"rank"`
+	SelectionVersion        int64            `json:"selection_version"`
+	SelectionRank           int              `json:"selection_rank"`
+	AssetID                 string           `json:"asset_id"`
+	AssetSymbol             string           `json:"asset_symbol"`
+	AssetName               string           `json:"asset_name"`
+	Logo                    string           `json:"logo"`
+	PriceUSD                AvailableDecimal `json:"price_usd"`
+	CompositePriceUSD       AvailableDecimal `json:"composite_price_usd"`
+	MarketReferencePriceUSD AvailableDecimal `json:"market_reference_price_usd"`
+	DisplayPriceUSD         AvailableDecimal `json:"display_price_usd"`
+	DisplayPriceKind        string           `json:"display_price_kind"`
+	DisplayChange24hPct     AvailableDecimal `json:"display_change_24h_pct"`
+	DisplayChangeKind       string           `json:"display_change_kind"`
+	DisplayAvailable        bool             `json:"display_available"`
+	DisplayObservedAt       int64            `json:"display_observed_at"`
+	DexRouteAvailable       bool             `json:"dex_route_available"`
+	Change24hPct            AvailableDecimal `json:"change_24h_pct"`
+	MarketCapUSD            AvailableDecimal `json:"market_cap_usd"`
+	Turnover24hUSD          AvailableDecimal `json:"covered_turnover_24h_usd"`
+	CirculatingSupply       AvailableDecimal `json:"circulating_supply"`
+	SpotMarketCount         int64            `json:"spot_market_count"`
+	PerpMarketCount         int64            `json:"perp_market_count"`
+	DexRouteCount           int64            `json:"dex_route_count"`
+	ContributorCount        int              `json:"contributor_count"`
+	PricedVenueCount        int              `json:"priced_venue_count"`
+	Confidence              string           `json:"confidence"`
+	Quality                 string           `json:"quality"`
+	PriceKind               string           `json:"price_kind"`
+	PriceSource             string           `json:"price_source"`
+	CoverageStatus          string           `json:"coverage_status"`
+	CoverageReason          string           `json:"coverage_reason"`
+	FreshnessStatus         string           `json:"freshness_status"`
+	FreshnessAgeSeconds     int64            `json:"freshness_age_seconds"`
+	LastAttemptAt           int64            `json:"last_attempt_at"`
+	LastSuccessAt           int64            `json:"last_success_at"`
+	LastErrorClass          string           `json:"last_error_class"`
+	Available               bool             `json:"available"`
+	SourceTime              int64            `json:"source_time"`
+	ObservedAt              int64            `json:"observed_at"`
+	IndexUpdatedAt          int64            `json:"index_updated_at"`
+	ProviderUpdatedAt       int64            `json:"provider_updated_at"`
+	SparklineAvailable      bool             `json:"sparkline_available"`
 }
 
 type AssetDashboardV2Response struct {

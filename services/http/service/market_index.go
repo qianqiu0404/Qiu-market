@@ -34,6 +34,10 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 		EligibleAssetCount:          summary.EligibleAssetCount,
 		PublishedAssetCount:         summary.PublishedAssetCount,
 		PricedAssetCount:            summary.PricedAssetCount,
+		DisplayedAssetCount:         summary.DisplayedAssetCount,
+		RoutableAssetCount:          summary.RoutableAssetCount,
+		ReferenceOnlyAssetCount:     summary.ReferenceOnlyAssetCount,
+		UnpricedAssetCount:          summary.UnpricedAssetCount,
 		ChangeAvailableCount:        summary.ChangeAvailableCount,
 		ContributingProviderCount:   summary.ContributingProviderCount,
 		SingleVenuePricedAssetCount: summary.SingleVenuePricedAssetCount,
@@ -53,6 +57,10 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 			Div(decimal.NewFromInt(summary.AssetCount)).
 			Mul(decimal.NewFromInt(100)).String()
 		result.CoverageRatioPct = model.AvailableDecimal{Value: &value, Available: true}
+		displayValue := decimal.NewFromInt(summary.DisplayedAssetCount).
+			Div(decimal.NewFromInt(summary.AssetCount)).
+			Mul(decimal.NewFromInt(100)).String()
+		result.DisplayCoverageRatioPct = model.AvailableDecimal{Value: &displayValue, Available: true}
 	}
 	known := summary.Advancers + summary.Decliners + summary.Flat
 	if known > 0 {
@@ -110,13 +118,20 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 			Rank: row.Rank, AssetID: row.AssetID, AssetSymbol: row.AssetSymbol,
 			SelectionVersion: row.SelectionVersion, SelectionRank: row.SelectionRank,
 			AssetName: row.AssetName, Logo: row.Logo,
-			PriceUSD:          availableDecimal(row.Price),
-			CompositePriceUSD: availableDecimal(row.CompositePrice),
-			Change24hPct:      availableDecimal(row.Change24hPct),
-			MarketCapUSD:      availableDecimal(row.MarketCapUSD),
-			Turnover24hUSD:    availableDecimal(row.Turnover24hUSD),
-			CirculatingSupply: availableDecimal(row.CirculatingSupply),
-			SpotMarketCount:   row.SpotMarketCount, PerpMarketCount: row.PerpMarketCount,
+			PriceUSD:                availableDecimal(row.Price),
+			CompositePriceUSD:       availableDecimal(row.CompositePrice),
+			MarketReferencePriceUSD: availableDecimal(row.MarketReferencePrice),
+			DisplayPriceUSD:         availableDecimal(row.DisplayPrice),
+			DisplayPriceKind:        row.DisplayPriceKind,
+			DisplayChange24hPct:     availableDecimal(row.DisplayChange24hPct),
+			DisplayChangeKind:       row.DisplayChangeKind,
+			DisplayAvailable:        row.DisplayAvailable,
+			DexRouteAvailable:       row.DexRouteAvailable,
+			Change24hPct:            availableDecimal(row.Change24hPct),
+			MarketCapUSD:            availableDecimal(row.MarketCapUSD),
+			Turnover24hUSD:          availableDecimal(row.Turnover24hUSD),
+			CirculatingSupply:       availableDecimal(row.CirculatingSupply),
+			SpotMarketCount:         row.SpotMarketCount, PerpMarketCount: row.PerpMarketCount,
 			DexRouteCount: row.DexRouteCount, ContributorCount: row.ContributorCount,
 			PricedVenueCount: row.PricedVenueCount, Confidence: row.Confidence,
 			Quality: row.Quality, PriceKind: row.PriceKind, PriceSource: row.PriceSource,
@@ -131,6 +146,9 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 		if row.ObservedAt != nil {
 			item.ObservedAt = row.ObservedAt.UnixMilli()
 			item.IndexUpdatedAt = row.ObservedAt.UnixMilli()
+		}
+		if row.DisplayObservedAt != nil {
+			item.DisplayObservedAt = row.DisplayObservedAt.UnixMilli()
 		}
 		if row.ProviderUpdatedAt != nil {
 			item.ProviderUpdatedAt = row.ProviderUpdatedAt.UnixMilli()

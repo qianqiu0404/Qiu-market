@@ -40,6 +40,12 @@ describe('getAssetDashboardV2', () => {
         asset_id: 'asset-btc',
         asset_symbol: 'BTC',
         composite_price_usd: { value: '65705.12', available: true },
+        display_price_usd: { value: '65705.12', available: true },
+        display_price_kind: 'composite_reference',
+        display_change_24h_pct: { value: '1.25', available: true },
+        display_change_kind: 'composite_reference',
+        display_available: true,
+        dex_route_available: false,
         change_24h_pct: { value: null, available: false },
         spot_market_count: 4,
         perp_market_count: 1,
@@ -60,6 +66,10 @@ describe('getAssetDashboardV2', () => {
     })
     expect(result.items[0]?.composite_price_usd.value).toBe(65705.12)
     expect(result.items[0]?.change_24h_pct).toEqual({ value: null, available: false })
+    expect(result.items[0]?.display_price_kind).toBe('composite_reference')
+    expect(result.items[0]?.display_price_usd.value).toBe(65705.12)
+    expect(result.items[0]?.display_change_24h_pct.value).toBe(1.25)
+    expect(result.items[0]?.dex_route_available).toBe(false)
     expect(result.items[0]?.coverage_reason).toBe('missing_24h_reference')
     expect(result.items[0]).not.toHaveProperty('markets')
   })

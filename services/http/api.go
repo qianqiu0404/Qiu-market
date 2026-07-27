@@ -182,6 +182,7 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 
 	apiRouter.Use(middleware.Recoverer)
 	apiRouter.Use(middleware.Heartbeat(HealthPath))
+	apiRouter.Use(publicProxyHMACMiddleware(cfg.PublicProxyHMACSecret))
 
 	// Unary market-data routes retain their bounded timeout. Trading WebSocket
 	// upgrades are mounted outside this group so a long-lived event stream is

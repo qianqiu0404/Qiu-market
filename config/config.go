@@ -29,6 +29,7 @@ type Config struct {
 	UniswapV3SubgraphURL  string
 	PancakeV3SubgraphURL  string
 	DexPublicFallback     bool
+	PublicProxyHMACSecret string
 	Trading               TradingConfig
 }
 
@@ -156,12 +157,13 @@ func NewConfig(ctx *cli.Context) Config {
 			Password: ctx.String(flags.RedisPasswordFlag.Name),
 			DB:       ctx.Int(flags.RedisDbIndexFlag.Name),
 		},
-		MultiVenueEnabled:    ctx.Bool(flags.MultiVenueEnabledFlag.Name),
-		EthereumRPCURL:       ctx.String(flags.EthereumRPCURLFlag.Name),
-		BSCRPCURL:            ctx.String(flags.BSCRPCURLFlag.Name),
-		UniswapV3SubgraphURL: ctx.String(flags.UniswapV3SubgraphURLFlag.Name),
-		PancakeV3SubgraphURL: ctx.String(flags.PancakeV3SubgraphURLFlag.Name),
-		DexPublicFallback:    ctx.Bool(flags.DexPublicFallbackFlag.Name),
+		MultiVenueEnabled:     ctx.Bool(flags.MultiVenueEnabledFlag.Name),
+		EthereumRPCURL:        ctx.String(flags.EthereumRPCURLFlag.Name),
+		BSCRPCURL:             ctx.String(flags.BSCRPCURLFlag.Name),
+		UniswapV3SubgraphURL:  ctx.String(flags.UniswapV3SubgraphURLFlag.Name),
+		PancakeV3SubgraphURL:  ctx.String(flags.PancakeV3SubgraphURLFlag.Name),
+		DexPublicFallback:     ctx.Bool(flags.DexPublicFallbackFlag.Name),
+		PublicProxyHMACSecret: ctx.String(flags.PublicProxyHMACSecretFlag.Name),
 		Trading: TradingConfig{
 			GRPCAddress:      ctx.String(flags.TradingGRPCAddressFlag.Name),
 			AllowedOrigins:   splitCSV(ctx.String(flags.TradingAllowedOriginsFlag.Name)),

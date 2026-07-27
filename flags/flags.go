@@ -166,6 +166,11 @@ var (
 		Value:   false,
 		EnvVars: prefixEnvVars("DEX_PUBLIC_FALLBACK"),
 	}
+	PublicProxyHMACSecretFlag = &cli.StringFlag{
+		Name:    "public-proxy-hmac-secret",
+		Usage:   "shared secret required for REST requests forwarded by the Qiu Market public BFF",
+		EnvVars: prefixEnvVars("PUBLIC_PROXY_HMAC_SECRET"),
+	}
 	TradingGRPCAddressFlag = &cli.StringFlag{
 		Name:    "trading-grpc-address",
 		Usage:   "loopback address of the virtual spot TradingService",
@@ -282,6 +287,7 @@ var optionalFlags = []cli.Flag{
 	UniswapV3SubgraphURLFlag,
 	PancakeV3SubgraphURLFlag,
 	DexPublicFallbackFlag,
+	PublicProxyHMACSecretFlag,
 	TradingGRPCAddressFlag,
 	TradingAllowedOriginsFlag,
 	TradingLocalAuthFlag,

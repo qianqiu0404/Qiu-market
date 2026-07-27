@@ -206,7 +206,8 @@ const pageSubtitle = computed(() => {
   const preview = current.local_preview_enabled ? ' · Local preview' : ''
   const version = current.selection_version > 0 ? ` · selection v${current.selection_version}` : ''
   if (venue.value === 'uniswap' || venue.value === 'pancakeswap') {
-    return `${current.asset_count} listed assets · ${current.priced_asset_count} fresh tiered indicative quotes${version}${preview}`
+    return `${current.displayed_asset_count}/${current.asset_count} displayed · ` +
+      `${current.routable_asset_count} fresh on-chain · ${current.reference_only_asset_count} reference only${version}${preview}`
   }
   const product = venue.value === 'hyperliquid'
     ? 'perpetual marks'
@@ -273,9 +274,24 @@ function confidenceVariant(confidence: string): 'live' | 'delayed' | 'accent' {
 }
 
 function assetQualityLabel(asset: AssetDashboardV2Item): string {
+  if (isDexVenue() && asset.display_available && !asset.dex_route_available) return 'reference'
   if (asset.freshness_status === 'stale') return 'stale'
   if (asset.freshness_status === 'unavailable') return 'unavailable'
   return asset.quality || asset.confidence || 'unknown'
+}
+
+function isDexVenue(): boolean {
+  return venue.value === 'uniswap' || venue.value === 'pancakeswap'
+}
+
+function displayPrice(asset: AssetDashboardV2Item): AvailableDecimal {
+  return asset.display_price_usd?.available ? asset.display_price_usd : asset.price_usd
+}
+
+function displayChange(asset: AssetDashboardV2Item): AvailableDecimal {
+  return asset.display_change_24h_pct?.available
+    ? asset.display_change_24h_pct
+    : asset.change_24h_pct
 }
 
 function marketCount(asset: AssetDashboardV2Item): number {
@@ -294,6 +310,8 @@ function marketCountLabel(asset: AssetDashboardV2Item): string {
 }
 
 function priceCaption(asset: AssetDashboardV2Item): string {
+  if (asset.display_price_kind === 'composite_reference') return 'CEX composite reference · no fresh route'
+  if (asset.display_price_kind === 'market_reference') return 'CoinGecko reference · no fresh route'
   if (asset.freshness_status === 'stale') {
     return `Stale · ${asset.freshness_age_seconds}s old`
   }
@@ -302,7 +320,7 @@ function priceCaption(asset: AssetDashboardV2Item): string {
     return `${asset.priced_venue_count || asset.contributor_count} contributor${(asset.priced_venue_count || asset.contributor_count) === 1 ? '' : 's'}`
   }
   if (venue.value === 'hyperliquid') return 'Perpetual mark'
-  if (venue.value === 'uniswap' || venue.value === 'pancakeswap') return 'Indicative route quote'
+  if (isDexVenue()) return 'Fresh on-chain route indication'
   return `${selectedVenueLabel.value} spot`
 }
 
@@ -374,11 +392,20 @@ function coverageReasonLabel(reason: string): string {
       <article>
         <span>{{ selectedVenueLabel }} Coverage</span>
         <strong class="num">
-          {{ overview.data.value?.coverage_ratio_pct.available
-            ? `${(overview.data.value.coverage_ratio_pct.value ?? 0).toFixed(1)}%`
+          {{ (isDexVenue()
+              ? overview.data.value?.display_coverage_ratio_pct
+              : overview.data.value?.coverage_ratio_pct)?.available
+            ? `${((isDexVenue()
+                ? overview.data.value?.display_coverage_ratio_pct.value
+                : overview.data.value?.coverage_ratio_pct.value) ?? 0).toFixed(1)}%`
             : '—' }}
         </strong>
-        <small v-if="overview.data.value">
+        <small v-if="overview.data.value && isDexVenue()">
+          {{ overview.data.value.routable_asset_count }} on-chain ·
+          {{ overview.data.value.reference_only_asset_count }} reference only ·
+          {{ overview.data.value.unpriced_asset_count }} unavailable
+        </small>
+        <small v-else-if="overview.data.value">
           {{ overview.data.value.priced_asset_count }} priced ·
           {{ overview.data.value.change_available_count }} with 24h ·
           {{ overview.data.value.published_asset_count }} published
@@ -492,14 +519,14 @@ function coverageReasonLabel(reason: string): string {
                 </span>
               </td>
               <td class="align-right">
-                <strong class="num">{{ formatMetricPrice(asset.price_usd) }}</strong>
+                <strong class="num">{{ formatMetricPrice(displayPrice(asset)) }}</strong>
                 <small class="contributors">{{ priceCaption(asset) }}</small>
               </td>
               <td class="align-right">
                 <StatusBadge
-                  v-if="asset.change_24h_pct.available"
-                  :variant="(asset.change_24h_pct.value ?? 0) >= 0 ? 'up' : 'down'"
-                  :label="formatPercent(asset.change_24h_pct.value ?? 0)"
+                  v-if="displayChange(asset).available"
+                  :variant="(displayChange(asset).value ?? 0) >= 0 ? 'up' : 'down'"
+                  :label="formatPercent(displayChange(asset).value ?? 0)"
                   :dot="false"
                 />
                 <span

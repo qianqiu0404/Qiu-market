@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { tradingAPI } from './trading'
+import { eventSocketURL, tradingAPI } from './trading'
 
 describe('trading API', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
   })
 
   it('preserves stable empty order-book arrays', async () => {
@@ -31,6 +32,18 @@ describe('trading API', () => {
     })))
     await expect(tradingAPI.status()).rejects.toThrow(
       'virtual trading is temporarily unavailable',
+    )
+  })
+
+  it('uses the configured direct WSS origin and preserves the event cursor', () => {
+    vi.stubEnv('VITE_TRADING_WS_ORIGIN', 'https://qiu-market.example.ts.net')
+    expect(eventSocketURL('opaque-ticket', {
+      market_id: 'BTC-USDT',
+      sequence: '42',
+      event_index: 3,
+    })).toBe(
+      'wss://qiu-market.example.ts.net/api/v1/trading/events/ws' +
+      '?ticket=opaque-ticket&sequence=42&event_index=3',
     )
   })
 })
