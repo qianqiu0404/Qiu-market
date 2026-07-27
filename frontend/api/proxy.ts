@@ -1,9 +1,23 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import {
+  PublicReadCache,
+  type PublicReadCacheLookup,
+  isPublicMarketRead,
+} from './public-read-cache.js'
 
 const MAX_BODY_BYTES = 1 << 20
 const TOTAL_UPSTREAM_TIMEOUT_MS = 8_000
 const FIRST_READ_ATTEMPT_TIMEOUT_MS = 3_500
+const PUBLIC_CACHE_CONTROL =
+  'public, max-age=0, s-maxage=15, stale-while-revalidate=300, stale-if-error=300'
+
+const cacheGlobal = globalThis as typeof globalThis & {
+  qiuMarketPublicReadCache?: PublicReadCache
+}
+const publicReadCache =
+  cacheGlobal.qiuMarketPublicReadCache ?? new PublicReadCache()
+cacheGlobal.qiuMarketPublicReadCache = publicReadCache
 
 interface QiuProxyRequest extends IncomingMessage {
   body?: unknown
@@ -46,6 +60,28 @@ function copyResponseHeader(
   if (value) response.setHeader(name, value)
 }
 
+function sendCachedResponse(
+  response: QiuProxyResponse,
+  lookup: PublicReadCacheLookup,
+  startedAt: number,
+): void {
+  response.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL)
+  response.setHeader('Age', lookup.ageSeconds.toString())
+  response.setHeader('X-Qiu-Market-Cache', lookup.state.toUpperCase())
+  response.setHeader(
+    'Server-Timing',
+    `qiu_cache;desc=${lookup.state};dur=${Math.max(0, Date.now() - startedAt)}`,
+  )
+  if (lookup.entry.contentType) {
+    response.setHeader('Content-Type', lookup.entry.contentType)
+  }
+  if (lookup.entry.vary) response.setHeader('Vary', lookup.entry.vary)
+  if (lookup.state === 'stale') {
+    response.setHeader('Warning', '110 - "Response is stale"')
+  }
+  response.status(lookup.entry.status).send(Buffer.from(lookup.entry.body))
+}
+
 export default async function handler(
   request: QiuProxyRequest,
   response: QiuProxyResponse,
@@ -54,6 +90,7 @@ export default async function handler(
   const requestID = firstHeader(request.headers['x-request-id']) ?? randomUUID()
   const startedAt = Date.now()
   response.setHeader('X-Request-ID', requestID)
+  let staleLookup: PublicReadCacheLookup | undefined
   try {
     const backendOrigin = new URL(requiredEnvironment('S78_BACKEND_ORIGIN'))
     const insecureLoopback =
@@ -89,6 +126,16 @@ export default async function handler(
     }
     const digest = createHash('sha256').update(body).digest('hex')
     const method = (request.method ?? 'GET').toUpperCase()
+    const cacheablePublicRead = isPublicMarketRead(method, upstreamURL.pathname)
+    const cacheKey = `${method}\n${upstreamURL.pathname}${upstreamURL.search}\n${digest}`
+    const cacheLookup = cacheablePublicRead
+      ? publicReadCache.lookup(cacheKey)
+      : undefined
+    if (cacheLookup?.state === 'fresh') {
+      sendCachedResponse(response, cacheLookup, startedAt)
+      return
+    }
+    if (cacheLookup?.state === 'stale') staleLookup = cacheLookup
     const forwardedHeaders = new Headers()
     for (const name of [
       'accept',
@@ -109,7 +156,7 @@ export default async function handler(
     const retryableRead =
       method === 'GET' ||
       method === 'HEAD' ||
-      (method === 'POST' && /^\/api\/v1\/get_[a-z0-9_]+$/.test(upstreamURL.pathname))
+      cacheablePublicRead
     const deadline = startedAt + TOTAL_UPSTREAM_TIMEOUT_MS
     let upstream: Response | undefined
     let upstreamBody: Buffer | undefined
@@ -164,6 +211,13 @@ export default async function handler(
     if (!upstream || !upstreamBody) {
       throw lastError ?? new DOMException('upstream deadline exceeded', 'AbortError')
     }
+    if (
+      staleLookup &&
+      [502, 503, 504].includes(upstream.status)
+    ) {
+      sendCachedResponse(response, staleLookup, startedAt)
+      return
+    }
 
     copyResponseHeader(response, upstream, 'content-type')
     copyResponseHeader(response, upstream, 'location')
@@ -173,12 +227,33 @@ export default async function handler(
     ).getSetCookie
     const cookies = getSetCookie?.call(upstream.headers) ?? []
     if (cookies.length > 0) response.setHeader('Set-Cookie', cookies)
+    if (
+      cacheablePublicRead &&
+      upstream.status === 200 &&
+      cookies.length === 0 &&
+      upstream.headers.get('content-type')?.includes('application/json')
+    ) {
+      publicReadCache.put(cacheKey, {
+        status: upstream.status,
+        body: upstreamBody,
+        contentType: upstream.headers.get('content-type') ?? undefined,
+        vary: upstream.headers.get('vary') ?? undefined,
+        storedAt: Date.now(),
+      })
+      response.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL)
+      response.setHeader('Age', '0')
+      response.setHeader('X-Qiu-Market-Cache', 'MISS')
+    }
     response.setHeader(
       'Server-Timing',
       `qiu_backend;dur=${Math.max(0, Date.now() - startedAt)}`,
     )
     response.status(upstream.status).send(upstreamBody)
   } catch (error) {
+    if (staleLookup) {
+      sendCachedResponse(response, staleLookup, startedAt)
+      return
+    }
     const timeout = error instanceof Error && error.name === 'AbortError'
     response.status(timeout ? 504 : 502).json({
       code: timeout ? 'backend_timeout' : 'backend_unavailable',
