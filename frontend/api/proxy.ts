@@ -4,6 +4,7 @@ import {
   PublicReadCache,
   type PublicReadCacheLookup,
   isPublicMarketRead,
+  publicReadCachePayload,
 } from '../server/public-read-cache.js'
 
 const MAX_BODY_BYTES = 1 << 20
@@ -127,7 +128,10 @@ export default async function handler(
     const digest = createHash('sha256').update(body).digest('hex')
     const method = (request.method ?? 'GET').toUpperCase()
     const cacheablePublicRead = isPublicMarketRead(method, upstreamURL.pathname)
-    const cacheKey = `${method}\n${upstreamURL.pathname}${upstreamURL.search}\n${digest}`
+    const cacheDigest = cacheablePublicRead
+      ? createHash('sha256').update(publicReadCachePayload(body)).digest('hex')
+      : digest
+    const cacheKey = `${method}\n${upstreamURL.pathname}${upstreamURL.search}\n${cacheDigest}`
     const cacheLookup = cacheablePublicRead
       ? publicReadCache.lookup(cacheKey)
       : undefined

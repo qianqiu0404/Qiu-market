@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { PublicReadCache, isPublicMarketRead } from './public-read-cache'
+import {
+  PublicReadCache,
+  isPublicMarketRead,
+  publicReadCachePayload,
+} from './public-read-cache'
 
 describe('isPublicMarketRead', () => {
   it('allows only versioned public market read envelopes', () => {
@@ -40,5 +44,26 @@ describe('PublicReadCache', () => {
     expect(cache.lookup('one', 1_000)).toBeUndefined()
     expect(cache.lookup('two', 1_000)?.entry.body.toString()).toBe('two')
     expect(cache.lookup('three', 1_000)?.entry.body.toString()).toBe('three')
+  })
+})
+
+describe('publicReadCachePayload', () => {
+  it('ignores logging-only consumer tokens while preserving query identity', () => {
+    const browser = Buffer.from(
+      '{"consumer_token":"frontend-dashboard","venue":"pancakeswap","page":1}',
+    )
+    const observer = Buffer.from(
+      '{"page":1,"consumer_token":"production-observer","venue":"pancakeswap"}',
+    )
+    const differentPage = Buffer.from(
+      '{"consumer_token":"frontend-dashboard","venue":"pancakeswap","page":2}',
+    )
+
+    expect(publicReadCachePayload(browser)).toEqual(
+      publicReadCachePayload(observer),
+    )
+    expect(publicReadCachePayload(browser)).not.toEqual(
+      publicReadCachePayload(differentPage),
+    )
   })
 })

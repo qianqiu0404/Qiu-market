@@ -57,3 +57,24 @@ export function isPublicMarketRead(method: string, pathname: string): boolean {
     /^\/api\/v[12]\/get_[a-z0-9_]+$/.test(pathname)
   )
 }
+
+function stableJSON(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJSON)
+  if (value === null || typeof value !== 'object') return value
+
+  const source = value as Record<string, unknown>
+  return Object.fromEntries(
+    Object.keys(source)
+      .filter((key) => key !== 'consumer_token')
+      .sort()
+      .map((key) => [key, stableJSON(source[key])]),
+  )
+}
+
+export function publicReadCachePayload(body: Buffer): Buffer {
+  try {
+    return Buffer.from(JSON.stringify(stableJSON(JSON.parse(body.toString()))))
+  } catch {
+    return body
+  }
+}
