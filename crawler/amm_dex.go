@@ -33,12 +33,21 @@ import (
 const (
 	dexDiscoveryInterval = 6 * time.Hour
 	dexQuoteInterval     = 15 * time.Second
-	dexMinimumTVLUSD     = int64(100_000)
-	dexMinimumVolumeUSD  = int64(5_000)
-	dexMaxRoutesPerAsset = 12
-	publicEthereumRPCURL = "https://ethereum-rpc.publicnode.com"
-	publicBSCRPCURL      = "https://bsc-rpc.publicnode.com"
-	dexScreenerAPIURL    = "https://api.dexscreener.com/token-pairs/v1"
+	// Historical observations are produced by a bounded, multi-route sweep.
+	// Keep its continuity SLA separate from the 30-second public quote
+	// freshness rule: the current successful quote is the window endpoint,
+	// while prior same-route/same-notional samples may be at most ten minutes
+	// apart.
+	dexHistoricalObservationMaxGap = 10 * time.Minute
+	// Keep enough same-route/same-notional history to prove the 72-hour
+	// production gate with margin and to support a later seven-day review.
+	dexObservationRetention = 8 * 24 * time.Hour
+	dexMinimumTVLUSD        = int64(100_000)
+	dexMinimumVolumeUSD     = int64(5_000)
+	dexMaxRoutesPerAsset    = 12
+	publicEthereumRPCURL    = "https://ethereum-rpc.publicnode.com"
+	publicBSCRPCURL         = "https://bsc-rpc.publicnode.com"
+	dexScreenerAPIURL       = "https://api.dexscreener.com/token-pairs/v1"
 )
 
 var (
@@ -1368,7 +1377,9 @@ func (a *AMMAdapter) quoteAll(ctx context.Context) {
 		a.reporter.NextRetry(a.config.Provider, sourceKey, completedAt.Add(dexQuoteInterval))
 		return
 	}
-	_ = a.db.MarketAggregation.PruneDexQuoteObservations(completedAt.Add(-48 * time.Hour))
+	_ = a.db.MarketAggregation.PruneDexQuoteObservations(
+		completedAt.Add(-dexObservationRetention),
+	)
 	if err := a.publishVenueSnapshots(rows, completedAt); err != nil {
 		a.reporter.Failure(a.config.Provider, sourceKey, completedAt, fmt.Errorf("publish DEX venue snapshots failed"), 0)
 		a.reporter.NextRetry(a.config.Provider, sourceKey, completedAt.Add(dexQuoteInterval))
@@ -1575,9 +1586,18 @@ func dexCoverageSufficient(
 	if coverage == nil || coverage.ObservationCount == 0 {
 		return false
 	}
+	// quoteRoute calls this only after obtaining a fresh current quote. That
+	// quote is inserted after the route batch completes, so it is not yet part
+	// of the database window. Treat it as the endpoint and verify that the gap
+	// from the latest persisted sample stays inside the historical sampling
+	// SLA. Public route freshness remains independently capped at 30 seconds.
+	endpointGap := now.Sub(coverage.LastObservedAt)
+	if endpointGap < 0 {
+		return false
+	}
 	return !coverage.FirstObservedAt.After(windowStart.Add(30*time.Minute)) &&
-		!coverage.LastObservedAt.Before(now.Add(-2*dexQuoteInterval)) &&
-		coverage.MaxGap <= 2*time.Minute
+		endpointGap <= dexHistoricalObservationMaxGap &&
+		coverage.MaxGap <= dexHistoricalObservationMaxGap
 }
 
 func assessDexQuote(

@@ -97,3 +97,40 @@ curl -i -X POST https://<node>.<tailnet>.ts.net/api/v2/get_market_overview \
 第一条应为 200；第二条绕过 BFF，应为 401。随后检查 Vercel `/api/**` 为 200，
 Cookie 带 Secure，错误 Origin、过期 WebSocket ticket 与伪造 CSRF 均被拒绝。
 交易仍只使用虚拟资金，不接充值、提现、私钥或实盘。
+
+## 6. 24/48/72 小时生产观察
+
+生产观察器是只读验收定时器，不是第六个业务服务。它每 5 分钟检查：
+
+- Production 页面和 Vercel BFF；
+- Funnel `/healthz` 以及未签名 REST 必须返回 401；
+- 虚拟交易状态必须为 `ready`、队列无错误；
+- Uniswap/PancakeSwap 的动态 route 数与 reference-only 数；
+- PostgreSQL 中同 provider、asset、route、`quote_notional_usd` 的 24/48/72
+  小时历史窗口。
+
+历史窗口要求起点位于窗口开始后 30 分钟内、最新观察不超过 10 分钟、最大历史
+采样间隔不超过 10 分钟。这个历史采样 SLA 不会放宽公开 route price 的 30 秒
+freshness。任一窗口只有在至少一条同 route、同名义金额曲线通过时才标记 `passed`。
+
+安装并立即查看：
+
+```bash
+bash ops/macos/manage-observer.sh install
+bash ops/macos/manage-observer.sh status
+```
+
+证据保存在私有运行目录，不进入仓库：
+
+```text
+~/Library/Application Support/Qiu Market/observations/latest.json
+~/Library/Application Support/Qiu Market/observations/production-soak.jsonl
+```
+
+`latest.json` 是当前状态，JSONL 是追加式审计历史。顶层 `status = observing`
+表示当前检查通过但长窗口仍在积累；只有六个 provider/window 组合全部通过才成为
+`passed`，当前检查失败则为 `failed`。停止观察器不会删除历史：
+
+```bash
+bash ops/macos/manage-observer.sh uninstall
+```

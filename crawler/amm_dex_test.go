@@ -270,17 +270,22 @@ func TestDexCoverageRequiresFullRouteSpecificObservationWindow(t *testing.T) {
 	start := now.Add(-24 * time.Hour)
 	coverage := &database.DexWindowCoverage{
 		FirstObservedAt:  start.Add(20 * time.Minute),
-		LastObservedAt:   now.Add(-dexQuoteInterval),
+		LastObservedAt:   now.Add(-9 * time.Minute),
 		OpenPriceUSD:     "100",
 		ObservationCount: 5600,
-		MaxGap:           time.Minute,
+		MaxGap:           9 * time.Minute,
 	}
 	require.True(t, dexCoverageSufficient(coverage, start, now))
 
 	coverage.FirstObservedAt = start.Add(31 * time.Minute)
 	require.False(t, dexCoverageSufficient(coverage, start, now))
 	coverage.FirstObservedAt = start.Add(20 * time.Minute)
-	coverage.MaxGap = 2*time.Minute + time.Second
+	coverage.MaxGap = dexHistoricalObservationMaxGap + time.Second
+	require.False(t, dexCoverageSufficient(coverage, start, now))
+	coverage.MaxGap = 9 * time.Minute
+	coverage.LastObservedAt = now.Add(-dexHistoricalObservationMaxGap - time.Second)
+	require.False(t, dexCoverageSufficient(coverage, start, now))
+	coverage.LastObservedAt = now.Add(time.Second)
 	require.False(t, dexCoverageSufficient(coverage, start, now))
 }
 

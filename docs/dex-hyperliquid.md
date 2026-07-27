@@ -52,7 +52,8 @@ AMM 固定规则：
 | CEX 参考缺失 | 不再拒绝已通过双向链上门槛的报价，标记 `onchain_only`；质量最高只能 Medium |
 | 质量 | `$10K` 为 Medium；有 CEX 交叉验证且满足更严流动性/冲击条件才可 High；`$1K/$100` 一律 Low |
 | quote-side impact | 同一区块双向 buy/sell 各自偏离中点的最大百分比；不使用 6 小时目录发现价冒充当前基准 |
-| 24h 涨跌 | 必须是同一 route、同一 `quote_notional_usd` 的内部观察；24h 窗口开始后 30 分钟内建立、末端不超过 30 秒、最大缺口不超过 2 分钟才返回 |
+| 24h 涨跌 | 必须是同一 route、同一 `quote_notional_usd` 的内部观察；24h 窗口开始后 30 分钟内建立，历史采样最大缺口不超过 10 分钟。本次通过全部链上质量门的当前报价作为窗口终点；公开 route price 仍独立要求 30 秒 freshness |
+| 观察保留 | `dex_quote_observation` 保留 8 天，足以独立核验 24/48/72 小时窗口，并为后续七天观察留出余量 |
 
 `dex_pool_candidate.quote_eligible` 把两层资格显式分开：链上身份成立的 pool 足以证明该资产“在这个 provider 有 listed pool”，可用于固定 50 资产目录；只有 TVL/成交额门槛也通过的 pool 才能进入 route 构造，最终还要通过区块、impact、spread 和偏差门槛才有公开报价。它解决的是“页面成员不能被一次 Quoter 失败删掉”，不是降低行情质量。
 
@@ -223,7 +224,7 @@ WHERE es.market_code LIKE 'hyperliquid:%';
 | impact/spread 超限 | 50 资产成员保留，route 审计保留但公开价格 Unknown | 路线质量恢复后自动发布 |
 | 无新鲜 CEX 综合价 | 合格双向链上报价以 `onchain_only` 发布，最高 Medium | CEX 恢复后下一轮自动增加偏差校验 |
 | CEX 偏差超限 | 尝试更小名义；仍超 3% 则公开价格 Unknown | 两侧价格恢复一致后自动发布 |
-| 24h 观察跨 route、跨名义金额或中断超过 2 分钟 | 当前 route 的 24h change 为 Unknown | 同一路线、同金额连续覆盖满窗口后自动恢复 |
+| 24h 观察跨 route、跨名义金额或历史采样中断超过 10 分钟 | 当前 route 的 24h change 为 Unknown | 同一路线、同金额连续覆盖满窗口后自动恢复；当前 route price 仍按 30 秒 freshness 单独判断 |
 
 ## 证据边界
 
