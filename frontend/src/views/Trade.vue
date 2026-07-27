@@ -478,7 +478,12 @@ watch(klineInterval, () => void loadKline())
 
 onMounted(async () => {
   await Promise.all([loadPublic(), refreshMarketData(), loadAuthCapabilities()])
-  await discoverSession()
+  if (
+    authCapabilities.value.github_oauth_enabled ||
+    authCapabilities.value.local_login_enabled
+  ) {
+    await discoverSession()
+  }
   publicTimer = window.setInterval(() => void loadPublic(), 3000)
   marketTimer = window.setInterval(() => void refreshMarketData(), 15_000)
   window.addEventListener('resize', resizeChart)

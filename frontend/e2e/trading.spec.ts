@@ -79,6 +79,7 @@ const btcVenue = {
 
 interface HarnessOptions {
   realKlines?: boolean
+  authDisabled?: boolean
 }
 
 async function installHarness(page: Page, options: HarnessOptions = {}) {
@@ -142,7 +143,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     if (path === '/api/v1/trading/auth/capabilities') {
       await json(200, {
         github_oauth_enabled: false,
-        local_login_enabled: true,
+        local_login_enabled: !options.authDisabled,
       })
       return
     }
@@ -302,6 +303,20 @@ test('trade page refuses to invent K-lines when the trusted source has no candle
   await expect(page.getByRole('heading', { name: 'BTC / USDT' })).toBeVisible()
   await expect(page.getByText('NO MOCK · NO STATIC FALLBACK')).toBeVisible()
   await expect(page.getByText('The selected venue returned no real candles')).toBeVisible()
+})
+
+test('trade page does not probe a session when every login method is disabled', async ({ page }) => {
+  let sessionRequests = 0
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/v1/trading/session') {
+      sessionRequests++
+    }
+  })
+  await installHarness(page, { authDisabled: true })
+  await page.goto('/trade/BTC-USDT')
+
+  await expect(page.getByText('登录未配置')).toBeVisible()
+  expect(sessionRequests).toBe(0)
 })
 
 test('admin can fund, place, cancel and fill virtual orders with fee evidence', async ({ page }) => {
