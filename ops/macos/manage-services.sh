@@ -66,6 +66,16 @@ case "$action" in
       launchctl kickstart -k "gui/$UID/com.qiumarket.$role"
     done
     ;;
+  reload)
+    prepare
+    mkdir -p "$launch_dir"
+    for role in "${roles[@]}"; do
+      render_plist "$role"
+      launchctl bootout "gui/$UID/com.qiumarket.$role" >/dev/null 2>&1 || true
+      launchctl bootstrap "gui/$UID" "$launch_dir/com.qiumarket.$role.plist"
+    done
+    echo "Reloaded Qiu Market LaunchAgents with current definitions."
+    ;;
   status)
     for role in "${roles[@]}"; do
       if launchctl print "gui/$UID/com.qiumarket.$role" >/dev/null 2>&1; then
@@ -83,7 +93,7 @@ case "$action" in
     echo "LaunchAgents stopped; private environment, binary, and logs were preserved."
     ;;
   *)
-    echo "Usage: $0 prepare|install|restart|status|uninstall" >&2
+    echo "Usage: $0 prepare|install|restart|reload|status|uninstall" >&2
     exit 2
     ;;
 esac
