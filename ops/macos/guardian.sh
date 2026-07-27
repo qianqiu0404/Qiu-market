@@ -56,7 +56,7 @@ fi
 funnel_origin="${MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
 funnel_cooldown="$state_dir/funnel-restart-at"
 if curl --fail --silent --max-time 5 "$funnel_origin/healthz" >/dev/null; then
-  find "$funnel_cooldown" -maxdepth 0 -type f -delete 2>/dev/null || true
+  :
 elif curl --fail --silent --max-time 3 http://127.0.0.1:9092/healthz >/dev/null; then
   last_restart="$(cat "$funnel_cooldown" 2>/dev/null || echo 0)"
   if [ "$(($(date '+%s') - last_restart))" -ge 900 ]; then
