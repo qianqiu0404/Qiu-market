@@ -8,6 +8,14 @@ if [ -f .env ]; then
   # shellcheck disable=SC1091
   source .env
 fi
+if [ -n "${MARKET_RUNTIME_ENV_FILE:-}" ]; then
+  if [ ! -f "$MARKET_RUNTIME_ENV_FILE" ]; then
+    echo "MARKET_RUNTIME_ENV_FILE does not exist: $MARKET_RUNTIME_ENV_FILE" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "$MARKET_RUNTIME_ENV_FILE"
+fi
 
 : "${MARKET_MASTER_DB_HOST:=127.0.0.1}"
 : "${MARKET_MASTER_DB_PORT:=5432}"
@@ -38,6 +46,37 @@ echo "Building backend..."
 go build -o market-services ./cmd/market-services
 
 base_url="http://${MARKET_HTTP_HOST}:${MARKET_HTTP_PORT}"
+api_request() {
+  local method="$1"
+  local request_uri="$2"
+  local request_body="${3:-}"
+  local timestamp
+  local digest
+  local canonical
+  local signature
+  local -a headers=()
+
+  if [ -n "${MARKET_PUBLIC_PROXY_HMAC_SECRET:-}" ]; then
+    timestamp="$(date +%s)"
+    digest="$(printf '%s' "$request_body" | shasum -a 256 | awk '{print $1}')"
+    canonical="$(printf '%s\n%s\n%s\n%s' "$timestamp" "$method" "$request_uri" "$digest")"
+    signature="$(
+      printf '%s' "$canonical" |
+        openssl dgst -sha256 -hmac "$MARKET_PUBLIC_PROXY_HMAC_SECRET" -hex |
+        awk '{print $NF}'
+    )"
+    headers+=(
+      -H "X-Qiu-Market-Timestamp: $timestamp"
+      -H "X-Qiu-Market-Content-SHA256: $digest"
+      -H "X-Qiu-Market-Signature: $signature"
+    )
+  fi
+  if [ -n "$request_body" ]; then
+    headers+=(-H "Content-Type: application/json" --data-binary "$request_body")
+  fi
+  curl -fsS -X "$method" "${headers[@]}" "$base_url$request_uri"
+}
+
 api_log=""
 api_pid=""
 trading_log=""
@@ -132,7 +171,7 @@ echo "Checking isolated trading gateway..."
 trading_status=""
 for _ in $(seq 1 20); do
   if trading_status="$(
-    curl -fsS "$base_url/api/v1/trading/markets/BTC-USDT/status" 2>/dev/null
+    api_request GET "/api/v1/trading/markets/BTC-USDT/status" 2>/dev/null
   )"; then
     break
   fi
@@ -157,7 +196,7 @@ printf '%s' "$trading_status" | node -e '
   }
   console.log(`trading: ${payload.state}, sequence ${payload.sequence}`)
 '
-curl -fsS "$base_url/api/v1/trading/markets/BTC-USDT/orderbook?levels=5" \
+api_request GET "/api/v1/trading/markets/BTC-USDT/orderbook?levels=5" \
   | node -e '
     const fs = require("node:fs")
     const payload = JSON.parse(fs.readFileSync(0, "utf8"))
@@ -168,9 +207,7 @@ curl -fsS "$base_url/api/v1/trading/markets/BTC-USDT/orderbook?levels=5" \
 
 echo "Checking dashboard API..."
 dashboard_json="$(
-  curl -fsS -X POST "$base_url/api/v1/get_market_dashboard" \
-    -H 'Content-Type: application/json' \
-    -d '{"page":1,"page_size":3}'
+  api_request POST "/api/v1/get_market_dashboard" '{"page":1,"page_size":3}'
 )"
 
 if ! printf '%s' "$dashboard_json" | grep -q '"code":2000'; then
@@ -192,9 +229,8 @@ validate_asset_dashboard() {
   local second_response=""
   local total
   first_response="$(
-    curl -fsS -X POST "$base_url/api/v2/get_asset_dashboard" \
-      -H 'Content-Type: application/json' \
-      -d "{\"page\":1,\"page_size\":100,\"venue\":\"$venue\",\"filter\":\"assets\",\"sort_by\":\"rank\",\"sort_direction\":\"asc\",\"include_uncovered\":true,\"universe\":\"$universe\"}"
+    api_request POST "/api/v2/get_asset_dashboard" \
+      "{\"page\":1,\"page_size\":100,\"venue\":\"$venue\",\"filter\":\"assets\",\"sort_by\":\"rank\",\"sort_direction\":\"asc\",\"include_uncovered\":true,\"universe\":\"$universe\"}"
   )"
   total="$(printf '%s' "$first_response" | node -e '
     const fs = require("node:fs")
@@ -203,9 +239,8 @@ validate_asset_dashboard() {
   ')"
   if [ "$total" -gt 100 ]; then
     second_response="$(
-      curl -fsS -X POST "$base_url/api/v2/get_asset_dashboard" \
-        -H 'Content-Type: application/json' \
-        -d "{\"page\":2,\"page_size\":100,\"venue\":\"$venue\",\"filter\":\"assets\",\"sort_by\":\"rank\",\"sort_direction\":\"asc\",\"include_uncovered\":true,\"universe\":\"$universe\"}"
+      api_request POST "/api/v2/get_asset_dashboard" \
+        "{\"page\":2,\"page_size\":100,\"venue\":\"$venue\",\"filter\":\"assets\",\"sort_by\":\"rank\",\"sort_direction\":\"asc\",\"include_uncovered\":true,\"universe\":\"$universe\"}"
     )"
   fi
   printf '%s\n%s\n' "$first_response" "$second_response" | node -e '
