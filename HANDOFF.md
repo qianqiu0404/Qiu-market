@@ -11,6 +11,7 @@
 - 订单写超时进入 `submitted/unknown`，沿用原 client order ID 查询权威订单视图，不生成新 ID、不盲目重下。Demo maker 在不安全参考价或低磁盘时撤单暂停，连续三个新鲜样本后恢复。
 - 低于 25GiB 告警，低于 15GiB 暂停 crawler/worker/DEX；交易读路径继续可用，而下单、撤单、虚拟入金和 demo maker fail-closed。Guardian 不会盲目重启共享 PostgreSQL。
 - 全库每日备份保留 2 份、`trading_*` 每小时备份保留 24 份；每周恢复临时库并校验事件、快照和分资产账本平衡。当前备份仍在同一块物理磁盘，灾难恢复风险已接受但未消除。
+- 交易快照 schema v5 紧凑化已终结的 `system:demo-maker` 订单和该系统账户内存幂等缓存，并把运行时 journal 折叠为分资产平衡 checkpoint；事件批次、订单投影和账本投影完整保留，用户状态和开放盘口不裁剪。该升级用于消除 demo maker 长期运行造成的恢复时间和内存无界增长。
 - Vercel WebSocket beta 尚无账号环境证据，生产默认降级为同源 cursor polling；WebSocket 验收保持 `environment-pending`。
 - 当前仍需机器所有者一次管理员授权，才能把用户 LaunchAgent 提升为无需桌面登录的 LaunchDaemon，并执行 `pmset autorestart 1`。GitHub OAuth 凭据、Preview/Production 同产物晋级和连续 7 天外部 SLO 也必须以真实证据单独收口。
 

@@ -314,6 +314,13 @@ func bootstrapDemoMaker(
 		},
 	}
 	for _, request := range requests {
+		balance, err := runner.Balance(request.AccountID, request.Asset)
+		if err != nil {
+			return fmt.Errorf("read virtual demo maker asset %s: %w", request.Asset, err)
+		}
+		if balance.Available > 0 || balance.Held > 0 {
+			continue
+		}
 		if _, err := runner.Fund(ctx, request); err != nil {
 			return fmt.Errorf("fund virtual demo maker asset %s: %w", request.Asset, err)
 		}

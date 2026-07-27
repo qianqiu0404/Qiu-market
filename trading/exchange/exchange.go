@@ -83,10 +83,13 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot: %w", err)
 	}
+	var activeSchema uint16
 	if found {
-		if snapshot.SchemaVersion != store.CurrentSchemaVersion || snapshot.MarketID != market.ID {
+		if !supportedSchemaVersion(snapshot.SchemaVersion) ||
+			snapshot.MarketID != market.ID {
 			return nil, fmt.Errorf("%w: unsupported snapshot metadata", ErrRecoveryDiverged)
 		}
+		activeSchema = snapshot.SchemaVersion
 		current, err = unmarshalState(snapshot.Payload)
 		if err != nil {
 			return nil, err
@@ -112,9 +115,22 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 	if err != nil {
 		return nil, fmt.Errorf("load event records: %w", err)
 	}
-	for _, record := range records {
-		if record.SchemaVersion != store.CurrentSchemaVersion || record.MarketID != market.ID {
+	for recordIndex, record := range records {
+		if record.MarketID != market.ID ||
+			!supportedSchemaVersion(record.SchemaVersion) {
 			return nil, fmt.Errorf("%w: unsupported event record metadata", ErrRecoveryDiverged)
+		}
+		if activeSchema == 0 {
+			activeSchema = record.SchemaVersion
+		}
+		if record.SchemaVersion < activeSchema {
+			return nil, fmt.Errorf("%w: legacy event follows compacted state", ErrRecoveryDiverged)
+		}
+		if record.SchemaVersion > activeSchema {
+			if err := current.compactForSchema(record.SchemaVersion); err != nil {
+				return nil, err
+			}
+			activeSchema = record.SchemaVersion
 		}
 		if record.Command.Sequence != current.sequence+1 {
 			return nil, fmt.Errorf("%w: event sequence have=%d want=%d",
@@ -133,9 +149,13 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 				ErrRecoveryDiverged, record.Command.RequestKey.String())
 		}
 
-		trial, cloneErr := current.clone()
-		if cloneErr != nil {
-			return nil, cloneErr
+		trial := current
+		if record.SchemaVersion == store.CurrentSchemaVersion {
+			var cloneErr error
+			trial, cloneErr = current.clone()
+			if cloneErr != nil {
+				return nil, cloneErr
+			}
 		}
 		trial.sequence = record.Command.Sequence
 		journalStart := trial.ledger.JournalLen()
@@ -152,26 +172,61 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 		if projectionErr != nil {
 			return nil, projectionErr
 		}
-		trial.requests[record.Command.RequestKey] = requestRecord{
-			Fingerprint: record.Command.Fingerprint,
-			Result:      cloneResult(result),
+		if record.SchemaVersion == store.LegacySchemaVersion ||
+			record.Command.RequestKey.AccountID != ephemeralDemoMakerAccount ||
+			record.Command.RequestKey.Operation == domain.CommandKindFund {
+			trial.requests[record.Command.RequestKey] = requestRecord{
+				Fingerprint: record.Command.Fingerprint,
+				Result:      cloneResult(result),
+			}
 		}
-		if err := trial.validate(); err != nil {
-			return nil, fmt.Errorf("%w: replay sequence %d validation: %v",
-				ErrRecoveryDiverged, record.Command.Sequence, err)
+		if err := trial.compactForSchema(record.SchemaVersion); err != nil {
+			return nil, err
 		}
-		hash, hashErr := trial.hash()
-		if hashErr != nil {
-			return nil, hashErr
-		}
+		verifyState := record.SchemaVersion == store.CurrentSchemaVersion ||
+			recordIndex == len(records)-1 ||
+			records[recordIndex+1].SchemaVersion != record.SchemaVersion
 		if !reflect.DeepEqual(result, record.Result) ||
 			!reflect.DeepEqual(journalDelta, record.Journal) ||
-			!reflect.DeepEqual(projection, record.Projection) ||
-			hash != record.StateHash {
+			!reflect.DeepEqual(projection, record.Projection) {
 			return nil, fmt.Errorf("%w: sequence %d result_or_hash_mismatch",
 				ErrRecoveryDiverged, record.Command.Sequence)
 		}
+		if verifyState {
+			if err := trial.validate(); err != nil {
+				return nil, fmt.Errorf("%w: replay sequence %d validation: %v",
+					ErrRecoveryDiverged, record.Command.Sequence, err)
+			}
+			hash, hashErr := trial.hash()
+			if hashErr != nil {
+				return nil, hashErr
+			}
+			if hash != record.StateHash {
+				return nil, fmt.Errorf("%w: sequence %d result_or_hash_mismatch",
+					ErrRecoveryDiverged, record.Command.Sequence)
+			}
+		}
 		current = trial
+	}
+
+	if activeSchema != 0 && activeSchema < store.CurrentSchemaVersion {
+		if err := current.compactForSchema(store.CurrentSchemaVersion); err != nil {
+			return nil, err
+		}
+		payload, marshalErr := current.marshal()
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		sum := sha256.Sum256(payload)
+		if err := snapshots.Save(ctx, store.Snapshot{
+			SchemaVersion: store.CurrentSchemaVersion,
+			MarketID:      market.ID,
+			Sequence:      current.sequence,
+			StateHash:     hex.EncodeToString(sum[:]),
+			Payload:       payload,
+		}); err != nil {
+			return nil, fmt.Errorf("upgrade compact trading snapshot: %w", err)
+		}
 	}
 
 	return &Exchange{
@@ -179,6 +234,12 @@ func Restore(ctx context.Context, market domain.Market, eventLog store.EventStor
 		snapshots: snapshots,
 		state:     current,
 	}, nil
+}
+
+func supportedSchemaVersion(schemaVersion uint16) bool {
+	return schemaVersion == store.LegacySchemaVersion ||
+		schemaVersion == store.PreviousSchemaVersion ||
+		schemaVersion == store.CurrentSchemaVersion
 }
 
 func (e *Exchange) Fund(ctx context.Context, request domain.FundRequest) (domain.Result, error) {
@@ -284,9 +345,15 @@ func (e *Exchange) runLocked(ctx context.Context, command domain.Command) (domai
 	if err != nil {
 		return domain.Result{}, err
 	}
-	trial.requests[command.RequestKey] = requestRecord{
-		Fingerprint: command.Fingerprint,
-		Result:      cloneResult(result),
+	if command.RequestKey.AccountID != ephemeralDemoMakerAccount ||
+		command.RequestKey.Operation == domain.CommandKindFund {
+		trial.requests[command.RequestKey] = requestRecord{
+			Fingerprint: command.Fingerprint,
+			Result:      cloneResult(result),
+		}
+	}
+	if err := trial.compactForSchema(store.CurrentSchemaVersion); err != nil {
+		return domain.Result{}, err
 	}
 	if err := trial.validate(); err != nil {
 		return domain.Result{}, fmt.Errorf("validate trial state: %w", err)

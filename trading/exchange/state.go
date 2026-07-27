@@ -44,6 +44,8 @@ type state struct {
 	requests map[domain.IdempotencyKey]requestRecord
 }
 
+const ephemeralDemoMakerAccount = domain.AccountID("system:demo-maker")
+
 func newState(market domain.Market) (*state, error) {
 	if err := market.Validate(); err != nil {
 		return nil, err
@@ -114,6 +116,36 @@ func (s *state) persisted() persistedState {
 		return persisted.Requests[i].Key.String() < persisted.Requests[j].Key.String()
 	})
 	return persisted
+}
+
+// compactEphemeralSystemHistory removes only closed demo-maker orders and its
+// in-memory idempotency cache. PostgreSQL event batches and order projections
+// remain immutable and complete; user order history, user idempotency, trades,
+// balances, open quotes and the order book are preserved.
+func (s *state) compactEphemeralSystemHistory() {
+	for orderID, order := range s.orders {
+		if order.AccountID == ephemeralDemoMakerAccount && !order.IsOpen() {
+			delete(s.orders, orderID)
+		}
+	}
+	for key := range s.requests {
+		if key.AccountID == ephemeralDemoMakerAccount &&
+			key.Operation != domain.CommandKindFund {
+			delete(s.requests, key)
+		}
+	}
+}
+
+func (s *state) compactForSchema(schemaVersion uint16) error {
+	if schemaVersion >= 4 {
+		s.compactEphemeralSystemHistory()
+	}
+	if schemaVersion >= 5 {
+		if err := s.ledger.Compact(); err != nil {
+			return fmt.Errorf("compact runtime ledger: %w", err)
+		}
+	}
+	return nil
 }
 
 func stateFromPersisted(persisted persistedState) (*state, error) {

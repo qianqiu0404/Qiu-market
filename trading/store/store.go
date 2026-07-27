@@ -13,7 +13,11 @@ import (
 
 var ErrSequenceConflict = errors.New("event store sequence conflict")
 
-const CurrentSchemaVersion uint16 = 3
+const (
+	LegacySchemaVersion   uint16 = 3
+	PreviousSchemaVersion uint16 = 4
+	CurrentSchemaVersion  uint16 = 5
+)
 
 type BalanceProjection struct {
 	AccountID domain.AccountID `json:"account_id"`

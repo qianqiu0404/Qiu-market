@@ -183,3 +183,9 @@ bash ops/macos/manage-observer.sh uninstall
 
 同盘备份只能覆盖短期误操作和逻辑恢复，不能覆盖整盘损坏；灾难恢复保持
 `risk-accepted / environment-pending`。
+
+交易快照 schema v5 会在启动时把旧 v3/v4 快照升级为紧凑表示：淘汰已终结的
+`system:demo-maker` 订单和该系统账户的内存幂等缓存，并把运行时 ledger journal
+折叠为每资产双重记账余额 checkpoint。`trading_event_batch`、`trading_order` 和
+`trading_ledger_entry` 投影不删除，用户订单、用户幂等、成交、余额、完整账本历史
+和六笔开放做市订单全部保留。这个边界用于防止长期 demo maker 把恢复快照无界放大。

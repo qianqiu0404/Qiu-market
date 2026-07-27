@@ -2,6 +2,7 @@ package ledger_test
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
@@ -76,5 +77,59 @@ func TestDuplicateTransactionIsRejected(t *testing.T) {
 	}
 	if err := book.FundVirtual("fund-1", "fund:alice", "alice", "USDT", 10); !errors.Is(err, ledger.ErrDuplicateTransaction) {
 		t.Fatalf("duplicate transaction error = %v", err)
+	}
+}
+
+func TestCompactPreservesBalancesAndBoundsRuntimeJournal(t *testing.T) {
+	t.Parallel()
+
+	book := ledger.New()
+	if err := book.FundVirtual("fund-1", "fund:alice", "alice", "USDT", 10_000); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 100; index++ {
+		if err := book.Hold(
+			"hold-"+strconv.Itoa(index),
+			"order",
+			"alice",
+			"USDT",
+			10,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := book.Release(
+			"release-"+strconv.Itoa(index),
+			"order",
+			"alice",
+			"USDT",
+			10,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	beforeAvailable, beforeHeld := book.UserBalance("alice", "USDT")
+	beforeTreasury := book.Balance(ledger.SystemTreasury("USDT"), "USDT")
+	if err := book.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	afterAvailable, afterHeld := book.UserBalance("alice", "USDT")
+	afterTreasury := book.Balance(ledger.SystemTreasury("USDT"), "USDT")
+	if afterAvailable != beforeAvailable || afterHeld != beforeHeld ||
+		afterTreasury != beforeTreasury {
+		t.Fatalf(
+			"balances changed: user before=%d/%d after=%d/%d treasury before=%d after=%d",
+			beforeAvailable,
+			beforeHeld,
+			afterAvailable,
+			afterHeld,
+			beforeTreasury,
+			afterTreasury,
+		)
+	}
+	if book.JournalLen() != 1 {
+		t.Fatalf("compacted journal length = %d, want 1 asset checkpoint", book.JournalLen())
+	}
+	if err := book.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

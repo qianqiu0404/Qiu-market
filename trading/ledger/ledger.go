@@ -213,6 +213,50 @@ func (l *Ledger) Snapshot() Snapshot {
 	}
 }
 
+// Compact replaces the runtime journal with deterministic per-asset balance
+// checkpoints. Immutable ledger history remains in the event store and
+// PostgreSQL projection; the in-memory ledger needs only current balances and
+// transaction IDs created after the checkpoint.
+func (l *Ledger) Compact() error {
+	balances := l.Balances()
+	byAsset := make(map[domain.Asset][]Entry)
+	for _, balance := range balances {
+		if balance.Amount == 0 {
+			continue
+		}
+		byAsset[balance.Asset] = append(byAsset[balance.Asset], Entry{
+			Account: balance.Account,
+			Asset:   balance.Asset,
+			Amount:  balance.Amount,
+		})
+	}
+	assets := make([]domain.Asset, 0, len(byAsset))
+	for asset := range byAsset {
+		assets = append(assets, asset)
+	}
+	sort.Slice(assets, func(i, j int) bool { return assets[i] < assets[j] })
+
+	compacted := New()
+	for _, asset := range assets {
+		entries := byAsset[asset]
+		if len(entries) < 2 {
+			return fmt.Errorf("%w: checkpoint for %s has fewer than two entries", ErrUnbalancedTransaction, asset)
+		}
+		if err := compacted.Post(Transaction{
+			ID:        "runtime-checkpoint:" + string(asset),
+			Reference: "runtime-ledger-checkpoint",
+			Entries:   entries,
+		}); err != nil {
+			return fmt.Errorf("compact ledger asset %s: %w", asset, err)
+		}
+	}
+	if err := compacted.Validate(); err != nil {
+		return err
+	}
+	*l = *compacted
+	return nil
+}
+
 func FromSnapshot(snapshot Snapshot) (*Ledger, error) {
 	restored := New()
 	for _, tx := range snapshot.Journal {
