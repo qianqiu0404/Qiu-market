@@ -32,3 +32,27 @@ func TestValidateConfigAndUnavailableContract(t *testing.T) {
 		t.Fatal("unavailable response may be cached")
 	}
 }
+
+func TestOptionalGitHubOAuthDoesNotCreateTypedNilInterface(t *testing.T) {
+	t.Parallel()
+	config := Config{
+		AllowedOrigins: []string{"https://qiu-market.vercel.app"},
+	}
+	github, err := optionalGitHubOAuth(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if github != nil {
+		t.Fatal("missing credentials enabled GitHub OAuth")
+	}
+
+	config.GitHubClientID = "client-id"
+	config.GitHubSecret = "client-secret"
+	github, err = optionalGitHubOAuth(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if github == nil {
+		t.Fatal("complete credentials did not enable GitHub OAuth")
+	}
+}

@@ -87,21 +87,9 @@ func New(ctx context.Context, config Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
-	var github *auth.GitHubOAuth
-	if config.GitHubClientID != "" && config.GitHubSecret != "" {
-		redirect := config.GitHubRedirect
-		if redirect == "" {
-			redirect = strings.TrimRight(config.AllowedOrigins[0], "/") +
-				"/api/v1/trading/auth/github/callback"
-		}
-		github, err = auth.NewGitHubOAuth(auth.GitHubConfig{
-			ClientID:     config.GitHubClientID,
-			ClientSecret: config.GitHubSecret,
-			RedirectURL:  redirect,
-		})
-		if err != nil {
-			return nil, err
-		}
+	github, err := optionalGitHubOAuth(config)
+	if err != nil {
+		return nil, err
 	}
 
 	httpConfig := httpapi.DefaultConfig()
@@ -144,6 +132,22 @@ func validateConfig(config Config) error {
 		return fmt.Errorf("GitHub OAuth client id and secret must be configured together")
 	}
 	return nil
+}
+
+func optionalGitHubOAuth(config Config) (httpapi.GitHubOAuth, error) {
+	if config.GitHubClientID == "" && config.GitHubSecret == "" {
+		return nil, nil
+	}
+	redirect := config.GitHubRedirect
+	if redirect == "" {
+		redirect = strings.TrimRight(config.AllowedOrigins[0], "/") +
+			"/api/v1/trading/auth/github/callback"
+	}
+	return auth.NewGitHubOAuth(auth.GitHubConfig{
+		ClientID:     config.GitHubClientID,
+		ClientSecret: config.GitHubSecret,
+		RedirectURL:  redirect,
+	})
 }
 
 func boundedREST(next http.Handler) http.Handler {
