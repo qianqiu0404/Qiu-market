@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+deployment_id=""
+deployment_url=""
+deployment_commit=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --deployment-id)
+      deployment_id="$2"
+      shift 2
+      ;;
+    --deployment-url)
+      deployment_url="$2"
+      shift 2
+      ;;
+    --commit)
+      deployment_commit="$2"
+      shift 2
+      ;;
+    *)
+      exit 2
+      ;;
+  esac
+done
+
+jq -n \
+  --arg deployment_id "$deployment_id" \
+  --arg deployment_url "$deployment_url" \
+  --arg deployment_commit "$deployment_commit" '
+    {
+      schema_version: 1,
+      status: "environment-pending",
+      deployment_id: $deployment_id,
+      deployment_url: $deployment_url,
+      deployment_commit: $deployment_commit,
+      checks: {
+        inspect_ready_preview: true,
+        local_frontend_matches_release: true,
+        vercel_authentication_blocks_ordinary_access: true,
+        protected_spa_deep_links_200: true,
+        runtime_provenance_matches: true,
+        trading_and_outbox_ready: true,
+        anonymous_session_http: 401,
+        unsigned_funnel_rest_http: 401,
+        local_login_disabled: true,
+        oauth_private_configuration_present: true,
+        github_oauth_runtime_capability: false,
+        oauth_browser_evidence_verified: false
+      }
+    }
+  ' > "${QIU_MARKET_PREVIEW_GATE_REPORT:?}"
+exit 2

@@ -163,6 +163,66 @@ OAuth 凭据或真实浏览器证据缺失时命令以退出码 2 和
 callback、Cookie、CSRF/Origin、unknown reconcile、logout 与旧 session 401 验收
 流程生成，不得手写为通过。
 
+### 受管 OAuth 维护窗口
+
+不要手工编辑 allowlist 后忘记恢复。凭据写入私有 `production.env` 后，先执行只读
+预检：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh preflight \
+  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
+  --deployment-url \
+    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
+  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+```
+
+预检会复用上面的 immutable Preview gate，并要求：私有文件权限为 `0600/0400`、
+OAuth 凭据非 placeholder、本地登录关闭、Secure Cookie 开启、Production callback
+和 origin 处于基线。通过后才打开短维护窗：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh open \
+  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
+  --deployment-url \
+    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
+  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+```
+
+`open` 在私有目录保存带 SHA-256 的原始环境备份和随机 `window_id`，原子切换两个
+配置项，只重启 API，并在线核对 GitHub authorize 的 `redirect_uri` 与 OAuth state
+Cookie。任何打开阶段错误或普通信号都会尝试恢复原文件、重启 API 并验证
+Production callback。状态可随时只读查看：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh status
+```
+
+浏览器验收必须先生成私有
+`observations/preview-oauth-preclose-evidence.json`。它要绑定本次 state 中精确的
+`deployment_id`、`deployment_commit`、随机 `window_id` 和 `opened_at`，并证明
+callback 单次消费、Secure Cookie、CSRF/Origin 拒绝、submit/cancel/fund unknown
+reconcile 及 Preview logout 204。文件必须为 `0600/0400`。随后执行：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh close
+```
+
+`close` 只有在 pre-close evidence 完整时才恢复 Production；恢复后还会再次在线
+核对 OAuth capability、固定 Production callback 和 state Cookie。浏览器保留原
+Preview context，再验证 session 为 401、写操作被拒绝，最后才生成供
+`verify-preview-gate.sh` 使用的完整 `preview-oauth-evidence.json`。因此 pre-close
+证据和最终 Gate 证据是两个阶段，不能提前把 stale-session 写成通过。
+
+如果浏览器验收失败、用户中止或无法安全生成 logout 证据，执行：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh abort
+```
+
+`abort` 恢复精确备份并标记 `aborted_without_acceptance`，不会生成或升级任何
+Preview acceptance。备份/状态位于私有 Application Support，不含于仓库；凭据和
+Secret 不得粘贴到聊天、日志或 evidence JSON。
+
 ## 5. 最小安全验收
 
 ```bash

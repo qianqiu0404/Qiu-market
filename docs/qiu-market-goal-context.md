@@ -110,6 +110,17 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
 - 2026-07-28 对 `dpl_7us...` 的真实验证中，上述非 OAuth 检查全部通过，报告按
   证据门禁返回 `environment-pending / github_oauth_private_configuration_missing`，
   没有把 preflight 误标为 Preview Gate 完成。
+- `ops/macos/manage-preview-oauth-window.sh` 已把 Gate 2C 的配置切换做成受管状态机：
+  `preflight` 只读校验 immutable Preview 与安全基线；`open` 用私有 SHA-256 备份、
+  随机 `window_id`、原子环境更新和只重启 API 打开维护窗；打开失败自动恢复；
+  `close` 要求绑定本次 window 的真实 pre-close/logout evidence；`abort` 只恢复
+  Production 且永不升级验收状态。夹具已覆盖无变更预检、成功打开、重复打开拒绝、
+  无 evidence 关闭拒绝、正常关闭、打开后故障回滚和紧急中止。它减少手工配置风险，
+  但不替代尚未执行的真实 GitHub OAuth 浏览器验收。
+- 2026-07-28 对真实私有环境运行受管 `preflight` 返回退出码 2：
+  `GitHub OAuth credentials are still missing`；前后环境文件 SHA-256 一致，窗口状态
+  仍为 `closed / never_opened`。因此没有打开维护窗、没有重启 API、没有改变
+  Production。
 
 该 Preview 已通过非登录 smoke，但仍须完成 Gate 2C 的 OAuth 与真实浏览器写操作
 验收后，才可 promote。
