@@ -121,6 +121,14 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
   的 deployment、commit、随机 `window_id`、打开时间和关闭时间完全一致；close
   报告还必须证明 Production 配置已恢复且 OAuth runtime 已复验。旧 schema v1、
   `abort`、错 window 或只完成 logout 未验证 stale session 的证据都保持 pending。
+- `frontend/scripts/run-preview-oauth-gate.mjs` 已把真实浏览器验收串成一次受管流程：
+  强制清除 Qiu Market Cookie 后重新走 Vercel/GitHub OAuth；callback 首次 302、
+  重放 400；校验 `qianqiu0404`、Secure/HttpOnly/SameSite Cookie、CSRF/Origin；
+  对 fund/submit/cancel 使用 `route.fetch()` 真实提交后只向页面丢 504，并用原 ID
+  重放、余额与订单权威事实证明没有重复执行；logout 后调用 close，再验证旧 session
+  和写请求均为 401，最终自动运行 Preview verifier。close 前任一步失败都会 abort。
+  纯函数测试已覆盖定点数、规范响应比较、远端挂单价、窗口身份和 0600 原子 evidence；
+  真实浏览器流程仍必须等 OAuth 凭据配置后执行，当前不能用这些测试替代外部证据。
 - 2026-07-28 对真实私有环境运行受管 `preflight` 返回退出码 2：
   `GitHub OAuth credentials are still missing`；前后环境文件 SHA-256 一致，窗口状态
   仍为 `closed / never_opened`。因此没有打开维护窗、没有重启 API、没有改变

@@ -24,6 +24,7 @@ PostgreSQL/传输栈测试，`partial` 表示仅有部分分层证据，
 | C10 | 502/503/504；保持 unknown，不自动写第二次 | 初次调用不盲重试，只有显式 reconcile 才沿用原 ID | `partial` | `frontend/src/api/trading.test.ts` 覆盖 submit fetch failure；两个 Playwright unknown 测试覆盖 cancel/fund 504 后等待用户显式核对。仍没有经过真实 Vercel BFF 的三种写故障链 |
 | C11 | 明确 4xx 业务拒绝；不进入 unknown | 不产生 pending，不盲重试 | `planned/environment-pending` | API 能区分 uncertain 错误，但尚无三种写操作的 UI pending 负向测试 |
 | C12 | 恢复后发布 outbox；从 cursor 续读 | checkpoint 前进且 `(sequence,event_index)` 可用于去重 | `partial` | `trading/store/postgres/store_integration_test.go::TestPostgresEventSnapshotOutboxAndRecovery` 与 `trading/rpc/server/server_test.go::TestTradingGRPCSubscribeEventsFromCursor`；尚无浏览器断线重连去重 E2E |
+| C13 | 真实 protected Preview OAuth 后，对 fund/submit/cancel 让上游提交成功但浏览器只收到 504 | callback 单次消费；三种写沿用原 ID；余额只增加一次；submit 权威订单 open；cancel 权威订单 canceled；logout 后旧 session/write 均 401 | `implemented/environment-pending` | `frontend/scripts/run-preview-oauth-gate.mjs` 使用真实 Chrome、Vercel BFF 与 Playwright `route.fetch()` 实现完整采集，并由受管 close/abort 保证配置恢复；纯函数测试与构建已通过，但 GitHub OAuth 凭据尚未配置，因此脚本未在真实 Preview 执行，不能升级为 verified E2E |
 
 ## 钱包 `broadcast_unknown`（EVM 示例）
 
@@ -47,4 +48,6 @@ PostgreSQL/传输栈测试，`partial` 表示仅有部分分层证据，
 5. 钱包场景还必须补 canonical chain、finality 与 reorg 证据。
 
 当前状态：矩阵已设计并逐项标明证据等级；现有分层测试不等于 OAuth 后的真实
-submit/cancel/fund 网络故障 E2E，后者仍为 `environment-pending`。
+submit/cancel/fund 网络故障 E2E。真实采集器已经实现但尚未运行，后者仍为
+`environment-pending`；只有它对精确 deployment/commit 生成 schema v2 evidence
+并让 `verify-preview-gate.sh` 通过后，才能升级 C2/C4/C7/C10 的浏览器传输证据。

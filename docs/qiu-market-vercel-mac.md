@@ -226,6 +226,54 @@ bash ops/macos/manage-preview-oauth-window.sh abort
 Preview acceptance。备份/状态位于私有 Application Support，不含于仓库；凭据和
 Secret 不得粘贴到聊天、日志或 evidence JSON。
 
+### 真实浏览器 Gate 2C 采集器
+
+凭据就绪且 `open` 成功后，不手写 pre-close/final evidence，运行：
+
+```bash
+cd frontend
+npm run gate:preview-oauth -- \
+  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
+  --deployment-url \
+    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
+  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+```
+
+脚本打开真实 Chrome，并给 Vercel/GitHub 登录各最多 5 分钟。专用浏览器 profile
+位于私有 `Application Support/Qiu Market/browser`，只用于复用 Vercel/GitHub
+登录状态；每次运行会先清除全部 `s78_trading_*` Cookie，强制 Qiu Market 重新走
+OAuth callback。浏览器中如果出现 Vercel Authentication 或 GitHub 授权页面，由
+用户本人完成，不把密码、2FA、OAuth code 或 Cookie 写入 evidence/日志。
+
+采集器必须在线证明：
+
+- callback 首次为 302，保存的同一 callback URL 再放一次为 400；
+- Trade 页面有真实 `BTC / USDT` 内容、没有 Vite/框架错误层和 console error，并把
+  截图以 `0600` 保存到私有 observations；
+- principal 精确为 `github:qianqiu0404`，session/CSRF Cookie 为 Secure、
+  SameSite=Strict，session 还是 HttpOnly；
+- 缺 CSRF 和恶意 Origin 都返回 403；
+- 先使用虚拟资金创建一笔远离市场且 Post Only 的卖单；
+- 对 fund、submit、cancel 分别让 Playwright `route.fetch()` 把请求真实发送到
+  Vercel BFF，确认上游 2xx 后只向页面返回人工 504，制造“服务端已提交但浏览器
+  不知道”的 unknown；
+- 三种写操作都使用原 request/client order ID 重放；响应必须与已提交结果一致，
+  fund 余额只增加一次，订单权威列表为 open，cancel 后权威订单为 canceled；
+- Preview logout 为 204。
+
+以上通过后脚本原子写入权限 `0600` 的 pre-close evidence，直接调用受管 `close`
+恢复 Production，再用原浏览器上下文验证 session 401 和写请求 401，生成 schema
+v2 final evidence，最后调用 `verify-preview-gate.sh`。任一步在 close 前失败、浏览器
+被关闭或登录超时，脚本都会调用 `abort` 恢复 Production；不会把失败流程写成通过。
+所有资金仍是 Qiu Market 虚拟账本，不涉及链上或交易所真实资金。
+
+采集器的纯函数边界可独立复验：
+
+```bash
+cd frontend
+npm run test:gate-lib
+```
+
 ### 同一构建产物的 Promotion Gate
 
 只有 `verify-preview-gate.sh` 在最近 15 分钟内对精确 deployment/commit 返回

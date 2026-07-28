@@ -311,6 +311,9 @@ if [ "$managed_oauth_close_evidence" = true ] &&
     .fund_unknown_reconciled == true and
     .preview_logout_204 == true and
     .stale_preview_session_401 == true and
+    .stale_preview_write_401 == true and
+    .visual_trade_page == true and
+    .console_error_count == 0 and
     (
       (.completed_at) as $completed |
       try (

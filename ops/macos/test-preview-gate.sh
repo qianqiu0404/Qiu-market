@@ -127,6 +127,9 @@ jq -n \
     fund_unknown_reconciled: true,
     preview_logout_204: true,
     stale_preview_session_401: true,
+    stale_preview_write_401: true,
+    visual_trade_page: true,
+    console_error_count: 0,
     completed_at: "2026-07-28T00:11:00Z"
   }' > "$fixture_dir/oauth-evidence.json"
 chmod 600 "$fixture_dir/oauth-evidence.json"
