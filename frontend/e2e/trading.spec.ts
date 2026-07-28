@@ -80,14 +80,36 @@ const btcVenue = {
 interface HarnessOptions {
   realKlines?: boolean
   authDisabled?: boolean
+  cancelCommittedButResponseLostOnce?: boolean
+  cancelResponseLostBeforeCommitOnce?: boolean
+  fundCommittedButResponseLostOnce?: boolean
 }
 
 async function installHarness(page: Page, options: HarnessOptions = {}) {
   let loggedIn = false
   let sequence = 10
+  let cancelAttempts = 0
+  let fundAttempts = 0
+  let loseCancelBeforeCommit = options.cancelResponseLostBeforeCommitOnce === true
   let balances: Array<{ asset: string; available: string; held: string }> = []
   let orders: Array<Record<string, unknown>> = []
   let trades: Array<Record<string, unknown>> = []
+  const cancelRequestIDs: string[] = []
+  const fundRequests: Array<{
+    request_id: string
+    account_id: string
+    asset: string
+    amount: string
+  }> = []
+  const cancelResults = new Map<string, {
+    sequence: string
+    status: string
+    order_id: string
+  }>()
+  const fundResults = new Map<string, {
+    sequence: string
+    status: string
+  }>()
 
   await page.routeWebSocket('**/api/v1/trading/events/ws**', () => {
     // Keeping the mocked socket open is enough for the page to expose "live".
@@ -207,12 +229,31 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/admin/fund') {
-      const body = request.postDataJSON() as { asset: string; amount: string }
-      const existing = balances.find((balance) => balance.asset === body.asset)
-      if (existing) existing.available = body.amount
-      else balances = [...balances, { asset: body.asset, available: body.amount, held: '0' }]
-      sequence += 1
-      await json(200, { sequence: String(sequence), status: 'accepted' })
+      const body = request.postDataJSON() as {
+        request_id: string
+        account_id: string
+        asset: string
+        amount: string
+      }
+      fundAttempts += 1
+      fundRequests.push(body)
+      let result = fundResults.get(body.request_id)
+      if (!result) {
+        const existing = balances.find((balance) => balance.asset === body.asset)
+        if (existing) existing.available = body.amount
+        else balances = [...balances, { asset: body.asset, available: body.amount, held: '0' }]
+        sequence += 1
+        result = { sequence: String(sequence), status: 'unknown' }
+        fundResults.set(body.request_id, result)
+        if (options.fundCommittedButResponseLostOnce) {
+          await json(504, {
+            code: 'backend_timeout',
+            message: 'committed response was lost',
+          })
+          return
+        }
+      }
+      await json(200, result)
       return
     }
     if (path === '/api/v1/trading/orders' && request.method() === 'POST') {
@@ -277,13 +318,52 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       await json(200, { sequence: String(sequence), status: 'accepted', order_id: id })
       return
     }
+    if (
+      /^\/api\/v1\/trading\/orders\/[^/]+$/.test(path) &&
+      request.method() === 'GET'
+    ) {
+      const id = path.split('/')[5]
+      const order = orders.find((candidate) => candidate.id === id)
+      await json(
+        order ? 200 : 404,
+        order ?? { code: 'order_not_found', message: 'order not found' },
+      )
+      return
+    }
     if (/^\/api\/v1\/trading\/orders\/[^/]+\/cancel$/.test(path)) {
       const id = path.split('/')[5]
-      orders = orders.map((order) => order.id === id
-        ? { ...order, status: 'canceled', held_amount: '0', last_sequence: String(sequence + 1) }
-        : order)
-      sequence += 1
-      await json(200, { sequence: String(sequence), status: 'accepted', order_id: id })
+      const body = request.postDataJSON() as { request_id: string }
+      cancelAttempts += 1
+      cancelRequestIDs.push(body.request_id)
+      if (loseCancelBeforeCommit) {
+        loseCancelBeforeCommit = false
+        await json(504, {
+          code: 'backend_timeout',
+          message: 'request outcome is not yet visible',
+        })
+        return
+      }
+      let result = cancelResults.get(body.request_id)
+      if (!result) {
+        orders = orders.map((order) => order.id === id
+          ? { ...order, status: 'canceled', held_amount: '0', last_sequence: String(sequence + 1) }
+          : order)
+        sequence += 1
+        result = {
+          sequence: String(sequence),
+          status: 'accepted',
+          order_id: id,
+        }
+        cancelResults.set(body.request_id, result)
+        if (options.cancelCommittedButResponseLostOnce) {
+          await json(504, {
+            code: 'backend_timeout',
+            message: 'committed response was lost',
+          })
+          return
+        }
+      }
+      await json(200, result)
       return
     }
 
@@ -293,6 +373,11 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
   return {
     get orders() { return orders },
     get trades() { return trades },
+    get sequence() { return sequence },
+    get cancelAttempts() { return cancelAttempts },
+    get cancelRequestIDs() { return [...cancelRequestIDs] },
+    get fundAttempts() { return fundAttempts },
+    get fundRequests() { return [...fundRequests] },
   }
 }
 
@@ -346,6 +431,107 @@ test('admin can fund, place, cancel and fill virtual orders with fee evidence', 
   await expect(page.getByText('0.000002 BTC')).toBeVisible()
   expect(harness.orders).toHaveLength(2)
   expect(harness.trades).toHaveLength(1)
+})
+
+test('terminal cancel fact clears unknown without issuing a second cancel', async ({ page }) => {
+  const harness = await installHarness(page, {
+    cancelCommittedButResponseLostOnce: true,
+  })
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  await page.getByLabel('价格 · USDT').fill('64900')
+  await page.getByLabel('数量 · BTC').fill('0.001')
+  await page.getByRole('button', { name: '买入 BTC' }).click()
+  await expect(page.getByText('当前委托 · 1')).toBeVisible()
+
+  await page.getByRole('button', { name: '撤单' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0, {
+    timeout: 4_000,
+  })
+
+  expect(harness.cancelAttempts).toBe(1)
+  expect(harness.cancelRequestIDs).toHaveLength(1)
+  expect(harness.orders[0]?.status).toBe('canceled')
+})
+
+test('open cancel unknown replays the original request ID exactly once', async ({ page }) => {
+  const harness = await installHarness(page, {
+    cancelResponseLostBeforeCommitOnce: true,
+  })
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  await page.getByLabel('价格 · USDT').fill('64900')
+  await page.getByLabel('数量 · BTC').fill('0.001')
+  await page.getByRole('button', { name: '买入 BTC' }).click()
+  await expect(page.getByText('当前委托 · 1')).toBeVisible()
+
+  await page.getByRole('button', { name: '撤单' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
+  expect(harness.orders[0]?.status).toBe('open')
+
+  await page.getByRole('button', { name: '使用原 ID 核对' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0)
+
+  expect(harness.cancelAttempts).toBe(2)
+  expect(harness.cancelRequestIDs[0]).toBeTruthy()
+  expect(harness.cancelRequestIDs[1]).toBe(harness.cancelRequestIDs[0])
+  expect(harness.orders[0]?.status).toBe('canceled')
+  expect(harness.sequence).toBe(12)
+})
+
+test('fund unknown survives reload and replays the same actor-bound request', async ({ page }) => {
+  const harness = await installHarness(page, {
+    fundCommittedButResponseLostOnce: true,
+  })
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  const targetAccount = 'github:virtual-beneficiary'
+  await page.getByLabel('数量', { exact: true }).last().fill('250')
+  await page.getByLabel('目标账户（留空为自己）').fill(targetAccount)
+  await page.getByRole('button', { name: '发放虚拟资金' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
+
+  const stored = await page.evaluate(() => JSON.parse(
+    window.sessionStorage.getItem('qiu-market.pending-trading-write.v1') ?? '{}',
+  ) as {
+    operation?: string
+    account_id?: string
+    request_id?: string
+    payload?: {
+      account_id?: string
+      asset?: string
+      amount?: string
+    }
+  })
+  expect(stored.operation).toBe('fund')
+  expect(stored.account_id).toBe(principal.account_id)
+  expect(stored.payload?.account_id).toBe(targetAccount)
+  expect(stored.payload?.asset).toBe('USDT')
+  expect(stored.payload?.amount).toBe('250')
+  expect(stored.request_id).toBe(harness.fundRequests[0]?.request_id)
+
+  await page.reload()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
+  await page.getByRole('button', { name: '使用原 ID 核对' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0)
+
+  expect(harness.fundAttempts).toBe(2)
+  expect(harness.fundRequests.map((request) => request.request_id)).toEqual([
+    stored.request_id,
+    stored.request_id,
+  ])
+  expect(harness.fundRequests.map((request) => request.account_id)).toEqual([
+    targetAccount,
+    targetAccount,
+  ])
+  expect(harness.sequence).toBe(11)
+  expect(await page.evaluate(() =>
+    window.sessionStorage.getItem('qiu-market.pending-trading-write.v1'),
+  )).toBeNull()
 })
 
 for (const viewport of [

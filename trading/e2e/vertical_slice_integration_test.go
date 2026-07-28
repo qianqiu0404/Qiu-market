@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/httpapi"
 	"github.com/the-web3/s78-market-services/trading/ledger"
+	"github.com/the-web3/s78-market-services/trading/outbox"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
@@ -74,17 +76,20 @@ func TestVirtualSpotTransportTradeFeesCancelAndRestart(t *testing.T) {
 	}
 	csrf := cookieValue(t, jar, first.http.URL, "s78_trading_csrf")
 
-	var funded tradingv1.CommandResult
+	fundBody := map[string]any{
+		"request_id": "fund-browser-user",
+		"asset":      "USDT",
+		"amount":     "10000",
+	}
+	postJSONAndLoseCommittedResponse(t, browserClient.Jar,
+		first.http.URL+"/api/v1/trading/admin/fund", fundBody, csrf)
+
+	var fundedRetry tradingv1.CommandResult
 	doJSON(t, browserClient, http.MethodPost,
 		first.http.URL+"/api/v1/trading/admin/fund",
-		map[string]any{
-			"request_id": "fund-browser-user",
-			"asset":      "USDT",
-			"amount":     "10000",
-		},
-		csrf, http.StatusOK, &funded)
-	if funded.Sequence != "1" {
-		t.Fatalf("browser funding sequence = %s, want 1", funded.Sequence)
+		fundBody, csrf, http.StatusOK, &fundedRetry)
+	if fundedRetry.Sequence != "1" || fundedRetry.Status != "unknown" {
+		t.Fatalf("same-ID funding retry = %+v, want sequence 1 fund status", &fundedRetry)
 	}
 	if _, err := first.client.AdminFundVirtual(context.Background(),
 		&tradingv1.AdminFundVirtualRequest{
@@ -180,6 +185,19 @@ func TestVirtualSpotTransportTradeFeesCancelAndRestart(t *testing.T) {
 	}
 
 	csrf = cookieValue(t, jar, second.http.URL, "s78_trading_csrf")
+	var restoredFundRetry tradingv1.CommandResult
+	doJSON(t, browserClient, http.MethodPost,
+		second.http.URL+"/api/v1/trading/admin/fund",
+		fundBody, csrf, http.StatusOK, &restoredFundRetry)
+	if restoredFundRetry.Sequence != fundedRetry.Sequence ||
+		restoredFundRetry.Status != fundedRetry.Status {
+		t.Fatalf("cross-restart funding retry = %+v, want %+v",
+			&restoredFundRetry, &fundedRetry)
+	}
+	assertVirtualFundAppliedOnce(
+		t, adminPool, market.ID, userAccount, "fund-browser-user", 10_000_000_000,
+	)
+
 	var idempotentRetry tradingv1.CommandResult
 	doJSON(t, browserClient, http.MethodPost,
 		second.http.URL+"/api/v1/trading/orders",
@@ -211,6 +229,8 @@ type runningStack struct {
 	listener   net.Listener
 	http       *httptest.Server
 	client     tradingv1.TradingServiceClient
+	outboxStop context.CancelFunc
+	outboxDone chan struct{}
 	stopOnce   sync.Once
 }
 
@@ -314,6 +334,18 @@ func startStack(
 	if err != nil {
 		t.Fatal(err)
 	}
+	outboxConfig := outbox.DefaultConfig()
+	outboxConfig.PollEvery = 10 * time.Millisecond
+	publisher, err := outbox.New(persistence, outboxConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outboxContext, outboxStop := context.WithCancel(context.Background())
+	outboxDone := make(chan struct{})
+	go func() {
+		publisher.Run(outboxContext)
+		close(outboxDone)
+	}()
 	transport := httptest.NewServer(httpServer.Handler())
 	return &runningStack{
 		pool:       pool,
@@ -323,6 +355,8 @@ func startStack(
 		listener:   listener,
 		http:       transport,
 		client:     tradingv1.NewTradingServiceClient(grpcConn),
+		outboxStop: outboxStop,
+		outboxDone: outboxDone,
 	}
 }
 
@@ -330,6 +364,8 @@ func (s *runningStack) stop(t *testing.T) {
 	t.Helper()
 	s.stopOnce.Do(func() {
 		s.http.Close()
+		s.outboxStop()
+		<-s.outboxDone
 		_ = s.grpcConn.Close()
 		s.grpcServer.GracefulStop()
 		_ = s.listener.Close()
@@ -505,6 +541,56 @@ func assertPlatformFeeLedger(
 	}
 }
 
+func assertVirtualFundAppliedOnce(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	marketID domain.MarketID,
+	accountID, requestID string,
+	amount int64,
+) {
+	t.Helper()
+	var eventBatches int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COUNT(*)
+		FROM trading_event_batch
+		WHERE market_id=$1
+		  AND operation=$2
+		  AND account_id=$3
+		  AND request_id=$4
+	`, marketID, int16(domain.CommandKindFund), accountID, requestID).Scan(
+		&eventBatches,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if eventBatches != 1 {
+		t.Fatalf("fund event batches = %d, want 1", eventBatches)
+	}
+
+	var (
+		entries   int
+		netAmount int64
+		userEntry int64
+	)
+	if err := pool.QueryRow(context.Background(), `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(amount), 0),
+			COALESCE(SUM(amount) FILTER (WHERE account=$3), 0)
+		FROM trading_ledger_entry
+		WHERE market_id=$1 AND sequence=$2
+	`, marketID, int64(1), ledger.UserAvailable(domain.AccountID(accountID))).Scan(
+		&entries, &netAmount, &userEntry,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if entries != 2 || netAmount != 0 || userEntry != amount {
+		t.Fatalf(
+			"fund ledger entries/net/user = %d/%d/%d, want 2/0/%d",
+			entries, netAmount, userEntry, amount,
+		)
+	}
+}
+
 func assertBalance(
 	t *testing.T,
 	balances []*tradingv1.Balance,
@@ -658,6 +744,68 @@ func doJSON(
 		if err := json.Unmarshal(data, destination); err != nil {
 			t.Fatalf("decode %s %s: %v body=%s", method, target, err, data)
 		}
+	}
+}
+
+type loseCommittedResponseTransport struct {
+	base http.RoundTripper
+}
+
+func (t loseCommittedResponseTransport) RoundTrip(
+	request *http.Request,
+) (*http.Response, error) {
+	response, err := t.base.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	_, copyErr := io.Copy(io.Discard, response.Body)
+	closeErr := response.Body.Close()
+	if copyErr != nil {
+		return nil, copyErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return nil, errors.New("simulated response loss after server commit")
+}
+
+func postJSONAndLoseCommittedResponse(
+	t *testing.T,
+	jar http.CookieJar,
+	target string,
+	body any,
+	csrf string,
+) {
+	t.Helper()
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		target,
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", browserOrigin)
+	request.Header.Set("X-CSRF-Token", csrf)
+	client := &http.Client{
+		Jar:     jar,
+		Timeout: 10 * time.Second,
+		Transport: loseCommittedResponseTransport{
+			base: http.DefaultTransport,
+		},
+	}
+	response, err := client.Do(request)
+	if response != nil {
+		response.Body.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "simulated response loss") {
+		t.Fatalf("response-loss injection error = %v", err)
 	}
 }
 
