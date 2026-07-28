@@ -33,6 +33,36 @@ https://qiu-market.vercel.app/api/v1/trading/auth/github/callback
 如果 Vercel 最终分配了不同 production domain，先同时更新 OAuth callback、
 `MARKET_TRADING_ALLOWED_ORIGINS` 与 `MARKET_TRADING_GITHUB_REDIRECT_URL`。
 
+### Preview OAuth 验收
+
+GitHub OAuth App 只登记上面的 Production callback。OAuth App 只支持一个登记
+callback；GitHub 的 `redirect_uri` 规则允许使用相同基础主机和端口下的子域，
+且路径必须等于或位于登记 callback 路径之下。规则见
+[GitHub Authorizing OAuth apps](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#redirect-urls)。
+
+Preview 与 Production 是不同浏览器 origin，OAuth state 和 session 都是
+host-only cookie。因此不能从 Preview 发起登录、却让 GitHub 回到 Production，
+也不能把 Production 登录结果当成 Preview 验收。
+
+Gate 2C 使用短维护窗，顺序固定：
+
+1. 将精确 Preview origin 加入 `MARKET_TRADING_ALLOWED_ORIGINS`；
+2. 临时把 `MARKET_TRADING_GITHUB_REDIRECT_URL` 改为精确 Preview deployment 的
+   `/api/v1/trading/auth/github/callback`，然后只重启 API；
+3. 在同一受保护 Preview 完成 GitHub 登录、callback 单次消费、Secure Cookie、
+   CSRF/Origin，以及 submit/cancel/fund unknown reconciliation；
+4. 保持 Preview origin 仍在 allowlist 时，从该 Preview 调用 logout；只有返回
+   204 才认为 PostgreSQL session 已删除；
+5. 从 `MARKET_TRADING_ALLOWED_ORIGINS` 移除精确 Preview origin，将 redirect
+   恢复为 Production callback，再次重启 API；
+6. 使用原 Preview 浏览器上下文验证 session 返回 401，写请求被拒绝。API 重启
+   本身不会删除 PostgreSQL session，不能替代第 4 步；
+7. promote 已验收的同一 Preview deployment，不重新 build；随后在 Production
+   重新登录并做最小写验收。失败时立即回滚 Vercel alias。
+
+Preview redirect 只能来自受管私有配置，不提供客户端可控的 `redirect_uri`。
+维护窗内当前旧 Production 的登录不作为可用能力；公共只读行情仍需保持可用。
+
 ## 2. 安装常驻服务
 
 先停止开发启动器，避免占用 9092/9094：

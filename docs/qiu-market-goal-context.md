@@ -100,10 +100,22 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
 - 创建 GitHub OAuth App，callback 固定为
   `https://qiu-market.vercel.app/api/v1/trading/auth/github/callback`，仅允许
   `qianqiu0404`；
-- Preview 验证 CSRF、Origin、Secure Cookie 和 OAuth callback 单次执行；
+- Preview 与 Production 使用 host-only OAuth state/session cookie，不能把
+  Production callback 的登录结果当成 Preview 验收。Gate 2C 必须开一个短维护窗：
+  暂时把后端 redirect 切到精确 Preview callback，并把该 Preview origin 加入
+  allowlist；完成 Preview 的 OAuth、CSRF、Origin、Secure Cookie 与 callback
+  单次执行后，先从 Preview 调用 logout 删除 PostgreSQL session，再移除 Preview
+  origin、恢复 Production redirect 并重启 API；旧 Preview session 必须返回 401，
+  写请求必须被拒绝；
+- 当前 GitHub OAuth App 只登记一个 Production callback。GitHub 允许显式
+  `redirect_uri` 使用同一基础主机和端口下的子域与匹配路径，因此上述 Preview
+  callback 必须由后端固定生成，不能接受客户端任意传入；
 - 真实浏览器验证 submit/cancel/fund 的 unknown reconciliation；
 - WebSocket 若环境不支持，则明确使用 cursor polling，不能伪称 WS 已验收；
-- 只 promote 已验收的同一 Preview deployment，不重新构建 Production。
+- 只 promote 已验收的同一 Preview deployment，不重新构建 Production；
+- Preview session 不跨域继承，也不能只靠 API 重启使其失效。promote 后必须在
+  Production 重新完成一次 OAuth 登录与最小写验收；失败立即回滚 alias，不能沿用
+  Preview 登录证据。
 
 ### Gate 3：观测契约与长期证据
 
