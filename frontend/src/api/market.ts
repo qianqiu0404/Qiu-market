@@ -263,6 +263,9 @@ export interface VenueCoverageRow {
   priced: number
   total: number
   coverage_pct: number
+  coverage_kind: 'priced' | 'displayed'
+  available: boolean
+  error: string
 }
 
 export interface CexDispersionRow {
@@ -659,28 +662,37 @@ export async function getAssetDashboardV2(
     universe?: 'provider_top50' | 'provider_union' | 'legacy_top50'
   } = {},
 ): Promise<Paged<AssetDashboardV2Item>> {
+  const requestedVenue = options.venue ?? 'all'
+  const strictDexDisplay =
+    requestedVenue === 'uniswap' || requestedVenue === 'pancakeswap'
   const { result, total } = await request<unknown>('/api/v2/get_asset_dashboard', {
     page,
     page_size: pageSize,
-    venue: options.venue ?? 'all',
+    venue: requestedVenue,
     search: options.search ?? '',
     filter: options.filter ?? 'assets',
     sort_by: options.sortBy ?? 'rank',
     sort_direction: options.sortDirection ?? 'desc',
     include_uncovered: options.includeUncovered ?? true,
-    universe: options.universe ?? ((options.venue ?? 'all') === 'all' ? 'provider_union' : 'provider_top50'),
+    universe: options.universe ?? (requestedVenue === 'all' ? 'provider_union' : 'provider_top50'),
   })
   const items = toArray(result).map((raw): AssetDashboardV2Item => {
     const item = (raw ?? {}) as Record<string, unknown>
     const rank = item.rank == null ? null : toNum(item.rank)
     const priceUSD = toAvailableDecimal(item.price_usd)
     const change24hPct = toAvailableDecimal(item.change_24h_pct)
-    const displayPriceUSD = item.display_price_usd == null
-      ? priceUSD
-      : toAvailableDecimal(item.display_price_usd)
-    const displayChange24hPct = item.display_change_24h_pct == null
-      ? change24hPct
-      : toAvailableDecimal(item.display_change_24h_pct)
+    const displayPriceUSD =
+      item.display_price_usd == null && !strictDexDisplay
+        ? priceUSD
+        : toAvailableDecimal(item.display_price_usd)
+    const displayPriceKind =
+      toStr(item.display_price_kind) ||
+      (strictDexDisplay ? 'unavailable' : toStr(item.price_kind)) ||
+      'unavailable'
+    const displayChange24hPct =
+      item.display_change_24h_pct == null && !strictDexDisplay
+        ? change24hPct
+        : toAvailableDecimal(item.display_change_24h_pct)
     return {
       rank,
       selection_version: toNum(item.selection_version),
@@ -693,9 +705,11 @@ export async function getAssetDashboardV2(
       composite_price_usd: toAvailableDecimal(item.composite_price_usd),
       market_reference_price_usd: toAvailableDecimal(item.market_reference_price_usd),
       display_price_usd: displayPriceUSD,
-      display_price_kind: toStr(item.display_price_kind) || toStr(item.price_kind) || 'unavailable',
+      display_price_kind: displayPriceKind,
       display_change_24h_pct: displayChange24hPct,
-      display_change_kind: toStr(item.display_change_kind),
+      display_change_kind:
+        toStr(item.display_change_kind) ||
+        (strictDexDisplay ? 'unavailable' : ''),
       display_available: item.display_available == null
         ? displayPriceUSD.available
         : Boolean(item.display_available),
@@ -736,27 +750,75 @@ export async function getTop50VenueInsights(): Promise<Top50VenueInsights> {
   const venues: MarketVenue[] = [
     'all', 'binance', 'coinbase', 'bybit', 'okx', 'hyperliquid', 'uniswap', 'pancakeswap',
   ]
-  const snapshots = await Promise.all(
-    venues.map(async (venue) => ({
-      venue,
-      page: await getAssetDashboardV2(1, 100, {
-        venue,
-        filter: 'assets',
-        sortBy: 'rank',
-        sortDirection: 'asc',
-        universe: venue === 'all'
-          ? 'provider_union'
-          : 'provider_top50',
-      }),
-    })),
+  type VenueSnapshot = {
+    venue: MarketVenue
+    page: Paged<AssetDashboardV2Item>
+  }
+  const outcomes = new Array<PromiseSettledResult<VenueSnapshot>>(venues.length)
+  let nextVenue = 0
+  await Promise.all(
+    Array.from({ length: 2 }, async () => {
+      while (nextVenue < venues.length) {
+        const index = nextVenue
+        nextVenue += 1
+        const venue = venues[index]
+        try {
+          outcomes[index] = {
+            status: 'fulfilled',
+            value: {
+              venue,
+              page: await getAssetDashboardV2(1, 100, {
+                venue,
+                filter: 'assets',
+                sortBy: 'rank',
+                sortDirection: 'asc',
+                universe: venue === 'all'
+                  ? 'provider_union'
+                  : 'provider_top50',
+              }),
+            },
+          }
+        } catch (error) {
+          outcomes[index] = {
+            status: 'rejected',
+            reason: error,
+          }
+        }
+      }
+    }),
   )
-  const coverage = snapshots.map(({ venue, page }): VenueCoverageRow => {
-    const priced = page.items.filter((item) => item.available && item.price_usd.available).length
+  const snapshots = outcomes.flatMap((outcome) =>
+    outcome.status === 'fulfilled' ? [outcome.value] : [])
+  const coverage = outcomes.map((outcome, index): VenueCoverageRow => {
+    const venue = venues[index]
+    const dexDisplay =
+      venue === 'uniswap' || venue === 'pancakeswap'
+    if (outcome.status === 'rejected') {
+      return {
+        venue,
+        priced: 0,
+        total: 0,
+        coverage_pct: 0,
+        coverage_kind: dexDisplay ? 'displayed' : 'priced',
+        available: false,
+        error: outcome.reason instanceof Error
+          ? outcome.reason.message
+          : 'Provider snapshot unavailable',
+      }
+    }
+    const page = outcome.value.page
+    const priced = page.items.filter((item) =>
+      dexDisplay
+        ? item.display_available && item.display_price_usd.available
+        : item.available && item.price_usd.available).length
     return {
       venue,
       priced,
       total: page.total,
       coverage_pct: page.total > 0 ? priced / page.total * 100 : 0,
+      coverage_kind: dexDisplay ? 'displayed' : 'priced',
+      available: true,
+      error: '',
     }
   })
 
@@ -793,13 +855,15 @@ export async function getTop50VenueInsights(): Promise<Top50VenueInsights> {
   const dex_routes = snapshots
     .filter(({ venue }) => venue === 'uniswap' || venue === 'pancakeswap')
     .flatMap(({ venue, page }) => page.items
-      .filter((item) => item.dex_route_count > 0 || item.available)
+      .filter((item) => item.dex_route_available && item.dex_route_count > 0)
       .map((item): DexRouteMonitorRow => ({
         asset_id: item.asset_id,
         asset_symbol: item.asset_symbol,
         provider: venue as 'uniswap' | 'pancakeswap',
-        price: item.price_usd.available ? item.price_usd.value : null,
-        available: item.available,
+        price: item.dex_route_available && item.price_usd.available
+          ? item.price_usd.value
+          : null,
+        available: item.dex_route_available,
         route_count: item.dex_route_count,
         quality: item.quality || 'unknown',
       })))

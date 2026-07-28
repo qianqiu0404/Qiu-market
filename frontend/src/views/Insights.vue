@@ -14,6 +14,7 @@ import { usePolling } from '../composables/usePolling'
 import {
   getAssetMomentum,
   getMarketInsights,
+  getSystemOverview,
   getTop50VenueInsights,
   type AssetMomentumItem,
   type MomentumWindow,
@@ -24,6 +25,7 @@ import {
   formatPercent,
   formatPrice,
   freshnessFromDelay,
+  isHealthyStatus,
 } from '../utils/format'
 
 echarts.use([BarChart, ScatterChart, GridComponent, TooltipComponent, CanvasRenderer])
@@ -37,7 +39,16 @@ const windowValue = ref<MomentumWindow>('7d')
 
 const realtime = usePolling(getMarketInsights, { interval: 30_000 })
 const venues = usePolling(getTop50VenueInsights, { interval: 30_000 })
-const momentum = usePolling(() => getAssetMomentum(windowValue.value), { interval: 60_000 })
+async function getAvailableMomentum() {
+  const system = await getSystemOverview()
+  if (!isHealthyStatus(system.dw_status)) {
+    throw new Error(
+      `Historical momentum is unavailable because Doris is ${system.dw_status || 'not configured'}.`,
+    )
+  }
+  return getAssetMomentum(windowValue.value)
+}
+const momentum = usePolling(getAvailableMomentum, { interval: 60_000 })
 watch(windowValue, () => void momentum.refresh())
 
 const breadth = computed(() => realtime.data.value?.breadth)
@@ -45,7 +56,10 @@ const crossVenue = computed(() => realtime.data.value?.cross_venue ?? [])
 const venueCoverage = computed(() => venues.data.value?.coverage ?? [])
 const cexDispersion = computed(() => venues.data.value?.dispersion.slice(0, 10) ?? [])
 const dexRouteMonitor = computed(() => venues.data.value?.dex_routes ?? [])
-const momentumItems = computed(() => momentum.data.value?.items ?? [])
+// Never render a previously successful historical snapshot without an error
+// marker after its availability gate or refresh fails.
+const momentumItems = computed(() =>
+  momentum.error.value ? [] : momentum.data.value?.items ?? [])
 const chartMomentum = computed(() => momentumItems.value.filter((item) => !item.low_coverage))
 const lowCoverageCount = computed(
   () => momentumItems.value.filter((item) => item.low_coverage).length,
@@ -179,7 +193,14 @@ function renderMomentum(): void {
 watch(() => realtime.data.value?.distribution, renderDistribution, { deep: true })
 watch(chartMomentum, renderMomentum)
 watch(distributionEl, (value) => value && renderDistribution())
-watch(momentumEl, (value) => value && renderMomentum())
+watch(momentumEl, (value) => {
+  if (!value) {
+    momentumChart?.dispose()
+    momentumChart = null
+    return
+  }
+  renderMomentum()
+})
 
 function resizeCharts(): void {
   distributionChart?.resize()
@@ -218,8 +239,9 @@ function signedClass(value: number): string {
         <div class="coverage-grid">
           <article v-for="row in venueCoverage" :key="row.venue" class="card coverage-card">
             <span>{{ row.venue }}</span>
-            <strong class="num">{{ row.priced }} / {{ row.total }}</strong>
-            <small>{{ row.coverage_pct.toFixed(1) }}% priced</small>
+            <strong v-if="row.available" class="num">{{ row.priced }} / {{ row.total }}</strong>
+            <strong v-else class="unavailable">Unavailable</strong>
+            <small>{{ row.available ? `${row.coverage_pct.toFixed(1)}% ${row.coverage_kind}` : row.error }}</small>
           </article>
         </div>
         <div class="monitor-grid">
@@ -373,7 +395,7 @@ function signedClass(value: number): string {
           </button>
         </div>
       </div>
-      <ErrorState v-if="momentum.error.value && momentumItems.length === 0" :message="momentum.error.value" @retry="momentum.refresh" />
+      <ErrorState v-if="momentum.error.value" :message="momentum.error.value" @retry="momentum.refresh" />
       <SkeletonRows v-else-if="momentum.loading.value && momentumItems.length === 0" :rows="6" />
       <EmptyState
         v-else-if="momentumItems.length === 0"

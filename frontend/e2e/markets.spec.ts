@@ -272,6 +272,72 @@ test('DEX tabs expose 50 identity-verified listed assets without inventing quote
   }
 })
 
+test('DEX coverage never reuses a previous search response as the canonical universe', async ({ page }) => {
+  let releaseFullResponse: (() => void) | undefined
+  let signalFullRequest: (() => void) | undefined
+  const fullRequest = new Promise<void>((resolve) => {
+    signalFullRequest = resolve
+  })
+  const fullResponse = new Promise<void>((resolve) => {
+    releaseFullResponse = resolve
+  })
+  const displayRow = (row: typeof asset) => ({
+    ...row,
+    display_price_usd: available('1'),
+    display_price_kind: 'composite_reference',
+    display_change_24h_pct: unavailable,
+    display_change_kind: 'unavailable',
+    display_available: true,
+    dex_route_available: false,
+  })
+
+  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      search?: string
+    }
+    if (request.search === 'BTC') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 2000,
+          result: [displayRow(asset)],
+          total: 1,
+        }),
+      })
+      return
+    }
+    signalFullRequest?.()
+    await fullResponse
+    const rows = providerAssets.uniswap.map(displayRow)
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        result: rows,
+        total: rows.length,
+      }),
+    })
+  })
+
+  await page.goto('/markets?venue=uniswap&search=BTC')
+  await expect(page.locator('tbody tr')).toHaveCount(1)
+  const coverage = page.locator('.market-overview-strip article').filter({
+    hasText: 'Uniswap Coverage',
+  })
+
+  await page.getByPlaceholder('Search Uniswap selection…').fill('')
+  await fullRequest
+  await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' })).toHaveCount(0)
+  await expect(coverage.locator('strong')).not.toHaveText('100.0%')
+  await expect(coverage).toContainText('Snapshot only')
+
+  releaseFullResponse?.()
+  await expect(page.locator('tbody tr')).toHaveCount(50)
+  await expect(coverage.locator('strong')).toHaveText('100.0%')
+})
+
 test('unknown composite values are rendered as unavailable, never fake zero', async ({ page }) => {
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
     await route.fulfill({

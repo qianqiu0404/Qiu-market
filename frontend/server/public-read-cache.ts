@@ -122,6 +122,124 @@ export function publicReadCachePayload(body: Buffer): Buffer {
   }
 }
 
+function availableDecimal(
+  value: unknown,
+): value is { value: unknown; available: boolean } {
+  if (!value || typeof value !== 'object') return false
+  return typeof (value as { available?: unknown }).available === 'boolean'
+}
+
+/**
+ * Cached dashboard rows contain source freshness calculated by PostgreSQL at
+ * cache-write time. Fold the transport cache age back into those fields so a
+ * last-good DEX route can never keep presenting itself as a current route.
+ */
+export function agePublicReadBody(
+  pathname: string,
+  body: Buffer,
+  cacheAgeSeconds: number,
+): Buffer {
+  if (
+    pathname !== '/api/v2/get_asset_dashboard' ||
+    cacheAgeSeconds <= 0
+  ) {
+    return body
+  }
+  try {
+    const envelope = JSON.parse(body.toString()) as {
+      result?: Array<Record<string, unknown>>
+    }
+    if (!Array.isArray(envelope.result)) return body
+    for (const candidate of envelope.result) {
+      if (!candidate || typeof candidate !== 'object') continue
+      const row = candidate as Record<string, unknown>
+      const rawSourceAge = row.freshness_age_seconds
+      const sourceAge = Number(rawSourceAge)
+      const hasSourceAge =
+        rawSourceAge !== null &&
+        rawSourceAge !== undefined &&
+        rawSourceAge !== '' &&
+        Number.isFinite(sourceAge) &&
+        sourceAge >= 0
+      const initialFreshness = String(row.freshness_status ?? '')
+      const effectiveAge = hasSourceAge
+        ? sourceAge + cacheAgeSeconds
+        : null
+      if (effectiveAge !== null) {
+        row.freshness_age_seconds = effectiveAge
+      }
+      if (
+        !hasSourceAge ||
+        initialFreshness === 'unavailable' ||
+        (effectiveAge !== null && effectiveAge > 300)
+      ) {
+        row.freshness_status = 'unavailable'
+        row.available = false
+      } else if (effectiveAge !== null && effectiveAge > 30) {
+        row.freshness_status = 'stale'
+      }
+
+      const routeExpired =
+        row.dex_route_available === true &&
+        (
+          !hasSourceAge ||
+          initialFreshness === 'unavailable' ||
+          (effectiveAge !== null && effectiveAge > 60)
+        )
+      if (!routeExpired) continue
+      row.dex_route_available = false
+      row.dex_route_count = 0
+      row.available = false
+      row.price_kind = 'unavailable'
+      row.price_source = ''
+      if (availableDecimal(row.price_usd)) {
+        row.price_usd = { ...row.price_usd, available: false }
+      }
+      if (availableDecimal(row.change_24h_pct)) {
+        row.change_24h_pct = {
+          ...row.change_24h_pct,
+          available: false,
+        }
+      }
+      let hasReference = false
+      if (
+        availableDecimal(row.composite_price_usd) &&
+        row.composite_price_usd.available
+      ) {
+        row.display_price_usd = row.composite_price_usd
+        row.display_price_kind = 'composite_reference'
+        row.display_available = true
+        hasReference = true
+      } else if (
+        availableDecimal(row.market_reference_price_usd) &&
+        row.market_reference_price_usd.available
+      ) {
+        row.display_price_usd = row.market_reference_price_usd
+        row.display_price_kind = 'market_reference'
+        row.display_available = true
+        hasReference = true
+      } else {
+        row.display_price_usd = { value: null, available: false }
+        row.display_price_kind = 'unavailable'
+        row.display_available = false
+      }
+      // Route change and observation metadata cannot be reused for a fallback
+      // reference source because the cached envelope has no source-specific
+      // timestamp or 24h-change provenance.
+      row.display_observed_at = 0
+      row.display_change_24h_pct = { value: null, available: false }
+      row.display_change_kind = 'unavailable'
+      row.coverage_status = hasReference
+        ? 'reference_only'
+        : 'source_unavailable'
+      row.coverage_reason = 'cached_route_expired'
+    }
+    return Buffer.from(JSON.stringify(envelope))
+  } catch {
+    return body
+  }
+}
+
 interface RuntimePublicReadValue {
   schemaVersion: 1
   status: number

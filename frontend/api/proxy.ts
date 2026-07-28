@@ -4,7 +4,9 @@ import { getCache, waitUntil } from '@vercel/functions'
 import {
   PublicReadCache,
   RuntimePublicReadCache,
+  type PublicReadCacheEntry,
   type PublicReadCacheLookup,
+  agePublicReadBody,
   isPublicMarketRead,
   publicReadCachePayload,
 } from '../server/public-read-cache.js'
@@ -13,6 +15,7 @@ const MAX_BODY_BYTES = 1 << 20
 const TOTAL_UPSTREAM_TIMEOUT_MS = 8_000
 const FIRST_READ_ATTEMPT_TIMEOUT_MS = 3_500
 const RUNTIME_CACHE_TIMEOUT_MS = 250
+const PUBLIC_REVALIDATION_CONCURRENCY = 2
 const PUBLIC_CACHE_CONTROL =
   'public, max-age=0, s-maxage=15, stale-while-revalidate=300, stale-if-error=300'
 const RETRYABLE_GET_PATHS = [
@@ -79,6 +82,7 @@ function sendCachedResponse(
   response: QiuProxyResponse,
   lookup: PublicReadCacheLookup,
   startedAt: number,
+  pathname: string,
 ): void {
   response.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL)
   response.setHeader('Age', lookup.ageSeconds.toString())
@@ -94,7 +98,13 @@ function sendCachedResponse(
   if (lookup.state === 'stale') {
     response.setHeader('Warning', '110 - "Response is stale"')
   }
-  response.status(lookup.entry.status).send(Buffer.from(lookup.entry.body))
+  response.status(lookup.entry.status).send(
+    agePublicReadBody(
+      pathname,
+      lookup.entry.body,
+      lookup.ageSeconds,
+    ),
+  )
 }
 
 async function bestEffortCacheOperation<T>(
@@ -114,11 +124,137 @@ async function bestEffortCacheOperation<T>(
   }
 }
 
+interface UpstreamFetchOptions {
+  url: URL
+  method: string
+  headers: Headers
+  body: Buffer
+  digest: string
+  secret: string
+  retryable: boolean
+  deadline: number
+}
+
+interface UpstreamFetchResult {
+  response: Response
+  body: Buffer
+}
+
+async function fetchUpstream({
+  url,
+  method,
+  headers: forwardedHeaders,
+  body,
+  digest,
+  secret,
+  retryable,
+  deadline,
+}: UpstreamFetchOptions): Promise<UpstreamFetchResult> {
+  let lastError: unknown
+  const attempts = retryable ? 2 : 1
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    const timeoutMs = attempt === 0 && retryable
+      ? Math.min(FIRST_READ_ATTEMPT_TIMEOUT_MS, remaining)
+      : remaining
+    const timestamp = Math.floor(Date.now() / 1000).toString()
+    const canonical = [
+      timestamp,
+      method,
+      url.pathname + url.search,
+      digest,
+    ].join('\n')
+    const signature = createHmac('sha256', secret).update(canonical).digest('hex')
+    const headers = new Headers(forwardedHeaders)
+    headers.set('X-Qiu-Market-Timestamp', timestamp)
+    headers.set('X-Qiu-Market-Content-SHA256', digest)
+    headers.set('X-Qiu-Market-Signature', signature)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: method === 'GET' || method === 'HEAD' ? undefined : body,
+        redirect: 'manual',
+        signal: controller.signal,
+      })
+      const responseBody = Buffer.from(await response.arrayBuffer())
+      if (
+        retryable &&
+        attempt === 0 &&
+        [502, 503, 504].includes(response.status)
+      ) {
+        lastError = new Error(`retryable upstream HTTP ${response.status}`)
+        continue
+      }
+      return { response, body: responseBody }
+    } catch (error) {
+      lastError = error
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+  throw lastError ?? new DOMException('upstream deadline exceeded', 'AbortError')
+}
+
+function responseCookies(response: Response): string[] {
+  const getSetCookie = (
+    response.headers as Headers & { getSetCookie?: () => string[] }
+  ).getSetCookie
+  return getSetCookie?.call(response.headers) ?? []
+}
+
+function publicCacheEntry(
+  response: Response,
+  body: Buffer,
+  cookies: string[],
+): PublicReadCacheEntry | undefined {
+  if (
+    response.status !== 200 ||
+    cookies.length > 0 ||
+    !response.headers.get('content-type')?.includes('application/json')
+  ) {
+    return undefined
+  }
+  return {
+    status: response.status,
+    body,
+    contentType: response.headers.get('content-type') ?? undefined,
+    vary: response.headers.get('vary') ?? undefined,
+    storedAt: Date.now(),
+  }
+}
+
+const publicRevalidations = new Map<string, Promise<void>>()
+let activePublicRevalidations = 0
+
+function schedulePublicRevalidation(
+  cacheKey: string,
+  operation: () => Promise<void>,
+): void {
+  if (
+    publicRevalidations.has(cacheKey) ||
+    activePublicRevalidations >= PUBLIC_REVALIDATION_CONCURRENCY
+  ) {
+    return
+  }
+  activePublicRevalidations += 1
+  const task = operation()
+    .catch(() => undefined)
+    .finally(() => {
+      activePublicRevalidations -= 1
+      publicRevalidations.delete(cacheKey)
+    })
+  publicRevalidations.set(cacheKey, task)
+  waitUntil(task)
+}
+
 export function isRetryableUpstreamRequest(
   method: string,
   pathname: string,
 ): boolean {
-  if (isPublicMarketRead(method, pathname)) return true
   if (method !== 'GET') return false
   return RETRYABLE_GET_PATHS.some((pattern) => pattern.test(pathname))
 }
@@ -132,6 +268,7 @@ export default async function handler(
   const startedAt = Date.now()
   response.setHeader('X-Request-ID', requestID)
   let staleLookup: PublicReadCacheLookup | undefined
+  let cachedPathname = ''
   try {
     const backendOrigin = new URL(requiredEnvironment('S78_BACKEND_ORIGIN'))
     const insecureLoopback =
@@ -157,6 +294,7 @@ export default async function handler(
       originalPath + (incomingURL.searchParams.size > 0 ? `?${incomingURL.searchParams}` : ''),
       backendOrigin,
     )
+    cachedPathname = upstreamURL.pathname
     const body = requestBody(request)
     if (body.byteLength > MAX_BODY_BYTES) {
       response.status(413).json({
@@ -186,7 +324,12 @@ export default async function handler(
     }
     const effectiveCacheLookup = cacheLookup ?? sharedCacheLookup
     if (effectiveCacheLookup?.state === 'fresh') {
-      sendCachedResponse(response, effectiveCacheLookup, startedAt)
+      sendCachedResponse(
+        response,
+        effectiveCacheLookup,
+        startedAt,
+        cachedPathname,
+      )
       return
     }
     if (effectiveCacheLookup?.state === 'stale') {
@@ -210,89 +353,51 @@ export default async function handler(
     forwardedHeaders.set('X-Request-ID', requestID)
 
     const retryableRead = isRetryableUpstreamRequest(method, upstreamURL.pathname)
-    const deadline = startedAt + TOTAL_UPSTREAM_TIMEOUT_MS
-    let upstream: Response | undefined
-    let upstreamBody: Buffer | undefined
-    let lastError: unknown
-    const attempts = retryableRead ? 2 : 1
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const remaining = deadline - Date.now()
-      if (remaining <= 0) break
-      const timeoutMs = attempt === 0 && retryableRead
-        ? Math.min(FIRST_READ_ATTEMPT_TIMEOUT_MS, remaining)
-        : remaining
-      const timestamp = Math.floor(Date.now() / 1000).toString()
-      const canonical = [
-        timestamp,
-        method,
-        upstreamURL.pathname + upstreamURL.search,
-        digest,
-      ].join('\n')
-      const signature = createHmac('sha256', secret).update(canonical).digest('hex')
-      const headers = new Headers(forwardedHeaders)
-      headers.set('X-Qiu-Market-Timestamp', timestamp)
-      headers.set('X-Qiu-Market-Content-SHA256', digest)
-      headers.set('X-Qiu-Market-Signature', signature)
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), timeoutMs)
-      try {
-        const candidate = await fetch(upstreamURL, {
-          method,
-          headers,
-          body: method === 'GET' || method === 'HEAD' ? undefined : body,
-          redirect: 'manual',
-          signal: controller.signal,
+    const upstreamOptions = {
+      url: upstreamURL,
+      method,
+      headers: forwardedHeaders,
+      body,
+      digest,
+      secret,
+      retryable: retryableRead,
+    }
+    if (staleLookup && cacheablePublicRead) {
+      schedulePublicRevalidation(cacheKey, async () => {
+        const refreshed = await fetchUpstream({
+          ...upstreamOptions,
+          deadline: startedAt + TOTAL_UPSTREAM_TIMEOUT_MS,
         })
-        const candidateBody = Buffer.from(await candidate.arrayBuffer())
-        if (
-          retryableRead &&
-          attempt === 0 &&
-          [502, 503, 504].includes(candidate.status)
-        ) {
-          lastError = new Error(`retryable upstream HTTP ${candidate.status}`)
-          continue
-        }
-        upstream = candidate
-        upstreamBody = candidateBody
-        break
-      } catch (error) {
-        lastError = error
-      } finally {
-        clearTimeout(timeout)
-      }
-    }
-    if (!upstream || !upstreamBody) {
-      throw lastError ?? new DOMException('upstream deadline exceeded', 'AbortError')
-    }
-    if (
-      staleLookup &&
-      [502, 503, 504].includes(upstream.status)
-    ) {
-      sendCachedResponse(response, staleLookup, startedAt)
+        const cookies = responseCookies(refreshed.response)
+        const cacheEntry = publicCacheEntry(
+          refreshed.response,
+          refreshed.body,
+          cookies,
+        )
+        if (!cacheEntry) return
+        publicReadCache.put(cacheKey, cacheEntry)
+        await runtimePublicReadCache.put(cacheKey, cacheEntry)
+      })
+      sendCachedResponse(response, staleLookup, startedAt, cachedPathname)
       return
     }
+    const {
+      response: upstream,
+      body: upstreamBody,
+    } = await fetchUpstream({
+      ...upstreamOptions,
+      deadline: startedAt + TOTAL_UPSTREAM_TIMEOUT_MS,
+    })
 
     copyResponseHeader(response, upstream, 'content-type')
     copyResponseHeader(response, upstream, 'location')
     copyResponseHeader(response, upstream, 'vary')
-    const getSetCookie = (
-      upstream.headers as Headers & { getSetCookie?: () => string[] }
-    ).getSetCookie
-    const cookies = getSetCookie?.call(upstream.headers) ?? []
+    const cookies = responseCookies(upstream)
     if (cookies.length > 0) response.setHeader('Set-Cookie', cookies)
-    if (
-      cacheablePublicRead &&
-      upstream.status === 200 &&
-      cookies.length === 0 &&
-      upstream.headers.get('content-type')?.includes('application/json')
-    ) {
-      const cacheEntry = {
-        status: upstream.status,
-        body: upstreamBody,
-        contentType: upstream.headers.get('content-type') ?? undefined,
-        vary: upstream.headers.get('vary') ?? undefined,
-        storedAt: Date.now(),
-      }
+    const cacheEntry = cacheablePublicRead
+      ? publicCacheEntry(upstream, upstreamBody, cookies)
+      : undefined
+    if (cacheEntry) {
       publicReadCache.put(cacheKey, cacheEntry)
       waitUntil(
         runtimePublicReadCache
@@ -310,7 +415,7 @@ export default async function handler(
     response.status(upstream.status).send(upstreamBody)
   } catch (error) {
     if (staleLookup) {
-      sendCachedResponse(response, staleLookup, startedAt)
+      sendCachedResponse(response, staleLookup, startedAt, cachedPathname)
       return
     }
     const timeout = error instanceof Error && error.name === 'AbortError'

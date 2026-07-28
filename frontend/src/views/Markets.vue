@@ -16,7 +16,9 @@ import {
   type AssetFilter,
   type AssetMarketV2Item,
   type AvailableDecimal,
+  type MarketOverviewV2,
   type MarketVenue,
+  type Paged,
 } from '../api/market'
 import { formatAbbr, formatPercent, formatPrice, providerFreshnessVariant } from '../utils/format'
 
@@ -89,26 +91,117 @@ function positiveInt(value: unknown, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const overview = usePolling(() => getMarketOverviewV2(venue.value), { interval: 30_000 })
 const requestedUniverse = computed<'provider_top50' | 'provider_union'>(() => {
   if (venue.value === 'all') return 'provider_union'
   return 'provider_top50'
 })
-const dashboard = usePolling(
-  () => getAssetDashboardV2(page.value, pageSize.value, {
+const overview = usePolling(async () => {
+  const requestedVenue = venue.value
+  return {
+    venue: requestedVenue,
+    data: await getMarketOverviewV2(requestedVenue),
+  }
+}, { interval: 30_000 })
+const currentOverview = computed<MarketOverviewV2 | null>(() => {
+  const snapshot = overview.data.value
+  return snapshot?.venue === venue.value ? snapshot.data : null
+})
+
+interface DashboardQuery {
+  venue: MarketVenue
+  page: number
+  pageSize: number
+  search: string
+  filter: AssetFilter
+  sortBy: 'rank' | 'market_cap' | 'turnover24h' | 'change24h' | 'price' | 'symbol'
+  sortDirection: 'asc' | 'desc'
+  universe: 'provider_top50' | 'provider_union'
+}
+
+interface DashboardSnapshot {
+  queryKey: string
+  data: Paged<AssetDashboardV2Item>
+}
+
+function readDashboardQuery(): DashboardQuery {
+  return {
     venue: venue.value,
+    page: page.value,
+    pageSize: pageSize.value,
     search: search.value,
     filter: filter.value,
-    sortBy: sortKey.value as 'rank' | 'market_cap' | 'turnover24h' | 'change24h' | 'price' | 'symbol',
+    sortBy: sortKey.value as DashboardQuery['sortBy'],
     sortDirection: sortDir.value,
-    includeUncovered: true,
     universe: requestedUniverse.value,
-  }),
+  }
+}
+
+function dashboardQueryKey(query: DashboardQuery): string {
+  return JSON.stringify(query)
+}
+
+const currentDashboardQueryKey = computed(() =>
+  dashboardQueryKey(readDashboardQuery()))
+const dashboard = usePolling(
+  async (): Promise<DashboardSnapshot> => {
+    const query = readDashboardQuery()
+    return {
+      queryKey: dashboardQueryKey(query),
+      data: await getAssetDashboardV2(query.page, query.pageSize, {
+        venue: query.venue,
+        search: query.search,
+        filter: query.filter,
+        sortBy: query.sortBy,
+        sortDirection: query.sortDirection,
+        includeUncovered: true,
+        universe: query.universe,
+      }),
+    }
+  },
   { interval: 15_000 },
 )
 
-const assets = computed(() => dashboard.data.value?.items ?? [])
-const total = computed(() => dashboard.data.value?.total ?? 0)
+const currentDashboard = computed(() => {
+  const snapshot = dashboard.data.value
+  return snapshot?.queryKey === currentDashboardQueryKey.value
+    ? snapshot.data
+    : null
+})
+const assets = computed(() => currentDashboard.value?.items ?? [])
+const total = computed(() => currentDashboard.value?.total ?? 0)
+const dexCoverage = computed(() => {
+  if (
+    !isDexVenue() ||
+    page.value !== 1 ||
+    search.value.trim() !== '' ||
+    filter.value !== 'assets' ||
+    total.value <= 0 ||
+    assets.value.length !== total.value
+  ) {
+    return null
+  }
+  const routed = assets.value.filter((asset) => asset.dex_route_available).length
+  const displayed = assets.value.filter((asset) => asset.display_available).length
+  return {
+    displayed,
+    routed,
+    referenceOnly: assets.value.filter((asset) =>
+      asset.display_available && !asset.dex_route_available).length,
+    unavailable: Math.max(0, total.value - displayed),
+    coveragePct: displayed / total.value * 100,
+  }
+})
+const coveragePercentLabel = computed(() => {
+  if (isDexVenue() && dexCoverage.value) {
+    return `${dexCoverage.value.coveragePct.toFixed(1)}%`
+  }
+  const metric = isDexVenue()
+    ? currentOverview.value?.display_coverage_ratio_pct
+    : currentOverview.value?.coverage_ratio_pct
+  return metric?.available
+    ? `${(metric.value ?? 0).toFixed(1)}%`
+    : '—'
+})
 const selectedAsset = computed(() =>
   assets.value.find((asset) => asset.asset_id === selectedAssetID.value) ?? null,
 )
@@ -196,7 +289,7 @@ const selectedVenueLabel = computed(() =>
   VENUE_GROUPS.flatMap((group) => group.venues).find((item) => item.value === venue.value)?.label ?? 'All',
 )
 const pageSubtitle = computed(() => {
-  const current = overview.data.value
+  const current = currentOverview.value
   if (venue.value === 'all') {
     if (!current) return 'One asset per row · seven-provider union · globally ordered by market cap'
     return `${current.priced_asset_count}/${current.asset_count} fresh composite prices · ` +
@@ -206,8 +299,13 @@ const pageSubtitle = computed(() => {
   const preview = current.local_preview_enabled ? ' · Local preview' : ''
   const version = current.selection_version > 0 ? ` · selection v${current.selection_version}` : ''
   if (venue.value === 'uniswap' || venue.value === 'pancakeswap') {
-    return `${current.displayed_asset_count}/${current.asset_count} displayed · ` +
-      `${current.routable_asset_count} fresh on-chain · ${current.reference_only_asset_count} reference only${version}${preview}`
+    const coverage = dexCoverage.value
+    if (coverage) {
+      return `${coverage.displayed}/${total.value} displayed · ` +
+        `${coverage.routed} fresh on-chain · ${coverage.referenceOnly} reference only${version}${preview}`
+    }
+    return `${current.displayed_asset_count}/${current.asset_count} displayed snapshot · ` +
+      `route freshness pending full-page verification${version}${preview}`
   }
   const product = venue.value === 'hyperliquid'
     ? 'perpetual marks'
@@ -285,10 +383,12 @@ function isDexVenue(): boolean {
 }
 
 function displayPrice(asset: AssetDashboardV2Item): AvailableDecimal {
+  if (isDexVenue()) return asset.display_price_usd
   return asset.display_price_usd?.available ? asset.display_price_usd : asset.price_usd
 }
 
 function displayChange(asset: AssetDashboardV2Item): AvailableDecimal {
+  if (isDexVenue()) return asset.display_change_24h_pct
   return asset.display_change_24h_pct?.available
     ? asset.display_change_24h_pct
     : asset.change_24h_pct
@@ -358,7 +458,7 @@ function coverageReasonLabel(reason: string): string {
     <PageHeader
       :title="pageTitle"
       :subtitle="pageSubtitle"
-      :refreshed-at="dashboard.lastUpdated.value"
+      :refreshed-at="currentDashboard ? dashboard.lastUpdated.value : null"
     >
       <template #actions>
         <div class="segmented" role="group" aria-label="Fiat currency">
@@ -383,40 +483,35 @@ function coverageReasonLabel(reason: string): string {
       <article>
         <span>Global Market Cap</span>
         <strong class="num">
-          {{ overview.data.value
-            ? formatMetric(overview.data.value.global_market_cap_usd, '$')
+          {{ currentOverview
+            ? formatMetric(currentOverview.global_market_cap_usd, '$')
             : '—' }}
         </strong>
         <small>CoinGecko global</small>
       </article>
       <article>
         <span>{{ selectedVenueLabel }} Coverage</span>
-        <strong class="num">
-          {{ (isDexVenue()
-              ? overview.data.value?.display_coverage_ratio_pct
-              : overview.data.value?.coverage_ratio_pct)?.available
-            ? `${((isDexVenue()
-                ? overview.data.value?.display_coverage_ratio_pct.value
-                : overview.data.value?.coverage_ratio_pct.value) ?? 0).toFixed(1)}%`
-            : '—' }}
-        </strong>
-        <small v-if="overview.data.value && isDexVenue()">
-          {{ overview.data.value.routable_asset_count }} on-chain ·
-          {{ overview.data.value.reference_only_asset_count }} reference only ·
-          {{ overview.data.value.unpriced_asset_count }} unavailable
+        <strong class="num">{{ coveragePercentLabel }}</strong>
+        <small v-if="isDexVenue() && dexCoverage">
+          {{ dexCoverage.routed }} on-chain ·
+          {{ dexCoverage.referenceOnly }} reference only ·
+          {{ dexCoverage.unavailable }} unavailable
         </small>
-        <small v-else-if="overview.data.value">
-          {{ overview.data.value.priced_asset_count }} priced ·
-          {{ overview.data.value.change_available_count }} with 24h ·
-          {{ overview.data.value.published_asset_count }} published
+        <small v-else-if="currentOverview && isDexVenue()">
+          Snapshot only · route freshness pending full-page verification
+        </small>
+        <small v-else-if="currentOverview">
+          {{ currentOverview.priced_asset_count }} priced ·
+          {{ currentOverview.change_available_count }} with 24h ·
+          {{ currentOverview.published_asset_count }} published
         </small>
         <small v-else>Selected provider assets</small>
       </article>
       <article>
         <span>BTC Dominance</span>
         <strong class="num">
-          {{ overview.data.value?.btc_dominance_pct.available
-            ? formatPercent(overview.data.value.btc_dominance_pct.value ?? 0)
+          {{ currentOverview?.btc_dominance_pct.available
+            ? formatPercent(currentOverview.btc_dominance_pct.value ?? 0)
             : '—' }}
         </strong>
         <small>CoinGecko global</small>
@@ -424,13 +519,13 @@ function coverageReasonLabel(reason: string): string {
       <article>
         <span>Market Breadth</span>
         <strong class="num">
-          {{ overview.data.value?.advance_ratio_pct.available
-            ? `${(overview.data.value.advance_ratio_pct.value ?? 0).toFixed(1)}% up`
+          {{ currentOverview?.advance_ratio_pct.available
+            ? `${(currentOverview.advance_ratio_pct.value ?? 0).toFixed(1)}% up`
             : '—' }}
         </strong>
-        <small v-if="overview.data.value">
-          {{ overview.data.value.advancers }} up · {{ overview.data.value.decliners }} down ·
-          {{ overview.data.value.unknown }} unknown
+        <small v-if="currentOverview">
+          {{ currentOverview.advancers }} up · {{ currentOverview.decliners }} down ·
+          {{ currentOverview.unknown }} unknown
         </small>
         <small v-else>Composite index</small>
       </article>

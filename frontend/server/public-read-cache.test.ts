@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PublicReadCache,
   RuntimePublicReadCache,
+  agePublicReadBody,
   isPublicMarketRead,
   publicReadCachePayload,
 } from './public-read-cache'
@@ -84,6 +85,141 @@ describe('PublicReadCache', () => {
         storedAt: 1_000,
       }),
     ).toBe(false)
+  })
+})
+
+describe('agePublicReadBody', () => {
+  it('expires a cached DEX route into an explicit composite reference', () => {
+    const aged = agePublicReadBody(
+      '/api/v2/get_asset_dashboard',
+      Buffer.from(JSON.stringify({
+        code: 2000,
+        result: [{
+          asset_symbol: 'BTC',
+          price_usd: { value: '65000', available: true },
+          change_24h_pct: { value: '1.25', available: true },
+          composite_price_usd: { value: '64950', available: true },
+          market_reference_price_usd: { value: '64900', available: true },
+          display_price_usd: { value: '65000', available: true },
+          display_price_kind: 'dex_route',
+          display_observed_at: 1_785_200_000,
+          display_change_24h_pct: { value: '1.25', available: true },
+          display_change_kind: 'dex_route',
+          display_available: true,
+          dex_route_available: true,
+          dex_route_count: 3,
+          price_kind: 'dex_route',
+          price_source: 'uniswap',
+          available: true,
+          freshness_status: 'fresh',
+          freshness_age_seconds: 20,
+        }],
+      })),
+      45,
+    )
+    const row = JSON.parse(aged.toString()).result[0]
+
+    expect(row.freshness_age_seconds).toBe(65)
+    expect(row.freshness_status).toBe('stale')
+    expect(row.dex_route_available).toBe(false)
+    expect(row.dex_route_count).toBe(0)
+    expect(row.price_usd.available).toBe(false)
+    expect(row.display_price_usd).toEqual({
+      value: '64950',
+      available: true,
+    })
+    expect(row.display_price_kind).toBe('composite_reference')
+    expect(row.display_available).toBe(true)
+    expect(row.display_observed_at).toBe(0)
+    expect(row.display_change_24h_pct).toEqual({
+      value: null,
+      available: false,
+    })
+    expect(row.display_change_kind).toBe('unavailable')
+    expect(row.price_kind).toBe('unavailable')
+    expect(row.price_source).toBe('')
+    expect(row.change_24h_pct).toEqual({
+      value: '1.25',
+      available: false,
+    })
+    expect(row.coverage_status).toBe('reference_only')
+    expect(row.coverage_reason).toBe('cached_route_expired')
+  })
+
+  it('does not claim reference-only coverage when an expired route has no fallback', () => {
+    const aged = agePublicReadBody(
+      '/api/v2/get_asset_dashboard',
+      Buffer.from(JSON.stringify({
+        result: [{
+          price_usd: { value: '65000', available: true },
+          composite_price_usd: { value: null, available: false },
+          market_reference_price_usd: { value: null, available: false },
+          display_price_usd: { value: '65000', available: true },
+          display_price_kind: 'dex_route',
+          display_available: true,
+          dex_route_available: true,
+          dex_route_count: 1,
+          available: true,
+          freshness_status: 'fresh',
+          freshness_age_seconds: 55,
+        }],
+      })),
+      10,
+    )
+    const row = JSON.parse(aged.toString()).result[0]
+
+    expect(row.dex_route_available).toBe(false)
+    expect(row.display_price_usd).toEqual({
+      value: null,
+      available: false,
+    })
+    expect(row.display_available).toBe(false)
+    expect(row.coverage_status).toBe('source_unavailable')
+    expect(row.coverage_reason).toBe('cached_route_expired')
+  })
+
+  it('keeps unavailable rows unavailable when source age is missing', () => {
+    const aged = agePublicReadBody(
+      '/api/v2/get_asset_dashboard',
+      Buffer.from(JSON.stringify({
+        result: [{
+          available: false,
+          freshness_status: 'unavailable',
+          dex_route_available: false,
+        }],
+      })),
+      31,
+    )
+    const row = JSON.parse(aged.toString()).result[0]
+
+    expect(row.freshness_status).toBe('unavailable')
+    expect(row.available).toBe(false)
+    expect(row).not.toHaveProperty('freshness_age_seconds')
+  })
+
+  it('marks an expired cached quote unavailable without changing other endpoints', () => {
+    const dashboard = Buffer.from(JSON.stringify({
+      result: [{
+        freshness_status: 'fresh',
+        freshness_age_seconds: 10,
+        available: true,
+        dex_route_available: false,
+      }],
+    }))
+    const row = JSON.parse(
+      agePublicReadBody(
+        '/api/v2/get_asset_dashboard',
+        dashboard,
+        300,
+      ).toString(),
+    ).result[0]
+
+    expect(row.freshness_age_seconds).toBe(310)
+    expect(row.freshness_status).toBe('unavailable')
+    expect(row.available).toBe(false)
+    expect(
+      agePublicReadBody('/api/v1/get_system_overview', dashboard, 300),
+    ).toBe(dashboard)
   })
 })
 

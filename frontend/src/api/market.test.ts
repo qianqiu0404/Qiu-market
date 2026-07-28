@@ -73,6 +73,46 @@ describe('getAssetDashboardV2', () => {
     expect(result.items[0]?.coverage_reason).toBe('missing_24h_reference')
     expect(result.items[0]).not.toHaveProperty('markets')
   })
+
+  it('never falls back to five-minute raw route fields for a DEX display', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({
+        code: 2000,
+        result: [{
+          asset_id: 'asset-old-route',
+          asset_symbol: 'OLD',
+          price_usd: { value: '42', available: true },
+          change_24h_pct: { value: '9.5', available: true },
+          price_kind: 'dex_route',
+          dex_route_available: false,
+          dex_route_count: 0,
+          available: true,
+          freshness_status: 'stale',
+          freshness_age_seconds: 90,
+        }],
+        total: 1,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })))
+
+    const result = await getAssetDashboardV2(1, 50, {
+      venue: 'uniswap',
+      universe: 'provider_top50',
+    })
+    const row = result.items[0]
+
+    expect(row?.price_usd).toEqual({ value: 42, available: true })
+    expect(row?.change_24h_pct).toEqual({ value: 9.5, available: true })
+    expect(row?.display_price_usd).toEqual({ value: null, available: false })
+    expect(row?.display_price_kind).toBe('unavailable')
+    expect(row?.display_change_24h_pct).toEqual({
+      value: null,
+      available: false,
+    })
+    expect(row?.display_change_kind).toBe('unavailable')
+    expect(row?.display_available).toBe(false)
+  })
 })
 
 describe('getTop50VenueInsights', () => {
@@ -98,6 +138,139 @@ describe('getTop50VenueInsights', () => {
       hyperliquid: 'provider_top50',
       uniswap: 'provider_top50',
       pancakeswap: 'provider_top50',
+    })
+  })
+
+  it('bounds venue fanout and preserves successful providers when one fails', async () => {
+    let active = 0
+    let maximumActive = 0
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { venue: string }
+      active += 1
+      maximumActive = Math.max(maximumActive, active)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      active -= 1
+      if (body.venue === 'bybit') {
+        return new Response(JSON.stringify({
+          code: 5000,
+          message: 'provider snapshot unavailable',
+        }), {
+          status: 504,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({
+        code: 2000,
+        result: [{
+          asset_id: `asset-${body.venue}`,
+          asset_symbol: body.venue.toUpperCase(),
+          available: true,
+          price_usd: { value: '1', available: true },
+        }],
+        total: 1,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    const result = await getTop50VenueInsights()
+    const bybit = result.coverage.find((row) => row.venue === 'bybit')
+    const binance = result.coverage.find((row) => row.venue === 'binance')
+
+    expect(maximumActive).toBeLessThanOrEqual(2)
+    expect(bybit).toMatchObject({
+      available: false,
+      priced: 0,
+      total: 0,
+    })
+    expect(bybit?.error).toContain('provider snapshot unavailable')
+    expect(binance).toMatchObject({
+      available: true,
+      priced: 1,
+      total: 1,
+      coverage_pct: 100,
+    })
+  })
+
+  it('publishes only fresh on-chain routes in the DEX route monitor', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { venue: string }
+      const result = body.venue === 'uniswap'
+        ? [
+            {
+              asset_id: 'asset-reference-only',
+              asset_symbol: 'REF',
+              available: true,
+              price_usd: { value: '10', available: true },
+              display_price_usd: { value: '9.9', available: true },
+              display_price_kind: 'composite_reference',
+              display_available: true,
+              dex_route_available: false,
+              dex_route_count: 0,
+              quality: 'medium',
+            },
+            {
+              asset_id: 'asset-live-route',
+              asset_symbol: 'LIVE',
+              available: true,
+              price_usd: { value: '20', available: true },
+              display_price_usd: { value: '20', available: true },
+              display_price_kind: 'dex_route',
+              display_available: true,
+              dex_route_available: true,
+              dex_route_count: 2,
+              quality: 'high',
+            },
+          ]
+        : body.venue === 'pancakeswap'
+          ? [{
+              asset_id: 'asset-expired-route',
+              asset_symbol: 'OLD',
+              available: true,
+              price_usd: { value: '30', available: true },
+              display_price_usd: { value: null, available: false },
+              display_price_kind: 'unavailable',
+              display_available: false,
+              dex_route_available: false,
+              dex_route_count: 3,
+              quality: 'stale',
+            }]
+          : []
+      return new Response(JSON.stringify({
+        code: 2000,
+        result,
+        total: result.length,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    const result = await getTop50VenueInsights()
+    const uniswap = result.coverage.find((row) => row.venue === 'uniswap')
+    const pancakeswap = result.coverage.find((row) => row.venue === 'pancakeswap')
+
+    expect(result.dex_routes).toEqual([{
+      asset_id: 'asset-live-route',
+      asset_symbol: 'LIVE',
+      provider: 'uniswap',
+      price: 20,
+      available: true,
+      route_count: 2,
+      quality: 'high',
+    }])
+    expect(uniswap).toMatchObject({
+      priced: 2,
+      total: 2,
+      coverage_pct: 100,
+      coverage_kind: 'displayed',
+    })
+    expect(pancakeswap).toMatchObject({
+      priced: 0,
+      total: 1,
+      coverage_pct: 0,
+      coverage_kind: 'displayed',
     })
   })
 })

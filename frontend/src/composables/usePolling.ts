@@ -34,9 +34,15 @@ export function usePolling<T>(
 
   let timer: number | undefined
   let inFlight = false
+  let rerunRequested = false
+  let stopped = false
 
-  const refresh = async (): Promise<void> => {
-    if (inFlight) return
+  const run = async (queueIfBusy: boolean): Promise<void> => {
+    if (stopped) return
+    if (inFlight) {
+      if (queueIfBusy) rerunRequested = true
+      return
+    }
     inFlight = true
     if (data.value === null) loading.value = true
     try {
@@ -48,12 +54,20 @@ export function usePolling<T>(
     } finally {
       loading.value = false
       inFlight = false
+      if (rerunRequested && !stopped) {
+        rerunRequested = false
+        void run(true)
+      }
     }
   }
 
+  const refresh = (): Promise<void> => run(true)
+
   const tick = (): void => {
     if (typeof document !== 'undefined' && document.hidden) return
-    void refresh()
+    // Interval ticks are best-effort. Queueing them behind a slow request can
+    // turn a degraded upstream into permanent back-to-back load.
+    void run(false)
   }
 
   onMounted(() => {
@@ -62,6 +76,8 @@ export function usePolling<T>(
   })
 
   onUnmounted(() => {
+    stopped = true
+    rerunRequested = false
     if (timer !== undefined) window.clearInterval(timer)
   })
 
