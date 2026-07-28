@@ -125,6 +125,16 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
   `GitHub OAuth credentials are still missing`；前后环境文件 SHA-256 一致，窗口状态
   仍为 `closed / never_opened`。因此没有打开维护窗、没有重启 API、没有改变
   Production。
+- `ops/macos/promote-vercel-release.sh` 已实现但尚未执行同一产物发布门：
+  只接受最近 15 分钟内通过的精确 Preview Gate 2C；拒绝活动 OAuth 窗口或活动
+  acceptance epoch；记录旧 Production deployment 后只调用 `vercel promote`，
+  不 build/deploy；结构检查失败自动回滚并核对 alias；成功后仍停在
+  `awaiting-production-auth`，必须提交绑定随机 `promotion_id` 的真实 Production
+  登录、CSRF/Origin、同 request ID 最小虚拟写入/重放、账本、状态哈希、logout 和
+  stale session 证据才能 confirm；confirm 失败也自动回滚。夹具已覆盖无
+  `--execute` 拒绝、成功 promote、缺证据自动回滚、确认、结构失败自动回滚和
+  “alias 已切但 CLI 返回失败”的不确定结果回滚，以及显式回滚。
+  这只是发布安全能力，当前 OAuth Gate pending 时仍禁止真实 promote。
 
 该 Preview 已通过非登录 smoke，但仍须完成 Gate 2C 的 OAuth 与真实浏览器写操作
 验收后，才可 promote。

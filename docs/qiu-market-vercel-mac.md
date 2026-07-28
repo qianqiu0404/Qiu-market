@@ -226,6 +226,69 @@ bash ops/macos/manage-preview-oauth-window.sh abort
 Preview acceptance。备份/状态位于私有 Application Support，不含于仓库；凭据和
 Secret 不得粘贴到聊天、日志或 evidence JSON。
 
+### 同一构建产物的 Promotion Gate
+
+只有 `verify-preview-gate.sh` 在最近 15 分钟内对精确 deployment/commit 返回
+`preview-gate-passed`，而且 OAuth 维护窗口已关闭、正式 acceptance epoch 尚未开始，
+才允许进入发布预检：
+
+```bash
+bash ops/macos/promote-vercel-release.sh preflight \
+  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
+  --deployment-url \
+    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
+  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+```
+
+预检只读执行以下约束：
+
+- Preview gate 的 deployment、immutable URL、commit、managed close 和 browser
+  evidence 全部一致；
+- 当前 `frontend/**` 仍与 release commit 一致；
+- candidate 仍是 READY Preview，且运行时 provenance、trading/outbox 为 ready；
+- 记录当前 READY Production deployment 作为唯一回滚目标；
+- 当前 Production 页面、trading/outbox、GitHub OAuth capability、固定 Production
+  callback 与 Secure OAuth state Cookie 都是健康基线。
+
+真正切换必须显式加入 `--execute`：
+
+```bash
+bash ops/macos/promote-vercel-release.sh promote --execute \
+  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
+  --deployment-url \
+    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
+  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+```
+
+脚本只调用 `vercel promote`，不调用 build/deploy。它先写入随机 `promotion_id` 和
+旧 Production deployment，再验证 Production alias 确实指向 candidate、四个 SPA
+深链接、provenance、trading/outbox、OAuth capability、匿名 session 401 和 Funnel
+未签名 REST 401。上述结构检查任一失败都会立即执行精确旧 deployment rollback
+并复核 alias；回滚无法确认时保留私有状态，不会声称成功。
+
+结构检查通过只表示 `awaiting-production-auth`，还不是 Production 验收。必须使用
+新的 Production 浏览器上下文完成 GitHub 登录、Secure Cookie、CSRF/Origin 拒绝、
+一次带 request ID 的最小虚拟资金写入及同 ID 重放、账本平衡、状态哈希一致、
+logout 204 和旧 session 401，并把真实结果绑定 state 中随机 `promotion_id` 写入
+权限为 `0600/0400` 的
+`observations/production-auth-evidence.json`。证据必须在 promote 后且不超过
+15 分钟，再执行：
+
+```bash
+bash ops/macos/promote-vercel-release.sh confirm
+```
+
+只有 confirm 成功才产生 `production-gate-passed`。调用 confirm 后如果 Production
+smoke、账号 `qianqiu0404`、证据身份/时间或最小写对账任一失败，脚本会立即回滚并
+核对旧 alias。尚未调用 confirm、浏览器验收失败或决定停止时：
+
+```bash
+bash ops/macos/promote-vercel-release.sh rollback
+```
+
+它只回滚到本次 promote 前记录的精确 deployment。脚本不会自动开始 acceptance
+epoch；必须在 Production gate 通过后再单独启动，避免把未验收分钟计入 7 天窗口。
+
 ## 5. 最小安全验收
 
 ```bash
