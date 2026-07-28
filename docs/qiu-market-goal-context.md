@@ -86,8 +86,26 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
 
 为使后续 7 天证据绑定不可变产物，BFF 已增加服务端生成的 release provenance
 响应头。旧 `dpl_C5k5...` 没有这些响应头，因此保留为历史 Preview 证据，但不再是
-最终可 promote 产物。Gate 2C 必须从包含 provenance 的新精确提交构建一次新的
-protected Preview，完成同样验收后只 promote 该 deployment。
+最终可 promote 产物。
+
+新的 provenance-enabled Preview 已建立：
+
+- 源提交 `2aa8bda39d2298e1d57886e472f9a090d728f56e`；
+- deployment `dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e`，状态 READY，Function 区域
+  `sfo1`；
+- immutable URL 为
+  `https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app`；
+- Vercel metadata 中 Git SHA 与 `qiuMarketReleaseCommit` 均为 `2aa8bda...`；
+- BFF 运行时响应头在线返回同一 deployment ID、immutable URL 和完整 commit，
+  provenance 为 `VERIFIED`；
+- 未携带 Vercel Authentication 的静态页与 API 均返回 302；受保护访问下
+  `/markets`、`/trade/BTC-USDT`、`/system` 深链接为 200，session 为预期 401；
+- 公共读取实测 `MISS → FRESH`，两个响应都携带同一 provenance；
+- 40 个前端单测、生产构建、21 个本地 browser contract tests、SLO 夹具与
+  diff check 通过；新 Preview 最近一次日志检查只有 200/401，没有 5xx。
+
+该 Preview 已通过非登录 smoke，但仍须完成 Gate 2C 的 OAuth 与真实浏览器写操作
+验收后，才可 promote。
 
 当前阻塞：
 

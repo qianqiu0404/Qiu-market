@@ -139,6 +139,12 @@ upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请�
 `VERCEL_URL` 由 Vercel 自动提供，BFF 将两者与受管 release commit 作为不可变
 provenance 响应头。不要手工把 Production alias 当成 immutable deployment URL。
 
+当前待 OAuth 验收的 protected Preview 为
+`dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e`，immutable URL 是
+`https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app`，源提交与
+provenance commit 都是 `2aa8bda39d2298e1d57886e472f9a090d728f56e`。旧
+`dpl_C5k5...` 没有 runtime provenance，只保留为历史证据，不再 promote。
+
 ## 5. 最小安全验收
 
 ```bash
