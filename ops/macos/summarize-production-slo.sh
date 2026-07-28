@@ -23,7 +23,8 @@ if [ ! -s "$epoch_file" ]; then
   exit 0
 fi
 if ! jq -e '
-  .schema_version == 1 and
+  . as $root |
+  .schema_version == 2 and
   (.status == "active" or .status == "stopped") and
   (.epoch_id | type == "string" and length >= 8) and
   (.production_origin | type == "string" and startswith("https://")) and
@@ -31,7 +32,14 @@ if ! jq -e '
   (.deployment_url | type == "string" and startswith("https://")) and
   (.deployment_commit | type == "string" and test("^[0-9a-f]{40}$")) and
   (.started_at | type == "string") and
-  (.started_at | try fromdateiso8601 catch null | type == "number")
+  (.started_at | try fromdateiso8601 catch null | type == "number") and
+  (.dex_canaries | keys | sort) == ["pancakeswap", "uniswap"] and
+  all(.dex_canaries[];
+    (.asset_guid | type == "string") and
+    (.route_key | type == "string" and length > 0) and
+    (.quote_notional_usd | type == "string") and
+    (.selected_at == $root.started_at)
+  )
 ' "$epoch_file" >/dev/null 2>&1; then
   echo "The Qiu Market acceptance epoch file is invalid." >&2
   exit 1
@@ -47,6 +55,7 @@ production_origin="$(jq -r '.production_origin' "$epoch_file")"
 deployment_id="$(jq -r '.deployment_id' "$epoch_file")"
 deployment_url="$(jq -r '.deployment_url' "$epoch_file")"
 deployment_commit="$(jq -r '.deployment_commit' "$epoch_file")"
+dex_canaries="$(jq -c '.dex_canaries' "$epoch_file")"
 window_start_epoch="$(jq -r '.started_at | fromdateiso8601' "$epoch_file")"
 window_last_slot_epoch=$((window_start_epoch + 7 * 24 * 60 * 60 - 60))
 now_epoch="${QIU_MARKET_SLO_NOW_EPOCH:-$(date -u '+%s')}"
@@ -71,6 +80,7 @@ jq -s \
   --arg deployment_id "$deployment_id" \
   --arg deployment_url "$deployment_url" \
   --arg deployment_commit "$deployment_commit" \
+  --argjson dex_canaries "$dex_canaries" \
   --argjson window_start "$window_start_epoch" \
   --argjson evaluation_end "$evaluation_end_epoch" \
   --argjson window_last_slot "$window_last_slot_epoch" \
@@ -162,6 +172,20 @@ jq -s \
   ($knownDisks | min // null) as $minimumDisk |
   ($samples[0].finished_at // $samples[0].observed_at // null) as $firstAt |
   ($samples[-1].finished_at // $samples[-1].observed_at // null) as $lastAt |
+  ($samples[-1].historical_windows // []) as $latestDexWindows |
+  (
+    ($latestDexWindows | length) == 6 and
+    all($latestDexWindows[];
+      .mode == "fixed_epoch_canary" and
+      .status == "passed" and
+      (.provider == "uniswap" or .provider == "pancakeswap") and
+      .canary.asset_guid == $dex_canaries[.provider].asset_guid and
+      .canary.route_key == $dex_canaries[.provider].route_key and
+      .canary.quote_notional_usd ==
+        $dex_canaries[.provider].quote_notional_usd and
+      .canary.selected_at == $dex_canaries[.provider].selected_at
+    )
+  ) as $dexWindowsPassed |
   ($now_epoch >= $window_last_slot) as $timeWindowElapsed |
   {
     window: "acceptance_epoch_7d",
@@ -171,6 +195,8 @@ jq -s \
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: $deployment_commit,
+    dex_canaries: $dex_canaries,
+    latest_dex_windows: $latestDexWindows,
     window_started_at: ($window_start | todateiso8601),
     window_last_scheduled_at: ($window_last_slot | todateiso8601),
     evaluated_through: (
@@ -206,6 +232,7 @@ jq -s \
     known_disk_samples: ($knownDisks | length),
     acceptance: {
       full_7d_observation_window: $timeWindowElapsed,
+      dex_fixed_24_48_72_windows_passed: $dexWindowsPassed,
       exactly_one_release: (
         ($samples | length) > 0 and
         all($samples[];

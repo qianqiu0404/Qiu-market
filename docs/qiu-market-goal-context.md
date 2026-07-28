@@ -164,6 +164,23 @@ Production 尚未 promote，所以正式 acceptance epoch 尚未开始。下一�
 - route price 与 composite/reference display price 永久分栏，50 个资产可显示
   不等于 50 条链上 route 可执行。
 
+固定 canary 的实现口径：
+
+- epoch start 会从 PostgreSQL 各选一条过去 6 小时连续、最近 10 分钟仍新鲜且
+  最大间隔不超过 600 秒的 Uniswap/PancakeSwap route；任一 provider 没有候选时
+  拒绝启动；
+- `asset_guid + route_key + quote_notional_usd + selected_at` 写入私有 epoch
+  文件，24/48/72 小时都只查询这两个身份，不再“每次任取一个当前最优 route”；
+- 窗口未走完标记 `observing`；走完后起点、freshness 或 gap 任一不满足即
+  `failed`，不能继续显示 pending；
+- canary 不会在 active epoch 中静默替换。需要换 route/notional 时必须 stop 并
+  创建新 epoch，因此 DEX 窗口与完整 7 天计时都会从零开始。
+
+当前未启动 epoch 的动态诊断仍是 `pending`：最近快照中 Uniswap 最佳完整 24 小时
+group 的最大间隔约 695 秒，超过 600 秒；PancakeSwap 虽有最大间隔约 254 秒的旧
+group，但 freshness 与连续性没有在同一 group 上同时满足。这些只说明旧动态历史
+尚不能过门，不会被算入正式 canary 证据。
+
 只有完整证据期通过，才标记
 `production-recommendation (availability)`。同盘备份仍只能标记
 `risk-accepted / environment-pending`，不能宣称多机高可用或灾备完成。

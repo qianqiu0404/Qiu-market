@@ -19,6 +19,7 @@ epoch_file="$fixture_dir/acceptance-epoch.json"
 healthy="$fixture_dir/healthy.jsonl"
 with_gap="$fixture_dir/with-gap.jsonl"
 with_bad_duplicates="$fixture_dir/with-bad-duplicates.jsonl"
+with_changed_canary="$fixture_dir/with-changed-canary.jsonl"
 
 jq -n \
   --arg epoch_id "$epoch_id" \
@@ -27,13 +28,27 @@ jq -n \
   --arg deployment_url "$deployment_url" \
   --arg deployment_commit "$deployment_commit" \
   --argjson start "$window_start" '{
-    schema_version: 1,
+    schema_version: 2,
     epoch_id: $epoch_id,
     status: "active",
     production_origin: $production_origin,
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: $deployment_commit,
+    dex_canaries: {
+      uniswap: {
+        asset_guid: "11111111-1111-4111-8111-111111111111",
+        route_key: "fixture-uniswap-route",
+        quote_notional_usd: "10000",
+        selected_at: ($start | todateiso8601)
+      },
+      pancakeswap: {
+        asset_guid: "22222222-2222-4222-8222-222222222222",
+        route_key: "fixture-pancakeswap-route",
+        quote_notional_usd: "10000",
+        selected_at: ($start | todateiso8601)
+      }
+    },
     created_at: (($start - 30) | todateiso8601),
     started_at: ($start | todateiso8601),
     stopped_at: null
@@ -47,6 +62,18 @@ jq -nc \
   --arg deployment_commit "$deployment_commit" \
   --argjson start "$window_start" \
   --argjson end "$window_last_slot" '
+  def canary($provider):
+    if $provider == "uniswap" then {
+      asset_guid: "11111111-1111-4111-8111-111111111111",
+      route_key: "fixture-uniswap-route",
+      quote_notional_usd: "10000",
+      selected_at: ($start | todateiso8601)
+    } else {
+      asset_guid: "22222222-2222-4222-8222-222222222222",
+      route_key: "fixture-pancakeswap-route",
+      quote_notional_usd: "10000",
+      selected_at: ($start | todateiso8601)
+    } end;
   range($start; $end + 1; 60) as $at |
   {
     schema_version: 4,
@@ -74,7 +101,18 @@ jq -nc \
       system_bff: 100,
       uniswap_bff: 100,
       pancakeswap_bff: 100
-    }
+    },
+    historical_windows: [
+      [24, 48, 72][] as $hours |
+      ["pancakeswap", "uniswap"][] as $provider |
+      {
+        hours: $hours,
+        provider: $provider,
+        mode: "fixed_epoch_canary",
+        status: "passed",
+        canary: canary($provider)
+      }
+    ]
   }
 ' > "$healthy"
 
@@ -137,6 +175,7 @@ jq -e '
   .observed_minutes == 10080 and
   .missing_minutes == 0 and
   .availability_percent == 100 and
+  .acceptance.dex_fixed_24_48_72_windows_passed == true and
   ([.acceptance[]] | all)
 ' <<<"$healthy_report" >/dev/null
 
@@ -220,6 +259,28 @@ jq -e '
   .longest_observed_failure_seconds == 360 and
   .acceptance.no_interruption_over_5m == false
 ' <<<"$duplicate_report" >/dev/null
+
+window_last_slot_iso="$(
+  jq -nr --argjson epoch "$window_last_slot" '$epoch | todateiso8601'
+)"
+jq -c --arg scheduled_at "$window_last_slot_iso" '
+  if .schema_version == 4 and
+    .acceptance_epoch_id == "qiu-market-fixture-epoch" and
+    .scheduled_at == $scheduled_at
+  then .historical_windows[0].canary.route_key = "changed-route"
+  else .
+  end
+' "$healthy" > "$with_changed_canary"
+changed_canary_report="$(
+  QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$epoch_file" \
+  QIU_MARKET_SOAK_HISTORY="$with_changed_canary" \
+  QIU_MARKET_SLO_NOW_EPOCH="$window_last_slot" \
+    "$repo_root/ops/macos/summarize-production-slo.sh"
+)"
+jq -e '
+  .status == "failed" and
+  .acceptance.dex_fixed_24_48_72_windows_passed == false
+' <<<"$changed_canary_report" >/dev/null
 
 missing_epoch_report="$(
   QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$fixture_dir/not-created.json" \

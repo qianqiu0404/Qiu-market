@@ -179,23 +179,33 @@ expected_deployment_id=""
 expected_deployment_url=""
 expected_deployment_commit=""
 epoch_started_at=""
+epoch_canaries="{}"
 epoch_active=false
 if [ -s "$epoch_file" ] &&
   jq -e '
-    .schema_version == 1 and
+    . as $root |
+    .schema_version == 2 and
     .status == "active" and
     (.epoch_id | type == "string" and length >= 8) and
     (.deployment_id | type == "string" and startswith("dpl_")) and
     (.deployment_url | type == "string" and startswith("https://")) and
     (.deployment_commit | type == "string" and test("^[0-9a-f]{40}$")) and
     (.started_at | type == "string") and
-    (.started_at | try fromdateiso8601 catch null | type == "number")
+    (.started_at | try fromdateiso8601 catch null | type == "number") and
+    (.dex_canaries | keys | sort) == ["pancakeswap", "uniswap"] and
+    all(.dex_canaries[];
+      (.asset_guid | type == "string") and
+      (.route_key | type == "string" and length > 0) and
+      (.quote_notional_usd | type == "string") and
+      (.selected_at == $root.started_at)
+    )
   ' "$epoch_file" >/dev/null 2>&1; then
   acceptance_epoch_id="$(jq -r '.epoch_id' "$epoch_file")"
   expected_deployment_id="$(jq -r '.deployment_id' "$epoch_file")"
   expected_deployment_url="$(jq -r '.deployment_url' "$epoch_file")"
   expected_deployment_commit="$(jq -r '.deployment_commit' "$epoch_file")"
   epoch_started_at="$(jq -r '.started_at' "$epoch_file")"
+  epoch_canaries="$(jq -c '.dex_canaries' "$epoch_file")"
   if [ "$scheduled_epoch" -ge "$(jq -r '.started_at | fromdateiso8601' "$epoch_file")" ]; then
     epoch_active=true
   fi
@@ -294,7 +304,155 @@ psql_command=(
 )
 coverage_json="[]"
 database_ok=false
-if PGPASSWORD="$MARKET_MASTER_DB_PASSWORD" coverage_json="$("${psql_command[@]}" <<'SQL' 2>"$temp_dir/postgres-errors.log"
+if [ "$epoch_active" = true ]; then
+  uniswap_asset_guid="$(jq -r '.uniswap.asset_guid' <<<"$epoch_canaries")"
+  uniswap_route_key="$(jq -r '.uniswap.route_key' <<<"$epoch_canaries")"
+  uniswap_quote_notional="$(jq -r '.uniswap.quote_notional_usd' <<<"$epoch_canaries")"
+  uniswap_selected_at="$(jq -r '.uniswap.selected_at' <<<"$epoch_canaries")"
+  pancake_asset_guid="$(jq -r '.pancakeswap.asset_guid' <<<"$epoch_canaries")"
+  pancake_route_key="$(jq -r '.pancakeswap.route_key' <<<"$epoch_canaries")"
+  pancake_quote_notional="$(jq -r '.pancakeswap.quote_notional_usd' <<<"$epoch_canaries")"
+  pancake_selected_at="$(jq -r '.pancakeswap.selected_at' <<<"$epoch_canaries")"
+  if PGPASSWORD="$MARKET_MASTER_DB_PASSWORD" coverage_json="$(
+    "${psql_command[@]}" \
+      -v uniswap_asset_guid="$uniswap_asset_guid" \
+      -v uniswap_route_key="$uniswap_route_key" \
+      -v uniswap_quote_notional="$uniswap_quote_notional" \
+      -v uniswap_selected_at="$uniswap_selected_at" \
+      -v pancake_asset_guid="$pancake_asset_guid" \
+      -v pancake_route_key="$pancake_route_key" \
+      -v pancake_quote_notional="$pancake_quote_notional" \
+      -v pancake_selected_at="$pancake_selected_at" \
+      <<'SQL' 2>"$temp_dir/postgres-errors.log"
+WITH requested_windows(hours) AS (
+    VALUES (24), (48), (72)
+),
+canaries(
+    provider,
+    asset_guid,
+    route_key,
+    quote_notional_usd,
+    selected_at
+) AS (
+    VALUES
+      (
+        'uniswap',
+        :'uniswap_asset_guid'::text,
+        :'uniswap_route_key'::text,
+        :'uniswap_quote_notional'::numeric,
+        :'uniswap_selected_at'::timestamptz
+      ),
+      (
+        'pancakeswap',
+        :'pancake_asset_guid'::text,
+        :'pancake_route_key'::text,
+        :'pancake_quote_notional'::numeric,
+        :'pancake_selected_at'::timestamptz
+      )
+),
+observations AS (
+    SELECT requested_windows.hours,
+           canaries.provider,
+           canaries.asset_guid,
+           canaries.route_key,
+           canaries.quote_notional_usd,
+           canaries.selected_at,
+           quote.observed_at,
+           LAG(quote.observed_at) OVER (
+               PARTITION BY requested_windows.hours, canaries.provider
+               ORDER BY quote.observed_at
+           ) AS previous_at
+    FROM requested_windows
+    CROSS JOIN canaries
+    JOIN dex_quote_observation quote
+      ON quote.provider = canaries.provider
+     AND quote.asset_guid = canaries.asset_guid
+     AND quote.route_key = canaries.route_key
+     AND quote.quote_notional_usd = canaries.quote_notional_usd
+     AND quote.observed_at >= GREATEST(
+           canaries.selected_at,
+           now() - make_interval(hours => requested_windows.hours)
+         )
+),
+summary AS (
+    SELECT requested_windows.hours,
+           canaries.provider,
+           canaries.asset_guid,
+           canaries.route_key,
+           canaries.quote_notional_usd,
+           canaries.selected_at,
+           MIN(observations.observed_at) AS first_at,
+           MAX(observations.observed_at) AS last_at,
+           COUNT(observations.observed_at) AS samples,
+           COALESCE(
+               MAX(EXTRACT(EPOCH FROM (
+                   observations.observed_at - observations.previous_at
+               ))),
+               0
+           ) AS max_gap_seconds
+    FROM requested_windows
+    CROSS JOIN canaries
+    LEFT JOIN observations
+      ON observations.hours = requested_windows.hours
+     AND observations.provider = canaries.provider
+    GROUP BY requested_windows.hours,
+             canaries.provider,
+             canaries.asset_guid,
+             canaries.route_key,
+             canaries.quote_notional_usd,
+             canaries.selected_at
+),
+evaluated AS (
+    SELECT summary.*,
+           selected_at <=
+             now() - make_interval(hours => hours) AS window_elapsed,
+           first_at <= GREATEST(
+             selected_at,
+             now() - make_interval(hours => hours)
+           ) + interval '30 minutes' AS start_ok,
+           last_at >= now() - interval '10 minutes' AS fresh_ok,
+           max_gap_seconds <= 600 AS gap_ok
+    FROM summary
+)
+SELECT jsonb_agg(
+    jsonb_build_object(
+        'hours', hours,
+        'provider', provider,
+        'mode', 'fixed_epoch_canary',
+        'status', CASE
+          WHEN NOT window_elapsed THEN 'observing'
+          WHEN start_ok AND fresh_ok AND gap_ok THEN 'passed'
+          ELSE 'failed'
+        END,
+        'window_elapsed', window_elapsed,
+        'canary', jsonb_build_object(
+          'asset_guid', asset_guid,
+          'route_key', route_key,
+          'quote_notional_usd', quote_notional_usd::text,
+          'selected_at', to_char(
+            selected_at AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+          )
+        ),
+        'samples', samples,
+        'max_gap_seconds', ROUND(max_gap_seconds::numeric, 2),
+        'first_observed_at', first_at,
+        'freshest_observation_at', last_at,
+        'start_ok', COALESCE(start_ok, false),
+        'fresh_ok', COALESCE(fresh_ok, false),
+        'gap_ok', COALESCE(gap_ok, false)
+    )
+    ORDER BY hours, provider
+)::text
+FROM evaluated;
+SQL
+  )"; then
+    database_ok=true
+  else
+    coverage_json="[]"
+  fi
+else
+  if PGPASSWORD="$MARKET_MASTER_DB_PASSWORD" coverage_json="$("${psql_command[@]}" <<'SQL' 2>"$temp_dir/postgres-errors.log"
 WITH requested_windows(hours) AS (
     VALUES (24), (48), (72)
 ),
@@ -373,6 +531,7 @@ SELECT COALESCE(
         jsonb_build_object(
             'hours', hours,
             'provider', provider,
+            'mode', 'diagnostic_dynamic',
             'status', CASE WHEN qualifying_groups > 0 THEN 'passed' ELSE 'pending' END,
             'observed_groups', observed_groups,
             'full_window_groups', full_window_groups,
@@ -390,9 +549,10 @@ SELECT COALESCE(
 FROM summary;
 SQL
 )"; then
-  database_ok=true
-else
-  coverage_json="[]"
+    database_ok=true
+  else
+    coverage_json="[]"
+  fi
 fi
 
 sample_ok=false
@@ -414,11 +574,17 @@ if [ "$site_http" = 200 ] &&
 fi
 
 historical_complete=false
-if jq -e '
+if [ "$epoch_active" = true ] && jq -e '
   length == 6 and
   all(.status == "passed")
 ' <<<"$coverage_json" >/dev/null 2>&1; then
   historical_complete=true
+fi
+historical_failed=false
+if [ "$epoch_active" = true ] && jq -e '
+  any(.status == "failed")
+' <<<"$coverage_json" >/dev/null 2>&1; then
+  historical_failed=true
 fi
 
 finished_epoch="$(date -u '+%s')"
@@ -444,6 +610,7 @@ jq -n \
   --arg expected_deployment_url "$expected_deployment_url" \
   --arg expected_deployment_commit "$expected_deployment_commit" \
   --arg epoch_started_at "$epoch_started_at" \
+  --argjson epoch_canaries "$epoch_canaries" \
   --arg epoch_active "$epoch_active" \
   --arg release_provenance_match "$release_provenance_match" \
   --arg trading_provenance "$trading_provenance" \
@@ -479,6 +646,7 @@ jq -n \
   --arg sample_ok "$sample_ok" \
   --arg database_ok "$database_ok" \
   --arg historical_complete "$historical_complete" \
+  --arg historical_failed "$historical_failed" \
   --arg disk_free_bytes "$disk_free_bytes" \
   --arg disk_state "$disk_state" \
   --arg retention_last_success_at "$retention_last_success_at" \
@@ -517,6 +685,7 @@ jq -n \
     observed_at: $observed_at,
     status: (
       if $sample_ok != "true" then "failed"
+      elif $historical_failed == "true" then "failed"
       elif $historical_complete == "true" then "passed"
       else "observing"
       end
@@ -525,7 +694,10 @@ jq -n \
       if $sample_ok == "true" then "passed" else "failed" end
     ),
     historical_acceptance_status: (
-      if $historical_complete == "true" then "passed" else "pending" end
+      if $historical_failed == "true" then "failed"
+      elif $historical_complete == "true" then "passed"
+      else "pending"
+      end
     ),
     production_origin: $production_origin,
     funnel_origin: $funnel_origin,
@@ -542,6 +714,9 @@ jq -n \
       ),
       expected_deployment_commit: (
         if $expected_deployment_commit == "" then null else $expected_deployment_commit end
+      ),
+      dex_canaries: (
+        if $epoch_active == "true" then $epoch_canaries else null end
       )
     },
     release_provenance: {

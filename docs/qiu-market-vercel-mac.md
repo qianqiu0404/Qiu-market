@@ -216,8 +216,15 @@ bash ops/macos/manage-acceptance-epoch.sh start \
 ```
 
 脚本先请求 Production BFF，只有 provenance 响应头与三个参数完全相符才写入
-私有 epoch 文件。窗口从下一个 UTC 整分钟开始；已有 active epoch 不会被覆盖，
-需要放弃时必须显式 `stop`，旧文件会在下一次 start 前归档。
+私有 epoch 文件。同时它会从 PostgreSQL 为 Uniswap 与 PancakeSwap 各选择一条
+过去 6 小时最大间隔不超过 600 秒、最近 10 分钟仍新鲜的固定 canary；缺少任意一条
+都会拒绝开始。窗口从下一个 UTC 整分钟开始；已有 active epoch 不会被覆盖，需要
+放弃时必须显式 `stop`，旧文件会在下一次 start 前归档。
+
+canary 身份由 `asset_guid + route_key + quote_notional_usd + selected_at` 构成，
+写入 epoch 后不可静默改变。24/48/72 小时只查询这两个固定身份；窗口未满为
+`observing`，窗口已满但起点、最新观察或最大间隔不合格则为 `failed`。更换 route
+或名义金额必须停止并新建 epoch，所有正式时间窗从零开始。
 
 证据保存在私有运行目录，不进入仓库：
 
@@ -233,8 +240,9 @@ URL 和 release commit 全部匹配且 provenance 在线校验通过的样本。
 其它 epoch 和其它 release 永远不计入；漏掉的墙钟分钟按失败处理，同一分钟的重复
 样本采用“任一失败即失败”。
 
-只有完整 10,080 个预定分钟、监控覆盖率和可用率均不低于 99.5%、REST 5xx 低于
-0.5%、REST p95 低于 5 秒、单次中断不超过 5 分钟且磁盘始终不少于 25GiB 时，才输出
+只有两个固定 DEX canary 的 24/48/72 小时窗口全部通过，并且完整 10,080 个预定
+分钟、监控覆盖率和可用率均不低于 99.5%、REST 5xx 低于 0.5%、REST p95 低于
+5 秒、单次中断不超过 5 分钟且磁盘始终不少于 25GiB 时，才输出
 `production-recommendation`。顶层 `status = observing`
 表示当前检查通过但长窗口仍在积累；只有六个 provider/window 组合全部通过才成为
 `passed`，当前检查失败则为 `failed`。停止观察器不会删除历史：

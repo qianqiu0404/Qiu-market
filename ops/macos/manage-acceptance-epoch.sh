@@ -7,9 +7,11 @@ if [ "$#" -gt 0 ]; then
 fi
 
 support_dir="$HOME/Library/Application Support/Qiu Market"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 observation_dir="${QIU_MARKET_OBSERVATION_DIR:-$support_dir/observations}"
 epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoch.json}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
+database_env="${QIU_MARKET_DATABASE_ENV_FILE:-$repo_root/.env}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -24,8 +26,9 @@ Usage:
   manage-acceptance-epoch.sh stop
 
 Start is allowed only when the Production BFF reports the exact immutable
-deployment URL and release commit. The acceptance window begins at the next
-UTC wall-clock minute.
+deployment URL and release commit, and PostgreSQL has one stable six-hour
+Uniswap and PancakeSwap canary. The acceptance window begins at the next UTC
+wall-clock minute.
 USAGE
   exit 2
 }
@@ -82,6 +85,7 @@ case "$action" in
       deployment_id,
       deployment_url,
       deployment_commit,
+      dex_canaries,
       created_at,
       started_at,
       stopped_at
@@ -90,6 +94,7 @@ case "$action" in
   start)
     require_command curl
     require_command jq
+    require_command psql
     deployment_id=""
     deployment_url=""
     deployment_commit=""
@@ -151,6 +156,23 @@ case "$action" in
       echo "An acceptance epoch is already active; stop it explicitly first." >&2
       exit 1
     fi
+    if [ ! -f "$database_env" ]; then
+      echo "Qiu Market private database configuration is unavailable." >&2
+      exit 1
+    fi
+    # shellcheck disable=SC1090
+    source "$database_env"
+    for database_key in \
+      MARKET_MASTER_DB_HOST \
+      MARKET_MASTER_DB_PORT \
+      MARKET_MASTER_DB_USER \
+      MARKET_MASTER_DB_PASSWORD \
+      MARKET_MASTER_DB_NAME; do
+      if [ -z "${!database_key:-}" ]; then
+        echo "Missing database setting: $database_key" >&2
+        exit 1
+      fi
+    done
 
     mkdir -p "$observation_dir"
     chmod 700 "$observation_dir"
@@ -199,6 +221,103 @@ case "$action" in
       exit 1
     fi
 
+    psql_command=(
+      psql -X -v ON_ERROR_STOP=1
+      -h "$MARKET_MASTER_DB_HOST"
+      -p "$MARKET_MASTER_DB_PORT"
+      -U "$MARKET_MASTER_DB_USER"
+      -d "$MARKET_MASTER_DB_NAME"
+      -At
+    )
+    if ! dex_canaries="$(
+      PGPASSWORD="$MARKET_MASTER_DB_PASSWORD" "${psql_command[@]}" <<'SQL'
+WITH observations AS (
+    SELECT quote.provider,
+           quote.asset_guid,
+           quote.route_key,
+           quote.quote_notional_usd,
+           quote.observed_at,
+           LAG(quote.observed_at) OVER (
+               PARTITION BY quote.provider,
+                            quote.asset_guid,
+                            quote.route_key,
+                            quote.quote_notional_usd
+               ORDER BY quote.observed_at
+           ) AS previous_at
+    FROM dex_quote_observation quote
+    WHERE quote.observed_at >= now() - interval '6 hours'
+      AND quote.provider IN ('uniswap', 'pancakeswap')
+),
+route_groups AS (
+    SELECT provider,
+           asset_guid,
+           route_key,
+           quote_notional_usd,
+           MIN(observed_at) AS first_at,
+           MAX(observed_at) AS last_at,
+           COUNT(*) AS samples,
+           COALESCE(
+               MAX(EXTRACT(EPOCH FROM (observed_at - previous_at))),
+               0
+           ) AS max_gap_seconds
+    FROM observations
+    GROUP BY provider, asset_guid, route_key, quote_notional_usd
+),
+ranked AS (
+    SELECT route_groups.*,
+           ROW_NUMBER() OVER (
+               PARTITION BY provider
+               ORDER BY max_gap_seconds ASC,
+                        samples DESC,
+                        quote_notional_usd DESC,
+                        asset_guid,
+                        route_key
+           ) AS candidate_rank
+    FROM route_groups
+    WHERE first_at <= now() - interval '5 hours 50 minutes'
+      AND last_at >= now() - interval '10 minutes'
+      AND max_gap_seconds <= 600
+)
+SELECT COALESCE(
+    jsonb_object_agg(
+        provider,
+        jsonb_build_object(
+            'asset_guid', asset_guid,
+            'route_key', route_key,
+            'quote_notional_usd', quote_notional_usd::text,
+            'selection_window_hours', 6,
+            'selected_observation_count', samples,
+            'selected_max_gap_seconds',
+                ROUND(max_gap_seconds::numeric, 2),
+            'first_observed_at', first_at,
+            'last_observed_at', last_at
+        )
+    ),
+    '{}'::jsonb
+)::text
+FROM ranked
+WHERE candidate_rank = 1;
+SQL
+    )"; then
+      echo "Could not select fixed DEX acceptance canaries." >&2
+      exit 1
+    fi
+    if ! jq -e '
+      (keys | sort) == ["pancakeswap", "uniswap"] and
+      all(.[];
+        (.asset_guid | type == "string" and
+          test("^[0-9a-fA-F-]{36}$")) and
+        (.route_key | type == "string" and length > 0 and length <= 256) and
+        (.quote_notional_usd | type == "string" and
+          test("^[0-9]+([.][0-9]+)?$")) and
+        (.selected_observation_count | type == "number" and . > 0) and
+        (.selected_max_gap_seconds | type == "number" and . <= 600)
+      )
+    ' <<<"$dex_canaries" >/dev/null 2>&1; then
+      echo "Both DEX providers need one stable six-hour canary before the epoch can start." >&2
+      exit 1
+    fi
+
     mkdir -p "$observation_dir/archive"
     chmod 700 "$observation_dir/archive"
     if [ -s "$epoch_file" ]; then
@@ -236,14 +355,19 @@ case "$action" in
         --arg deployment_commit "$deployment_commit" \
         --arg created_at "$created_at" \
         --arg started_at "$started_at" \
+        --argjson dex_canaries "$dex_canaries" \
         '{
-          schema_version: 1,
+          schema_version: 2,
           epoch_id: $epoch_id,
           status: "active",
           production_origin: $production_origin,
           deployment_id: $deployment_id,
           deployment_url: $deployment_url,
           deployment_commit: $deployment_commit,
+          dex_canaries: (
+            $dex_canaries |
+            with_entries(.value += {selected_at: $started_at})
+          ),
           created_at: $created_at,
           started_at: $started_at,
           stopped_at: null
