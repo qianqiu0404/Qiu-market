@@ -96,6 +96,12 @@ func TestMarketRunnerRecoversUnknownCommitAndRetryIsIdempotent(t *testing.T) {
 	if status.State != runtime.StateReady || status.Sequence != 1 || status.RecoveryCount != 1 {
 		t.Fatalf("runner status after recovery = %+v", status)
 	}
+	if status.LastError != "" ||
+		status.LastIncident == "" ||
+		status.LastIncidentAt == "" ||
+		status.LastRecoveredAt == "" {
+		t.Fatalf("runner incident status after successful recovery = %+v", status)
+	}
 
 	result, err := runner.Fund(context.Background(), request)
 	if err != nil {

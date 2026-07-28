@@ -19,6 +19,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/marketmaker"
 	"github.com/the-web3/s78-market-services/trading/netutil"
+	"github.com/the-web3/s78-market-services/trading/outbox"
 	"github.com/the-web3/s78-market-services/trading/reference"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
@@ -46,13 +47,16 @@ type Backend struct {
 	config   Config
 	shutdown context.CancelCauseFunc
 
-	pool        *pgxpool.Pool
-	runner      *tradingruntime.MarketRunner
-	grpcServer  *grpc.Server
-	listener    net.Listener
-	maker       *marketmaker.Maker
-	makerCancel context.CancelFunc
-	makerDone   chan struct{}
+	pool            *pgxpool.Pool
+	runner          *tradingruntime.MarketRunner
+	grpcServer      *grpc.Server
+	listener        net.Listener
+	maker           *marketmaker.Maker
+	makerCancel     context.CancelFunc
+	makerDone       chan struct{}
+	publisher       *outbox.Publisher
+	publisherCancel context.CancelFunc
+	publisherDone   chan struct{}
 
 	started  atomic.Bool
 	stopped  atomic.Bool
@@ -100,6 +104,10 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	publisher, err := outbox.New(persistence, outbox.DefaultConfig())
+	if err != nil {
+		return nil, err
+	}
 	cleanupRunner := true
 	defer func() {
 		if cleanupRunner {
@@ -113,6 +121,7 @@ func New(
 		runner,
 		tradingserver.NewPostgresEventSource(persistence),
 		tradingserver.DefaultConfig(),
+		publisher,
 	)
 	if err != nil {
 		return nil, err
@@ -170,6 +179,7 @@ func New(
 		grpcServer: grpcServer,
 		listener:   listener,
 		maker:      maker,
+		publisher:  publisher,
 	}, nil
 }
 
@@ -213,6 +223,13 @@ func (b *Backend) Start(ctx context.Context) error {
 	if !b.started.CompareAndSwap(false, true) {
 		return fmt.Errorf("trading backend already started")
 	}
+	publisherContext, publisherCancel := context.WithCancel(ctx)
+	b.publisherCancel = publisherCancel
+	b.publisherDone = make(chan struct{})
+	go func() {
+		defer close(b.publisherDone)
+		b.publisher.Run(publisherContext)
+	}()
 	go func() {
 		err := b.grpcServer.Serve(b.listener)
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) && !b.stopped.Load() {
@@ -273,6 +290,19 @@ func (b *Backend) Stop(ctx context.Context) error {
 
 		if err := b.runner.Close(ctx); err != nil {
 			b.stopErr = errors.Join(b.stopErr, fmt.Errorf("close trading runner: %w", err))
+		}
+		if b.publisherCancel != nil {
+			b.publisherCancel()
+		}
+		if b.publisherDone != nil {
+			select {
+			case <-b.publisherDone:
+			case <-ctx.Done():
+				b.stopErr = errors.Join(
+					b.stopErr,
+					fmt.Errorf("stop outbox publisher: %w", ctx.Err()),
+				)
+			}
 		}
 		_ = b.listener.Close()
 		b.pool.Close()

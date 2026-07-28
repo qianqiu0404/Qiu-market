@@ -6,15 +6,15 @@ import (
 	postgresstore "github.com/the-web3/s78-market-services/trading/store/postgres"
 )
 
-type PostgresOutbox interface {
-	OutboxAfter(context.Context, postgresstore.Cursor, int) ([]postgresstore.OutboxEvent, error)
+type PostgresEventFeed interface {
+	FeedAfter(context.Context, postgresstore.Cursor, int) ([]postgresstore.OutboxEvent, error)
 }
 
 type PostgresEventSource struct {
-	store PostgresOutbox
+	store PostgresEventFeed
 }
 
-func NewPostgresEventSource(store PostgresOutbox) *PostgresEventSource {
+func NewPostgresEventSource(store PostgresEventFeed) *PostgresEventSource {
 	return &PostgresEventSource{store: store}
 }
 
@@ -23,7 +23,7 @@ func (s *PostgresEventSource) EventsAfter(
 	cursor Cursor,
 	limit int,
 ) ([]StoredEvent, error) {
-	events, err := s.store.OutboxAfter(ctx, postgresstore.Cursor{
+	events, err := s.store.FeedAfter(ctx, postgresstore.Cursor{
 		Sequence:   cursor.Sequence,
 		EventIndex: cursor.EventIndex,
 	}, limit)

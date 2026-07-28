@@ -19,6 +19,8 @@ var requiredTables = []string{
 	"trading_event_batch",
 	"trading_snapshot",
 	"trading_outbox",
+	"trading_event_feed",
+	"trading_outbox_checkpoint",
 	"trading_order",
 	"trading_trade",
 	"trading_balance",

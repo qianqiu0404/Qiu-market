@@ -30,6 +30,12 @@ import {
   type TradingStatus,
 } from '../api/trading'
 import PageHeader from '../components/PageHeader.vue'
+import {
+  PENDING_TRADING_WRITE_STORAGE_KEY,
+  parsePendingTradingWrite,
+  pendingTradingWriteResolvedByOrders,
+  type PendingTradingWrite,
+} from '../trading/pending-write'
 
 echarts.use([
   CandlestickChart,
@@ -68,7 +74,7 @@ const cursor = ref<EventEnvelope>()
 const lastStatusAt = ref(0)
 const lastPrivateAt = ref(0)
 const publicPanelErrors = reactive({ orderbook: '', trades: '', status: '' })
-const unknownClientOrderID = ref('')
+const pendingWrite = ref<PendingTradingWrite | null>(null)
 
 const referencePrice = ref<number | null>(null)
 const referenceFreshness = ref('unavailable')
@@ -132,8 +138,22 @@ const transportState = computed(() => {
   if (lastStatusAt.value > 0) return 'degraded'
   return 'offline'
 })
+const unknownClientOrderID = computed(() =>
+  pendingWrite.value?.operation === 'submit'
+    ? pendingWrite.value.request_id
+    : '',
+)
+const pendingWriteLabel = computed(() => {
+  if (!pendingWrite.value) return ''
+  const operation = {
+    submit: '下单',
+    cancel: '撤单',
+    fund: '虚拟入金',
+  }[pendingWrite.value.operation]
+  return `${operation} ${pendingWrite.value.request_id}`
+})
 const writesEnabled = computed(() => {
-  if (!loggedIn.value || busy.value || unknownClientOrderID.value) return false
+  if (!loggedIn.value || busy.value || pendingWrite.value) return false
   if (statusAgeSeconds.value < 0 || statusAgeSeconds.value > 10 || status.value.state !== 'ready') {
     return false
   }
@@ -145,6 +165,38 @@ const writesEnabled = computed(() => {
 
 function randomID(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
+}
+
+function storePendingWrite(next: PendingTradingWrite | null): void {
+  pendingWrite.value = next
+  try {
+    if (next) {
+      window.sessionStorage.setItem(
+        PENDING_TRADING_WRITE_STORAGE_KEY,
+        JSON.stringify(next),
+      )
+    } else {
+      window.sessionStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
+    }
+  } catch {
+    // The in-memory guard still prevents a blind retry when storage is denied.
+  }
+}
+
+function restorePendingWrite(): void {
+  try {
+    const restored = parsePendingTradingWrite(
+      window.sessionStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY),
+    )
+    if (!restored) {
+      window.sessionStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
+      return
+    }
+    restored.state = 'unknown'
+    pendingWrite.value = restored
+  } catch {
+    pendingWrite.value = null
+  }
 }
 
 function shortID(value: string): string {
@@ -240,12 +292,14 @@ async function loadPrivate(): Promise<void> {
   if (results[2].status === 'fulfilled') privateTrades.value = results[2].value.trades ?? []
   if (results.every((result) => result.status === 'fulfilled')) {
     lastPrivateAt.value = Date.now()
+    const activeWrite = pendingWrite.value
     if (
-      unknownClientOrderID.value &&
-      orders.value.some((order) => order.client_order_id === unknownClientOrderID.value)
+      activeWrite &&
+      activeWrite.account_id === principal.value.account_id &&
+      pendingTradingWriteResolvedByOrders(activeWrite, orders.value)
     ) {
-      notice.value = `请求 ${unknownClientOrderID.value} 已从权威订单视图确认`
-      unknownClientOrderID.value = ''
+      notice.value = `请求 ${activeWrite.request_id} 已从权威订单视图确认`
+      storePendingWrite(null)
       form.clientOrderID = crypto.randomUUID()
     }
   }
@@ -305,23 +359,31 @@ async function submitOrder(): Promise<void> {
   busy.value = true
   notice.value = ''
   const submittedID = form.clientOrderID
+  const payload: Record<string, string | boolean> = {
+    client_order_id: form.clientOrderID,
+    side: form.side,
+    type: form.type,
+    time_in_force: form.type === 'market' ? 'ioc' : form.timeInForce,
+    post_only: form.type === 'limit' && form.postOnly,
+    price: form.type === 'limit' ? form.price : '',
+    quantity: marketBuy.value ? '' : form.quantity,
+    quote_budget: marketBuy.value ? form.quoteBudget : '',
+  }
   try {
-    await tradingAPI.submit({
-      client_order_id: form.clientOrderID,
-      side: form.side,
-      type: form.type,
-      time_in_force: form.type === 'market' ? 'ioc' : form.timeInForce,
-      post_only: form.type === 'limit' && form.postOnly,
-      price: form.type === 'limit' ? form.price : '',
-      quantity: marketBuy.value ? '' : form.quantity,
-      quote_budget: marketBuy.value ? form.quoteBudget : '',
-    })
+    await tradingAPI.submit(payload)
     notice.value = `请求 ${submittedID} 已处理`
     form.clientOrderID = crypto.randomUUID()
     await refreshAll()
   } catch (error) {
     if (error instanceof TradingRequestError && error.uncertain) {
-      unknownClientOrderID.value = submittedID
+      storePendingWrite({
+        operation: 'submit',
+        account_id: principal.value?.account_id ?? '',
+        request_id: submittedID,
+        state: 'unknown',
+        created_at: Date.now(),
+        payload,
+      })
       notice.value = `请求 ${submittedID} 为 submitted/unknown；不会自动重下，正在查询权威订单事实`
       window.setTimeout(() => void loadPrivate(), 1500)
     } else {
@@ -333,29 +395,106 @@ async function submitOrder(): Promise<void> {
 }
 
 async function cancelOrder(order: Order): Promise<void> {
+  busy.value = true
+  const requestID = randomID('cancel')
   try {
-    await tradingAPI.cancel(order.id, randomID('cancel'))
+    await tradingAPI.cancel(order.id, requestID)
     await refreshAll()
   } catch (error) {
-    showError(error)
+    if (error instanceof TradingRequestError && error.uncertain) {
+      storePendingWrite({
+        operation: 'cancel',
+        account_id: principal.value?.account_id ?? '',
+        request_id: requestID,
+        state: 'unknown',
+        created_at: Date.now(),
+        order_id: order.id,
+        payload: {},
+      })
+      notice.value = `撤单 ${requestID} 结果未知；不会生成新 ID，正在核对订单状态`
+      window.setTimeout(() => void loadPrivate(), 1500)
+    } else {
+      showError(error)
+    }
+  } finally {
+    busy.value = false
   }
 }
 
 async function fundVirtual(): Promise<void> {
   busy.value = true
+  const requestID = randomID('fund')
+  const payload = {
+    asset: funding.asset,
+    amount: funding.amount,
+    account_id: funding.accountID,
+  }
   try {
     await tradingAPI.fund(
-      randomID('fund'),
-      funding.asset,
-      funding.amount,
-      funding.accountID,
+      requestID,
+      payload.asset,
+      payload.amount,
+      payload.account_id,
     )
     notice.value = `已发放 ${funding.amount} ${funding.asset} 虚拟资金`
     await loadPrivate()
   } catch (error) {
-    showError(error)
+    if (error instanceof TradingRequestError && error.uncertain) {
+      storePendingWrite({
+        operation: 'fund',
+        account_id: principal.value?.account_id ?? '',
+        request_id: requestID,
+        state: 'unknown',
+        created_at: Date.now(),
+        payload,
+      })
+      notice.value = `虚拟入金 ${requestID} 结果未知；只允许使用同一 ID 核对`
+    } else {
+      showError(error)
+    }
   } finally {
     busy.value = false
+  }
+}
+
+async function reconcilePendingWrite(): Promise<void> {
+  const current = pendingWrite.value
+  if (!current || current.state === 'reconciling') return
+  if (!principal.value || current.account_id !== principal.value.account_id) {
+    showError(
+      `请求 ${current.request_id} 属于账户 ${current.account_id}；请使用原账户登录后核对`,
+    )
+    return
+  }
+  storePendingWrite({ ...current, state: 'reconciling' })
+  try {
+    if (current.operation === 'submit') {
+      await tradingAPI.submit(current.payload)
+    } else if (current.operation === 'cancel') {
+      const orderID = current.order_id ?? ''
+      const authoritative = await tradingAPI.order(orderID)
+      if (authoritative.status === 'open' || authoritative.status === 'partially_filled') {
+        await tradingAPI.cancel(orderID, current.request_id)
+      }
+    } else {
+      await tradingAPI.fund(
+        current.request_id,
+        String(current.payload.asset ?? ''),
+        String(current.payload.amount ?? ''),
+        String(current.payload.account_id ?? ''),
+      )
+    }
+    storePendingWrite(null)
+    form.clientOrderID = crypto.randomUUID()
+    notice.value = `请求 ${current.request_id} 已使用原 ID 完成权威核对`
+    await refreshAll()
+  } catch (error) {
+    storePendingWrite({ ...current, state: 'unknown' })
+    if (error instanceof TradingRequestError && error.uncertain) {
+      notice.value = `请求 ${current.request_id} 仍为 unknown；未生成新 ID`
+    } else {
+      showError(error)
+    }
   }
 }
 
@@ -547,6 +686,7 @@ function resizeChart(): void {
 watch(klineInterval, () => void loadKline())
 
 onMounted(async () => {
+  restorePendingWrite()
   await Promise.all([loadPublic(), refreshMarketData(), loadAuthCapabilities()])
   if (
     authCapabilities.value.github_oauth_enabled ||
@@ -604,6 +744,18 @@ onBeforeUnmount(() => {
 
     <div v-if="errorMessage" class="trade-toast trade-toast--error">{{ errorMessage }}</div>
     <div v-if="notice" class="trade-toast trade-toast--success">{{ notice }}</div>
+    <div v-if="pendingWrite" class="trade-toast trade-toast--warning">
+      <span>
+        {{ pendingWriteLabel }} · {{ pendingWrite.state }}。写操作已锁定，不会生成新的 request ID。
+      </span>
+      <button
+        class="btn"
+        :disabled="pendingWrite.state === 'reconciling'"
+        @click="reconcilePendingWrite"
+      >
+        使用原 ID 核对
+      </button>
+    </div>
 
     <section class="trade-metrics">
       <article class="trade-metric card">
@@ -888,6 +1040,17 @@ onBeforeUnmount(() => {
 
 .trade-toast--error { color: var(--down); background: #fff0f2; }
 .trade-toast--success { color: var(--up); background: #e9f7f1; }
+.trade-toast--warning {
+  position: static;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  transform: none;
+  width: auto;
+  color: #805700;
+  background: #fff8df;
+}
 
 .trade-metrics {
   display: grid;

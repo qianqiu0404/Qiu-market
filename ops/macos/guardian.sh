@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-support_dir="/Users/xiuqiu/Library/Application Support/Qiu Market"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+support_dir="${QIU_MARKET_SUPPORT_DIR:-/Users/xiuqiu/Library/Application Support/Qiu Market}"
 state_dir="$support_dir/guardian"
 log_dir="$support_dir/logs"
 incident_log="$state_dir/incidents.log"
-production_env="$support_dir/production.env"
+production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
 install -d -m 700 "$state_dir" "$log_dir"
 touch "$incident_log"
 chmod 600 "$incident_log"
+
+if [ -f "$repo_root/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$repo_root/.env"
+  set +a
+fi
+if [ -f "$production_env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$production_env"
+  set +a
+fi
 
 if launchctl print system/com.qiumarket.api >/dev/null 2>&1; then
   launch_domain="system"
@@ -18,13 +32,49 @@ else
   launch_plist_dir="/Users/xiuqiu/Library/LaunchAgents"
 fi
 
+rotate_log() {
+  local log_file="$1"
+  local maximum_bytes="$2"
+  local keep_bytes="$3"
+  [ -f "$log_file" ] || return
+  local size
+  size="$(stat -f '%z' "$log_file")"
+  if [ "$size" -gt "$maximum_bytes" ]; then
+    cp "$log_file" "$log_file.1"
+    tail -c "$keep_bytes" "$log_file.1" > "$log_file"
+    chmod 600 "$log_file" "$log_file.1"
+  fi
+}
+
+rotate_log "$incident_log" $((5 * 1024 * 1024)) $((1024 * 1024))
+
 record() {
   printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$incident_log"
 }
 
+record_throttled() {
+  local key="$1"
+  local cooldown="$2"
+  shift 2
+  local marker="$state_dir/$key-recorded-at"
+  local now
+  local previous
+  now="$(date '+%s')"
+  previous="$(cat "$marker" 2>/dev/null || echo 0)"
+  if [ "$((now - previous))" -ge "$cooldown" ]; then
+    printf '%s\n' "$now" > "$marker"
+    record "$*"
+  fi
+}
+
+api_healthy=false
+if curl --fail --silent --max-time 3 http://127.0.0.1:9092/healthz >/dev/null; then
+  api_healthy=true
+fi
+
 counter_file="$state_dir/api-failures"
 api_failures="$(cat "$counter_file" 2>/dev/null || echo 0)"
-if curl --fail --silent --max-time 3 http://127.0.0.1:9092/healthz >/dev/null; then
+if [ "$api_healthy" = true ]; then
   echo 0 > "$counter_file"
 else
   api_failures=$((api_failures + 1))
@@ -35,33 +85,123 @@ else
   fi
 fi
 
-trading_restart="$state_dir/trading-restart-at"
+signed_trading_status() {
+  local request_path="/api/v1/trading/markets/BTC-USDT/status"
+  local secret="${MARKET_PUBLIC_PROXY_HMAC_SECRET:-}"
+  if [ -z "$secret" ]; then
+    curl --fail --silent --max-time 5 "http://127.0.0.1:9092$request_path"
+    return
+  fi
+  local timestamp
+  local digest
+  local canonical
+  local signature
+  timestamp="$(date '+%s')"
+  digest="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  canonical="$(printf '%s\nGET\n%s\n%s' "$timestamp" "$request_path" "$digest")"
+  signature="$(
+    printf '%s' "$canonical" |
+      /usr/bin/openssl dgst -sha256 -hmac "$secret" -binary |
+      /usr/bin/xxd -p -c 256
+  )"
+  curl --fail --silent --max-time 5 \
+    --header "X-Qiu-Market-Timestamp: $timestamp" \
+    --header "X-Qiu-Market-Content-SHA256: $digest" \
+    --header "X-Qiu-Market-Signature: $signature" \
+    "http://127.0.0.1:9092$request_path"
+}
+
+trading_healthy=false
+trading_health_known=true
+trading_state="unavailable"
 if nc -z 127.0.0.1 9094 >/dev/null 2>&1; then
-  find "$trading_restart" -maxdepth 0 -type f -delete 2>/dev/null || true
-elif [ ! -f "$trading_restart" ]; then
-  date '+%s' > "$trading_restart"
-  record "trading gRPC unavailable; performing the single automatic restart"
-  launchctl kickstart -k "$launch_domain/com.qiumarket.trading" || true
-else
-  restarted_at="$(cat "$trading_restart")"
-  if [ "$(($(date '+%s') - restarted_at))" -ge 120 ]; then
-    record "trading remains unavailable after its one restart; leaving it offline for inspection"
+  if [ "$api_healthy" != true ]; then
+    # Do not restart a healthy TCP listener merely because the API adapter is
+    # unavailable. The API guardian owns that incident.
+    trading_health_known=false
+    trading_state="status-unobservable"
+  else
+    status_payload="$(signed_trading_status 2>/dev/null || true)"
+    trading_state="$(jq -r '.state // "unavailable"' <<<"$status_payload" 2>/dev/null || echo unavailable)"
+    if [ -z "$trading_state" ]; then
+      trading_state="unavailable"
+    fi
+    trading_last_error="$(jq -r '.last_error // ""' <<<"$status_payload" 2>/dev/null || true)"
+    trading_outbox_state="$(jq -r '.outbox_state // ""' <<<"$status_payload" 2>/dev/null || true)"
+    trading_outbox_error="$(jq -r '.outbox_last_error // ""' <<<"$status_payload" 2>/dev/null || true)"
+    if [ "$trading_state" = ready ] &&
+      [ -z "$trading_last_error" ] &&
+      { [ -z "$trading_outbox_state" ] || [ "$trading_outbox_state" = ready ]; } &&
+      [ -z "$trading_outbox_error" ]; then
+      trading_healthy=true
+    fi
   fi
 fi
 
-if ! pg_isready -q -d s78_market; then
-  record "PostgreSQL unavailable; guardian will not blindly restart the shared database"
+trading_restart="$state_dir/trading-restart-at"
+trading_stable_since="$state_dir/trading-stable-since"
+trading_failures_file="$state_dir/trading-failures"
+trading_failures="$(cat "$trading_failures_file" 2>/dev/null || echo 0)"
+if [ "$trading_health_known" != true ]; then
+  record_throttled \
+    "trading-status-unobservable" \
+    900 \
+    "trading TCP listener is present but API status is unavailable; deferring restart to avoid a false positive"
+elif [ "$trading_healthy" = true ]; then
+  echo 0 > "$trading_failures_file"
+  if [ ! -f "$trading_stable_since" ]; then
+    date '+%s' > "$trading_stable_since"
+  fi
+  stable_since="$(cat "$trading_stable_since")"
+  if [ -f "$trading_restart" ] &&
+    [ "$(($(date '+%s') - stable_since))" -ge 900 ]; then
+    find "$trading_restart" -maxdepth 0 -type f -delete
+    record "trading remained ready for 15 minutes; automatic restart budget reset"
+  fi
+else
+  find "$trading_stable_since" -maxdepth 0 -type f -delete 2>/dev/null || true
+  trading_failures=$((trading_failures + 1))
+  echo "$trading_failures" > "$trading_failures_file"
+  if [ "$trading_failures" -ge 3 ] && [ ! -f "$trading_restart" ]; then
+    date '+%s' > "$trading_restart"
+    record "trading state=$trading_state failed three checks; performing its single automatic restart"
+    launchctl kickstart -k "$launch_domain/com.qiumarket.trading" || true
+  elif [ -f "$trading_restart" ]; then
+    restarted_at="$(cat "$trading_restart")"
+    if [ "$(($(date '+%s') - restarted_at))" -ge 120 ]; then
+      record_throttled \
+        "trading-still-unavailable" \
+        900 \
+        "trading state=$trading_state remains unavailable after its restart; leaving it offline for inspection"
+    fi
+  fi
+fi
+
+if ! pg_isready -q \
+  -h "${MARKET_MASTER_DB_HOST:-127.0.0.1}" \
+  -p "${MARKET_MASTER_DB_PORT:-5432}" \
+  -d "${MARKET_MASTER_DB_NAME:-s78_market}"; then
+  record_throttled \
+    "postgres-unavailable" \
+    900 \
+    "PostgreSQL unavailable; guardian will not blindly restart the shared database"
 fi
 
 funnel_origin="${MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
 funnel_cooldown="$state_dir/funnel-restart-at"
-if curl --fail --silent --max-time 5 "$funnel_origin/healthz" >/dev/null; then
-  :
-elif curl --fail --silent --max-time 3 http://127.0.0.1:9092/healthz >/dev/null; then
+funnel_failures_file="$state_dir/funnel-failures"
+funnel_failures="$(cat "$funnel_failures_file" 2>/dev/null || echo 0)"
+if curl --fail --silent --max-time 8 "$funnel_origin/healthz" >/dev/null; then
+  echo 0 > "$funnel_failures_file"
+elif [ "$api_healthy" = true ]; then
+  funnel_failures=$((funnel_failures + 1))
+  echo "$funnel_failures" > "$funnel_failures_file"
   last_restart="$(cat "$funnel_cooldown" 2>/dev/null || echo 0)"
-  if [ "$(($(date '+%s') - last_restart))" -ge 900 ]; then
+  if [ "$funnel_failures" -ge 3 ] &&
+    [ "$(($(date '+%s') - last_restart))" -ge 900 ]; then
     date '+%s' > "$funnel_cooldown"
-    record "Funnel unavailable while local API is healthy; restarting only Qiu Market tailscaled"
+    echo 0 > "$funnel_failures_file"
+    record "Funnel failed three checks while local API is healthy; restarting only Qiu Market tailscaled"
     launchctl kickstart -k "$launch_domain/com.qiumarket.tailscaled" || true
     sleep 3
     /opt/homebrew/bin/tailscale \
@@ -87,18 +227,12 @@ elif [ "$available_kib" -ge $((25 * 1024 * 1024)) ] && [ -f "$critical_marker" ]
     launchctl bootstrap "$launch_domain" "$launch_plist_dir/com.qiumarket.$role.plist" >/dev/null 2>&1 || true
   done
 elif [ "$available_kib" -lt $((25 * 1024 * 1024)) ]; then
-  record "disk warning: free space below 25 GiB"
+  record_throttled "disk-warning" 3600 "disk warning: free space below 25 GiB"
 fi
 
 for log_file in "$log_dir"/*.log; do
   [ -f "$log_file" ] || continue
-  size="$(stat -f '%z' "$log_file")"
-  if [ "$size" -gt $((50 * 1024 * 1024)) ]; then
-    cp "$log_file" "$log_file.1"
-    tail -c $((10 * 1024 * 1024)) "$log_file.1" > "$log_file"
-    chmod 600 "$log_file" "$log_file.1"
-    record "rotated $(basename "$log_file") at $size bytes"
-  fi
+  rotate_log "$log_file" $((50 * 1024 * 1024)) $((10 * 1024 * 1024))
 done
 
 if [ -f "$production_env" ]; then

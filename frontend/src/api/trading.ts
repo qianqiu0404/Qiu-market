@@ -88,6 +88,15 @@ export interface TradingStatus {
   queue_depth: number
   recovery_count: string
   last_error: string
+  last_incident?: string
+  last_incident_at?: string
+  last_recovered_at?: string
+  outbox_state?: string
+  outbox_checkpoint_sequence?: string
+  outbox_checkpoint_event_index?: number
+  outbox_last_error?: string
+  outbox_last_published_at?: string
+  outbox_last_cleanup_at?: string
 }
 
 export interface EventEnvelope {
@@ -191,6 +200,9 @@ export const tradingAPI = {
   balances: () => request<{ balances: Balance[] }>('/balances'),
   orders: (openOnly = false) => request<{ orders: Order[] }>(
     `/orders?limit=100&open_only=${openOnly}`,
+  ),
+  order: (orderID: string) => request<Order>(
+    `/orders/${encodeURIComponent(orderID)}`,
   ),
   trades: () => request<{ trades: Trade[] }>('/trades?limit=100'),
   submit: (body: Record<string, unknown>) => request<unknown>(

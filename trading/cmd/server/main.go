@@ -19,6 +19,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/auth"
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/httpapi"
+	"github.com/the-web3/s78-market-services/trading/outbox"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
@@ -73,11 +74,26 @@ func run() error {
 			log.Printf("close trading runner: %v", closeErr)
 		}
 	}()
+	publisher, err := outbox.New(persistence, outbox.DefaultConfig())
+	if err != nil {
+		return err
+	}
+	publisherContext, publisherCancel := context.WithCancel(ctx)
+	publisherDone := make(chan struct{})
+	go func() {
+		defer close(publisherDone)
+		publisher.Run(publisherContext)
+	}()
+	defer func() {
+		publisherCancel()
+		<-publisherDone
+	}()
 
 	rpcService, err := tradingserver.New(
 		runner,
 		tradingserver.NewPostgresEventSource(persistence),
 		tradingserver.DefaultConfig(),
+		publisher,
 	)
 	if err != nil {
 		return err

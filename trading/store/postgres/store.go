@@ -50,6 +50,11 @@ type ProjectionCheckpoint struct {
 	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
+type PublishResult struct {
+	Published  int
+	Checkpoint Cursor
+}
+
 type recordQuerier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
@@ -634,23 +639,236 @@ func (s *Store) OutboxAfter(ctx context.Context, cursor Cursor, limit int) ([]Ou
 	return events, nil
 }
 
-func (s *Store) MarkPublished(ctx context.Context, cursor Cursor) error {
-	if cursor.Sequence == 0 || cursor.Sequence > math.MaxInt64 ||
-		cursor.EventIndex == 0 || cursor.EventIndex > math.MaxInt32 {
-		return fmt.Errorf("invalid outbox cursor")
+func (s *Store) PublishOutboxBatch(
+	ctx context.Context,
+	limit int,
+) (PublishResult, error) {
+	if limit <= 0 || limit > 1_000 {
+		limit = 100
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return PublishResult{}, fmt.Errorf("begin outbox publish: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `
+		SELECT pg_advisory_xact_lock(
+			hashtext('qiu-market-outbox'),
+			hashtext($1)
+		)
+	`, s.market.ID); err != nil {
+		return PublishResult{}, fmt.Errorf("lock outbox publisher: %w", err)
+	}
+
+	var (
+		published  int64
+		sequence   int64
+		eventIndex int32
+	)
+	if err := tx.QueryRow(ctx, `
+		WITH picked AS MATERIALIZED (
+			SELECT market_id, sequence, event_index, event_type, payload
+			FROM trading_outbox
+			WHERE market_id=$1 AND published_at IS NULL
+			ORDER BY sequence ASC, event_index ASC
+			FOR UPDATE SKIP LOCKED
+			LIMIT $2
+		),
+		fed AS (
+			INSERT INTO trading_event_feed (
+				market_id, sequence, event_index, event_type, payload, published_at
+			)
+			SELECT market_id, sequence, event_index, event_type, payload, clock_timestamp()
+			FROM picked
+			ON CONFLICT (market_id, sequence, event_index) DO NOTHING
+		),
+		marked AS (
+			UPDATE trading_outbox AS destination
+			SET published_at=COALESCE(destination.published_at, clock_timestamp())
+			FROM picked
+			WHERE destination.market_id=picked.market_id
+			  AND destination.sequence=picked.sequence
+			  AND destination.event_index=picked.event_index
+			RETURNING destination.sequence, destination.event_index
+		)
+		SELECT
+			COUNT(*),
+			COALESCE((
+				SELECT sequence FROM marked
+				ORDER BY sequence DESC, event_index DESC LIMIT 1
+			), 0),
+			COALESCE((
+				SELECT event_index FROM marked
+				ORDER BY sequence DESC, event_index DESC LIMIT 1
+			), 0)
+		FROM marked
+	`, s.market.ID, limit).Scan(&published, &sequence, &eventIndex); err != nil {
+		return PublishResult{}, fmt.Errorf("publish outbox batch: %w", err)
+	}
+	if published > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO trading_outbox_checkpoint (
+				market_id, sequence, event_index, updated_at
+			)
+			VALUES ($1,$2,$3,clock_timestamp())
+			ON CONFLICT (market_id) DO UPDATE
+			SET sequence=EXCLUDED.sequence,
+			    event_index=EXCLUDED.event_index,
+			    updated_at=EXCLUDED.updated_at
+			WHERE (
+				trading_outbox_checkpoint.sequence,
+				trading_outbox_checkpoint.event_index
+			) < (EXCLUDED.sequence, EXCLUDED.event_index)
+		`, s.market.ID, sequence, eventIndex); err != nil {
+			return PublishResult{}, fmt.Errorf("advance outbox checkpoint: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return PublishResult{}, fmt.Errorf("%w: publish outbox: %v", ErrCommitOutcomeUnknown, err)
+	}
+	return PublishResult{
+		Published: int(published),
+		Checkpoint: Cursor{
+			Sequence:   uint64(sequence),
+			EventIndex: uint32(eventIndex),
+		},
+	}, nil
+}
+
+func (s *Store) FeedAfter(ctx context.Context, cursor Cursor, limit int) ([]OutboxEvent, error) {
+	if cursor.Sequence > math.MaxInt64 || cursor.EventIndex > math.MaxInt32 {
+		return nil, fmt.Errorf("cursor exceeds PostgreSQL integer range")
+	}
+	if limit <= 0 || limit > 1_000 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT sequence, event_index, event_type, payload, published_at
+		FROM trading_event_feed
+		WHERE market_id=$1
+		  AND (sequence>$2 OR (sequence=$2 AND event_index>$3))
+		ORDER BY sequence ASC, event_index ASC
+		LIMIT $4
+	`, s.market.ID, int64(cursor.Sequence), int32(cursor.EventIndex), limit)
+	if err != nil {
+		return nil, fmt.Errorf("query trading event feed: %w", err)
+	}
+	defer rows.Close()
+
+	var events []OutboxEvent
+	for rows.Next() {
+		var (
+			sequence    int64
+			eventIndex  int32
+			eventType   string
+			payload     []byte
+			publishedAt time.Time
+		)
+		if err := rows.Scan(
+			&sequence,
+			&eventIndex,
+			&eventType,
+			&payload,
+			&publishedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan trading event feed: %w", err)
+		}
+		var event domain.Event
+		if err := json.Unmarshal(payload, &event); err != nil {
+			return nil, fmt.Errorf(
+				"decode event feed at %d/%d: %w",
+				sequence,
+				eventIndex,
+				err,
+			)
+		}
+		if event.Sequence != uint64(sequence) ||
+			event.Index != uint32(eventIndex) ||
+			event.Type != domain.EventType(eventType) {
+			return nil, fmt.Errorf(
+				"event feed identity mismatch at %d/%d",
+				sequence,
+				eventIndex,
+			)
+		}
+		events = append(events, OutboxEvent{
+			MarketID:    s.market.ID,
+			Sequence:    uint64(sequence),
+			EventIndex:  uint32(eventIndex),
+			EventType:   domain.EventType(eventType),
+			Event:       event,
+			PublishedAt: &publishedAt,
+			CreatedAt:   publishedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trading event feed: %w", err)
+	}
+	return events, nil
+}
+
+func (s *Store) OutboxCheckpoint(
+	ctx context.Context,
+) (Cursor, bool, error) {
+	var (
+		sequence   int64
+		eventIndex int32
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT sequence, event_index
+		FROM trading_outbox_checkpoint
+		WHERE market_id=$1
+	`, s.market.ID).Scan(&sequence, &eventIndex)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Cursor{}, false, nil
+	}
+	if err != nil {
+		return Cursor{}, false, fmt.Errorf("read outbox checkpoint: %w", err)
+	}
+	return Cursor{
+		Sequence:   uint64(sequence),
+		EventIndex: uint32(eventIndex),
+	}, true, nil
+}
+
+func (s *Store) CleanupPublishedOutbox(
+	ctx context.Context,
+	before time.Time,
+	limit int,
+) (int64, error) {
+	if before.IsZero() {
+		return 0, fmt.Errorf("outbox cleanup boundary is required")
+	}
+	if limit <= 0 || limit > 10_000 {
+		limit = 1_000
 	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE trading_outbox
-		SET published_at=COALESCE(published_at, now())
-		WHERE market_id=$1 AND sequence=$2 AND event_index=$3
-	`, s.market.ID, int64(cursor.Sequence), int32(cursor.EventIndex))
+		WITH doomed AS (
+			SELECT source.market_id, source.sequence, source.event_index
+			FROM trading_outbox AS source
+			WHERE source.market_id=$1
+			  AND source.published_at IS NOT NULL
+			  AND source.published_at < $2
+			  AND EXISTS (
+				SELECT 1
+				FROM trading_event_feed AS feed
+				WHERE feed.market_id=source.market_id
+				  AND feed.sequence=source.sequence
+				  AND feed.event_index=source.event_index
+			  )
+			ORDER BY source.sequence ASC, source.event_index ASC
+			LIMIT $3
+		)
+		DELETE FROM trading_outbox AS destination
+		USING doomed
+		WHERE destination.market_id=doomed.market_id
+		  AND destination.sequence=doomed.sequence
+		  AND destination.event_index=doomed.event_index
+	`, s.market.ID, before.UTC(), limit)
 	if err != nil {
-		return fmt.Errorf("mark outbox event published: %w", err)
+		return 0, fmt.Errorf("cleanup published outbox: %w", err)
 	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("outbox event does not exist")
-	}
-	return nil
+	return tag.RowsAffected(), nil
 }
 
 func validateRecord(market domain.Market, expectedSequence uint64, record corestore.Record) error {

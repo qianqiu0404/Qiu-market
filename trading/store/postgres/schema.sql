@@ -68,6 +68,26 @@ CREATE INDEX IF NOT EXISTS trading_outbox_unpublished_idx
     ON trading_outbox (market_id, sequence, event_index)
     WHERE published_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS trading_event_feed (
+    market_id       text NOT NULL,
+    sequence        bigint NOT NULL CHECK (sequence > 0),
+    event_index     integer NOT NULL CHECK (event_index > 0),
+    event_type      text NOT NULL,
+    payload         jsonb NOT NULL,
+    published_at    timestamptz NOT NULL,
+    PRIMARY KEY (market_id, sequence, event_index),
+    FOREIGN KEY (market_id, sequence)
+        REFERENCES trading_event_batch(market_id, sequence)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS trading_outbox_checkpoint (
+    market_id       text PRIMARY KEY REFERENCES trading_market(market_id) ON DELETE RESTRICT,
+    sequence        bigint NOT NULL CHECK (sequence >= 0),
+    event_index     integer NOT NULL CHECK (event_index >= 0),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS trading_order (
     market_id       text NOT NULL REFERENCES trading_market(market_id) ON DELETE RESTRICT,
     order_id        text NOT NULL,

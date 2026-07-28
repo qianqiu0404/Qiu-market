@@ -67,21 +67,6 @@ curl_code() {
   fi
 }
 
-site_http="$(curl_code "$temp_dir/site.html" "$production_origin/markets")"
-funnel_health_http="$(curl_code "$temp_dir/funnel-health.txt" "$funnel_origin/healthz")"
-unsigned_http="$(curl_code "$temp_dir/unsigned.json" \
-  --request POST \
-  --header 'content-type: application/json' \
-  --data '{"consumer_token":"production-observer","venue":"all","universe":"provider_union"}' \
-  "$funnel_origin/api/v2/get_market_overview")"
-trading_http="$(curl_code "$temp_dir/trading.json" \
-  "$production_origin/api/v1/trading/markets/BTC-USDT/status")"
-system_http="$(curl_code "$temp_dir/system.json" \
-  --request POST \
-  --header 'content-type: application/json' \
-  --data '{"consumer_token":"production-observer"}' \
-  "$production_origin/api/v1/get_system_overview")"
-
 dashboard_body() {
   local venue="$1"
   jq -nc --arg venue "$venue" '{
@@ -97,16 +82,57 @@ dashboard_body() {
   }'
 }
 
-uniswap_http="$(curl_code "$temp_dir/uniswap.json" \
+probe_pids=()
+curl_code "$temp_dir/site.html" "$production_origin/markets" \
+  > "$temp_dir/site.http" &
+probe_pids+=("$!")
+curl_code "$temp_dir/funnel-health.txt" "$funnel_origin/healthz" \
+  > "$temp_dir/funnel-health.http" &
+probe_pids+=("$!")
+curl_code "$temp_dir/unsigned.json" \
+  --request POST \
+  --header 'content-type: application/json' \
+  --data '{"consumer_token":"production-observer","venue":"all","universe":"provider_union"}' \
+  "$funnel_origin/api/v2/get_market_overview" \
+  > "$temp_dir/unsigned.http" &
+probe_pids+=("$!")
+curl_code "$temp_dir/trading.json" \
+  "$production_origin/api/v1/trading/markets/BTC-USDT/status" \
+  > "$temp_dir/trading.http" &
+probe_pids+=("$!")
+curl_code "$temp_dir/system.json" \
+  --request POST \
+  --header 'content-type: application/json' \
+  --data '{"consumer_token":"production-observer"}' \
+  "$production_origin/api/v1/get_system_overview" \
+  > "$temp_dir/system.http" &
+probe_pids+=("$!")
+curl_code "$temp_dir/uniswap.json" \
   --request POST \
   --header 'content-type: application/json' \
   --data "$(dashboard_body uniswap)" \
-  "$production_origin/api/v2/get_asset_dashboard")"
-pancake_http="$(curl_code "$temp_dir/pancakeswap.json" \
+  "$production_origin/api/v2/get_asset_dashboard" \
+  > "$temp_dir/uniswap.http" &
+probe_pids+=("$!")
+curl_code "$temp_dir/pancakeswap.json" \
   --request POST \
   --header 'content-type: application/json' \
   --data "$(dashboard_body pancakeswap)" \
-  "$production_origin/api/v2/get_asset_dashboard")"
+  "$production_origin/api/v2/get_asset_dashboard" \
+  > "$temp_dir/pancakeswap.http" &
+probe_pids+=("$!")
+
+for probe_pid in "${probe_pids[@]}"; do
+  wait "$probe_pid"
+done
+
+site_http="$(cat "$temp_dir/site.http")"
+funnel_health_http="$(cat "$temp_dir/funnel-health.http")"
+unsigned_http="$(cat "$temp_dir/unsigned.http")"
+trading_http="$(cat "$temp_dir/trading.http")"
+system_http="$(cat "$temp_dir/system.http")"
+uniswap_http="$(cat "$temp_dir/uniswap.http")"
+pancake_http="$(cat "$temp_dir/pancakeswap.http")"
 
 dex_summary() {
   local provider="$1"
@@ -148,10 +174,14 @@ pancake_summary="$(dex_summary pancakeswap "$pancake_http" "$temp_dir/pancakeswa
 trading_state=""
 trading_sequence=""
 trading_last_error=""
+trading_outbox_state=""
+trading_outbox_last_error=""
 if [ "$trading_http" = 200 ]; then
   trading_state="$(jq -r '.state // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_sequence="$(jq -r '.sequence // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_last_error="$(jq -r '.last_error // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
+  trading_outbox_state="$(jq -r '.outbox_state // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
+  trading_outbox_last_error="$(jq -r '.outbox_last_error // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
 fi
 
 disk_free_bytes=0
@@ -286,6 +316,8 @@ if [ "$site_http" = 200 ] &&
   [ "$pancake_http" = 200 ] &&
   [ "$trading_state" = ready ] &&
   [ -z "$trading_last_error" ] &&
+  { [ -z "$trading_outbox_state" ] || [ "$trading_outbox_state" = ready ]; } &&
+  [ -z "$trading_outbox_last_error" ] &&
   [ "$disk_free_bytes" -ge $((25 * 1024 * 1024 * 1024)) ] &&
   [ -z "$retention_last_error" ] &&
   [ "$database_ok" = true ]; then
@@ -305,6 +337,8 @@ site_latency_ms="$(cat "$temp_dir/site.html.latency-ms")"
 funnel_latency_ms="$(cat "$temp_dir/funnel-health.txt.latency-ms")"
 trading_latency_ms="$(cat "$temp_dir/trading.json.latency-ms")"
 system_latency_ms="$(cat "$temp_dir/system.json.latency-ms")"
+uniswap_latency_ms="$(cat "$temp_dir/uniswap.json.latency-ms")"
+pancake_latency_ms="$(cat "$temp_dir/pancakeswap.json.latency-ms")"
 latest_report="$observation_dir/latest.json"
 history_file="$observation_dir/production-soak.jsonl"
 jq -n \
@@ -319,6 +353,8 @@ jq -n \
   --arg trading_state "$trading_state" \
   --arg trading_sequence "$trading_sequence" \
   --arg trading_last_error "$trading_last_error" \
+  --arg trading_outbox_state "$trading_outbox_state" \
+  --arg trading_outbox_last_error "$trading_outbox_last_error" \
   --arg sample_ok "$sample_ok" \
   --arg database_ok "$database_ok" \
   --arg historical_complete "$historical_complete" \
@@ -330,11 +366,13 @@ jq -n \
   --arg funnel_latency_ms "$funnel_latency_ms" \
   --arg trading_latency_ms "$trading_latency_ms" \
   --arg system_latency_ms "$system_latency_ms" \
+  --arg uniswap_latency_ms "$uniswap_latency_ms" \
+  --arg pancake_latency_ms "$pancake_latency_ms" \
   --argjson uniswap "$uniswap_summary" \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
   '{
-    schema_version: 2,
+    schema_version: 3,
     observed_at: $observed_at,
     status: (
       if $sample_ok != "true" then "failed"
@@ -356,9 +394,13 @@ jq -n \
       unsigned_funnel_rest_http: ($unsigned_http | tonumber? // 0),
       trading_bff_http: ($trading_http | tonumber? // 0),
       system_bff_http: ($system_http | tonumber? // 0),
+      uniswap_bff_http: ($uniswap.http_status // 0),
+      pancakeswap_bff_http: ($pancakeswap.http_status // 0),
       trading_state: $trading_state,
       trading_sequence: $trading_sequence,
       trading_last_error: $trading_last_error,
+      trading_outbox_state: $trading_outbox_state,
+      trading_outbox_last_error: $trading_outbox_last_error,
       database_ok: ($database_ok == "true"),
       disk_free_bytes: ($disk_free_bytes | tonumber? // 0),
       disk_state: $disk_state,
@@ -369,7 +411,9 @@ jq -n \
       production_page: ($site_latency_ms | tonumber? // 20000),
       funnel_health: ($funnel_latency_ms | tonumber? // 20000),
       trading_bff: ($trading_latency_ms | tonumber? // 20000),
-      system_bff: ($system_latency_ms | tonumber? // 20000)
+      system_bff: ($system_latency_ms | tonumber? // 20000),
+      uniswap_bff: ($uniswap_latency_ms | tonumber? // 20000),
+      pancakeswap_bff: ($pancake_latency_ms | tonumber? // 20000)
     },
     dex: [$uniswap, $pancakeswap],
     historical_windows: $coverage

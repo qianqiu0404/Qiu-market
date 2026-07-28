@@ -14,6 +14,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/exchange"
 	"github.com/the-web3/s78-market-services/trading/ledger"
+	"github.com/the-web3/s78-market-services/trading/outbox"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
 )
@@ -46,6 +47,10 @@ type EventSource interface {
 	EventsAfter(context.Context, Cursor, int) ([]StoredEvent, error)
 }
 
+type DeliveryStatusSource interface {
+	Status() outbox.Status
+}
+
 type Config struct {
 	EventBatchSize int
 	EventPollEvery time.Duration
@@ -61,12 +66,18 @@ func DefaultConfig() Config {
 type Server struct {
 	tradingv1.UnimplementedTradingServiceServer
 
-	engine Engine
-	events EventSource
-	config Config
+	engine   Engine
+	events   EventSource
+	delivery DeliveryStatusSource
+	config   Config
 }
 
-func New(engine Engine, events EventSource, config Config) (*Server, error) {
+func New(
+	engine Engine,
+	events EventSource,
+	config Config,
+	delivery ...DeliveryStatusSource,
+) (*Server, error) {
 	if engine == nil {
 		return nil, fmt.Errorf("trading engine is required")
 	}
@@ -76,7 +87,14 @@ func New(engine Engine, events EventSource, config Config) (*Server, error) {
 	if config.EventPollEvery <= 0 {
 		return nil, fmt.Errorf("event poll interval must be positive")
 	}
-	return &Server{engine: engine, events: events, config: config}, nil
+	if len(delivery) > 1 {
+		return nil, fmt.Errorf("at most one delivery status source is supported")
+	}
+	server := &Server{engine: engine, events: events, config: config}
+	if len(delivery) == 1 {
+		server.delivery = delivery[0]
+	}
+	return server, nil
 }
 
 func (s *Server) SubmitOrder(
@@ -300,14 +318,37 @@ func (s *Server) GetStatus(
 		return nil, err
 	}
 	current := s.engine.Status()
-	return &tradingv1.StatusResponse{
-		MarketId:      string(current.MarketID),
-		State:         string(current.State),
-		Sequence:      strconv.FormatUint(current.Sequence, 10),
-		QueueDepth:    uint32(current.QueueDepth),
-		RecoveryCount: strconv.FormatUint(current.RecoveryCount, 10),
-		LastError:     current.LastError,
-	}, nil
+	response := &tradingv1.StatusResponse{
+		MarketId:        string(current.MarketID),
+		State:           string(current.State),
+		Sequence:        strconv.FormatUint(current.Sequence, 10),
+		QueueDepth:      uint32(current.QueueDepth),
+		RecoveryCount:   strconv.FormatUint(current.RecoveryCount, 10),
+		LastError:       current.LastError,
+		LastIncident:    current.LastIncident,
+		LastIncidentAt:  current.LastIncidentAt,
+		LastRecoveredAt: current.LastRecoveredAt,
+	}
+	if s.delivery != nil {
+		delivery := s.delivery.Status()
+		response.OutboxState = delivery.State
+		response.OutboxCheckpointSequence = strconv.FormatUint(
+			delivery.Checkpoint.Sequence,
+			10,
+		)
+		response.OutboxCheckpointEventIndex = delivery.Checkpoint.EventIndex
+		response.OutboxLastError = delivery.LastError
+		response.OutboxLastPublishedAt = formatOptionalTime(delivery.LastPublishedAt)
+		response.OutboxLastCleanupAt = formatOptionalTime(delivery.LastCleanupAt)
+	}
+	return response, nil
+}
+
+func formatOptionalTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func (s *Server) AdminFundVirtual(

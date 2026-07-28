@@ -318,6 +318,12 @@ func (s *Server) getStatus(writer http.ResponseWriter, request *http.Request) {
 	if err == nil && response.LastError != "" {
 		response.LastError = "internal error recorded"
 	}
+	if err == nil && response.LastIncident != "" {
+		response.LastIncident = "internal incident recorded"
+	}
+	if err == nil && response.OutboxLastError != "" {
+		response.OutboxLastError = "internal outbox error recorded"
+	}
 	s.writeGRPC(writer, response, err)
 }
 

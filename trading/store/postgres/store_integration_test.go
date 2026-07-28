@@ -42,10 +42,12 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_projection_checkpoint WHERE market_id=$1`, market.ID)
+		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_outbox_checkpoint WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_ledger_entry WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_balance WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_trade WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_order WHERE market_id=$1`, market.ID)
+		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_event_feed WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_outbox WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_snapshot WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_event_batch WHERE market_id=$1`, market.ID)
@@ -148,8 +150,17 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 	if len(outbox) != 8 {
 		t.Fatalf("outbox events = %d, want 8", len(outbox))
 	}
+	publish, err := persistence.PublishOutboxBatch(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publish.Published != len(outbox) ||
+		publish.Checkpoint.Sequence != outbox[len(outbox)-1].Sequence ||
+		publish.Checkpoint.EventIndex != outbox[len(outbox)-1].EventIndex {
+		t.Fatalf("outbox publish = %+v, events=%d", publish, len(outbox))
+	}
 	firstCursor := postgresstore.Cursor{Sequence: outbox[2].Sequence, EventIndex: outbox[2].EventIndex}
-	remaining, err := persistence.OutboxAfter(ctx, firstCursor, 100)
+	remaining, err := persistence.FeedAfter(ctx, firstCursor, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,17 +169,23 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 		(remaining[0].Sequence == firstCursor.Sequence && remaining[0].EventIndex <= firstCursor.EventIndex) {
 		t.Fatalf("cursor replay = %+v after %+v", remaining, firstCursor)
 	}
-	if err := persistence.MarkPublished(ctx, postgresstore.Cursor{
-		Sequence: outbox[0].Sequence, EventIndex: outbox[0].EventIndex,
-	}); err != nil {
-		t.Fatal(err)
-	}
 	published, err := persistence.OutboxAfter(ctx, postgresstore.Cursor{}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(published) != 1 || published[0].PublishedAt == nil {
 		t.Fatalf("published outbox event = %+v", published)
+	}
+	deleted, err := persistence.CleanupPublishedOutbox(
+		ctx,
+		time.Now().Add(time.Hour),
+		100,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != int64(len(outbox)) {
+		t.Fatalf("cleaned published outbox = %d, want %d", deleted, len(outbox))
 	}
 
 	stale, err := exchange.New(market, persistence, persistence)
@@ -267,8 +284,10 @@ func assertProjections(
 	}
 
 	expectedLedgerEntries := 0
-	for _, transaction := range trading.Journal() {
-		expectedLedgerEntries += len(transaction.Entries)
+	for _, record := range mustRecords(t, persistence) {
+		for _, transaction := range record.Journal {
+			expectedLedgerEntries += len(transaction.Entries)
+		}
 	}
 	var ledgerEntries int
 	if err := pool.QueryRow(ctx,

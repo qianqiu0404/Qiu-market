@@ -1800,15 +1800,24 @@ func (x *OrderBook) GetAsks() []*PriceLevel {
 }
 
 type StatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
-	State         string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
-	Sequence      string                 `protobuf:"bytes,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	QueueDepth    uint32                 `protobuf:"varint,4,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
-	RecoveryCount string                 `protobuf:"bytes,5,opt,name=recovery_count,json=recoveryCount,proto3" json:"recovery_count,omitempty"`
-	LastError     string                 `protobuf:"bytes,6,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	MarketId                   string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	State                      string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	Sequence                   string                 `protobuf:"bytes,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	QueueDepth                 uint32                 `protobuf:"varint,4,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
+	RecoveryCount              string                 `protobuf:"bytes,5,opt,name=recovery_count,json=recoveryCount,proto3" json:"recovery_count,omitempty"`
+	LastError                  string                 `protobuf:"bytes,6,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	LastIncident               string                 `protobuf:"bytes,7,opt,name=last_incident,json=lastIncident,proto3" json:"last_incident,omitempty"`
+	LastIncidentAt             string                 `protobuf:"bytes,8,opt,name=last_incident_at,json=lastIncidentAt,proto3" json:"last_incident_at,omitempty"`
+	LastRecoveredAt            string                 `protobuf:"bytes,9,opt,name=last_recovered_at,json=lastRecoveredAt,proto3" json:"last_recovered_at,omitempty"`
+	OutboxState                string                 `protobuf:"bytes,10,opt,name=outbox_state,json=outboxState,proto3" json:"outbox_state,omitempty"`
+	OutboxCheckpointSequence   string                 `protobuf:"bytes,11,opt,name=outbox_checkpoint_sequence,json=outboxCheckpointSequence,proto3" json:"outbox_checkpoint_sequence,omitempty"`
+	OutboxCheckpointEventIndex uint32                 `protobuf:"varint,12,opt,name=outbox_checkpoint_event_index,json=outboxCheckpointEventIndex,proto3" json:"outbox_checkpoint_event_index,omitempty"`
+	OutboxLastError            string                 `protobuf:"bytes,13,opt,name=outbox_last_error,json=outboxLastError,proto3" json:"outbox_last_error,omitempty"`
+	OutboxLastPublishedAt      string                 `protobuf:"bytes,14,opt,name=outbox_last_published_at,json=outboxLastPublishedAt,proto3" json:"outbox_last_published_at,omitempty"`
+	OutboxLastCleanupAt        string                 `protobuf:"bytes,15,opt,name=outbox_last_cleanup_at,json=outboxLastCleanupAt,proto3" json:"outbox_last_cleanup_at,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *StatusResponse) Reset() {
@@ -1879,6 +1888,69 @@ func (x *StatusResponse) GetRecoveryCount() string {
 func (x *StatusResponse) GetLastError() string {
 	if x != nil {
 		return x.LastError
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetLastIncident() string {
+	if x != nil {
+		return x.LastIncident
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetLastIncidentAt() string {
+	if x != nil {
+		return x.LastIncidentAt
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetLastRecoveredAt() string {
+	if x != nil {
+		return x.LastRecoveredAt
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetOutboxState() string {
+	if x != nil {
+		return x.OutboxState
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetOutboxCheckpointSequence() string {
+	if x != nil {
+		return x.OutboxCheckpointSequence
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetOutboxCheckpointEventIndex() uint32 {
+	if x != nil {
+		return x.OutboxCheckpointEventIndex
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetOutboxLastError() string {
+	if x != nil {
+		return x.OutboxLastError
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetOutboxLastPublishedAt() string {
+	if x != nil {
+		return x.OutboxLastPublishedAt
+	}
+	return ""
+}
+
+func (x *StatusResponse) GetOutboxLastCleanupAt() string {
+	if x != nil {
+		return x.OutboxLastCleanupAt
 	}
 	return ""
 }
@@ -2107,7 +2179,7 @@ const file_trading_proto_rawDesc = "" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\tR\bsequence\x12.\n" +
 	"\x04bids\x18\x03 \x03(\v2\x1a.s78.trading.v1.PriceLevelR\x04bids\x12.\n" +
-	"\x04asks\x18\x04 \x03(\v2\x1a.s78.trading.v1.PriceLevelR\x04asks\"\xc6\x01\n" +
+	"\x04asks\x18\x04 \x03(\v2\x1a.s78.trading.v1.PriceLevelR\x04asks\"\xff\x04\n" +
 	"\x0eStatusResponse\x12\x1b\n" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12\x1a\n" +
@@ -2116,7 +2188,17 @@ const file_trading_proto_rawDesc = "" +
 	"queueDepth\x12%\n" +
 	"\x0erecovery_count\x18\x05 \x01(\tR\rrecoveryCount\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\x06 \x01(\tR\tlastError\"\x96\x01\n" +
+	"last_error\x18\x06 \x01(\tR\tlastError\x12#\n" +
+	"\rlast_incident\x18\a \x01(\tR\flastIncident\x12(\n" +
+	"\x10last_incident_at\x18\b \x01(\tR\x0elastIncidentAt\x12*\n" +
+	"\x11last_recovered_at\x18\t \x01(\tR\x0flastRecoveredAt\x12!\n" +
+	"\foutbox_state\x18\n" +
+	" \x01(\tR\voutboxState\x12<\n" +
+	"\x1aoutbox_checkpoint_sequence\x18\v \x01(\tR\x18outboxCheckpointSequence\x12A\n" +
+	"\x1doutbox_checkpoint_event_index\x18\f \x01(\rR\x1aoutboxCheckpointEventIndex\x12*\n" +
+	"\x11outbox_last_error\x18\r \x01(\tR\x0foutboxLastError\x127\n" +
+	"\x18outbox_last_published_at\x18\x0e \x01(\tR\x15outboxLastPublishedAt\x123\n" +
+	"\x16outbox_last_cleanup_at\x18\x0f \x01(\tR\x13outboxLastCleanupAt\"\x96\x01\n" +
 	"\rEventEnvelope\x12\x1b\n" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\tR\bsequence\x12\x1f\n" +

@@ -314,10 +314,12 @@ func cleanupMarket(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	}
 	for _, table := range []string{
 		"trading_projection_checkpoint",
+		"trading_outbox_checkpoint",
 		"trading_ledger_entry",
 		"trading_balance",
 		"trading_trade",
 		"trading_order",
+		"trading_event_feed",
 		"trading_outbox",
 		"trading_snapshot",
 		"trading_event_batch",

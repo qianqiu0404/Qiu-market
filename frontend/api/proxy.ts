@@ -1,7 +1,9 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { getCache } from '@vercel/functions'
 import {
   PublicReadCache,
+  RuntimePublicReadCache,
   type PublicReadCacheLookup,
   isPublicMarketRead,
   publicReadCachePayload,
@@ -10,8 +12,17 @@ import {
 const MAX_BODY_BYTES = 1 << 20
 const TOTAL_UPSTREAM_TIMEOUT_MS = 8_000
 const FIRST_READ_ATTEMPT_TIMEOUT_MS = 3_500
+const RUNTIME_CACHE_TIMEOUT_MS = 250
 const PUBLIC_CACHE_CONTROL =
   'public, max-age=0, s-maxage=15, stale-while-revalidate=300, stale-if-error=300'
+const RETRYABLE_GET_PATHS = [
+  /^\/api\/v1\/trading\/auth\/capabilities$/,
+  /^\/api\/v1\/trading\/session$/,
+  /^\/api\/v1\/trading\/markets\/[^/]+\/(?:orderbook|trades|status)$/,
+  /^\/api\/v1\/trading\/orders(?:\/[^/]+)?$/,
+  /^\/api\/v1\/trading\/trades$/,
+  /^\/api\/v1\/trading\/balances$/,
+]
 
 const cacheGlobal = globalThis as typeof globalThis & {
   qiuMarketPublicReadCache?: PublicReadCache
@@ -19,6 +30,9 @@ const cacheGlobal = globalThis as typeof globalThis & {
 const publicReadCache =
   cacheGlobal.qiuMarketPublicReadCache ?? new PublicReadCache()
 cacheGlobal.qiuMarketPublicReadCache = publicReadCache
+const runtimePublicReadCache = new RuntimePublicReadCache(
+  getCache({ namespace: 'qiu-market-public-read-v1' }),
+)
 
 interface QiuProxyRequest extends IncomingMessage {
   body?: unknown
@@ -83,6 +97,31 @@ function sendCachedResponse(
   response.status(lookup.entry.status).send(Buffer.from(lookup.entry.body))
 }
 
+async function bestEffortCacheOperation<T>(
+  operation: Promise<T>,
+): Promise<T | undefined> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      operation.catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(resolve, RUNTIME_CACHE_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+export function isRetryableUpstreamRequest(
+  method: string,
+  pathname: string,
+): boolean {
+  if (isPublicMarketRead(method, pathname)) return true
+  if (method !== 'GET') return false
+  return RETRYABLE_GET_PATHS.some((pattern) => pattern.test(pathname))
+}
+
 export default async function handler(
   request: QiuProxyRequest,
   response: QiuProxyResponse,
@@ -135,11 +174,23 @@ export default async function handler(
     const cacheLookup = cacheablePublicRead
       ? publicReadCache.lookup(cacheKey)
       : undefined
-    if (cacheLookup?.state === 'fresh') {
-      sendCachedResponse(response, cacheLookup, startedAt)
+    const sharedCacheLookup =
+      cacheablePublicRead && !cacheLookup
+        ? await bestEffortCacheOperation(
+            runtimePublicReadCache.lookup(cacheKey),
+          )
+        : undefined
+    if (sharedCacheLookup) {
+      publicReadCache.put(cacheKey, sharedCacheLookup.entry)
+    }
+    const effectiveCacheLookup = cacheLookup ?? sharedCacheLookup
+    if (effectiveCacheLookup?.state === 'fresh') {
+      sendCachedResponse(response, effectiveCacheLookup, startedAt)
       return
     }
-    if (cacheLookup?.state === 'stale') staleLookup = cacheLookup
+    if (effectiveCacheLookup?.state === 'stale') {
+      staleLookup = effectiveCacheLookup
+    }
     const forwardedHeaders = new Headers()
     for (const name of [
       'accept',
@@ -157,10 +208,7 @@ export default async function handler(
     forwardedHeaders.set('X-Forwarded-Proto', 'https')
     forwardedHeaders.set('X-Request-ID', requestID)
 
-    const retryableRead =
-      method === 'GET' ||
-      method === 'HEAD' ||
-      cacheablePublicRead
+    const retryableRead = isRetryableUpstreamRequest(method, upstreamURL.pathname)
     const deadline = startedAt + TOTAL_UPSTREAM_TIMEOUT_MS
     let upstream: Response | undefined
     let upstreamBody: Buffer | undefined
@@ -237,13 +285,17 @@ export default async function handler(
       cookies.length === 0 &&
       upstream.headers.get('content-type')?.includes('application/json')
     ) {
-      publicReadCache.put(cacheKey, {
+      const cacheEntry = {
         status: upstream.status,
         body: upstreamBody,
         contentType: upstream.headers.get('content-type') ?? undefined,
         vary: upstream.headers.get('vary') ?? undefined,
         storedAt: Date.now(),
-      })
+      }
+      publicReadCache.put(cacheKey, cacheEntry)
+      await bestEffortCacheOperation(
+        runtimePublicReadCache.put(cacheKey, cacheEntry),
+      )
       response.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL)
       response.setHeader('Age', '0')
       response.setHeader('X-Qiu-Market-Cache', 'MISS')

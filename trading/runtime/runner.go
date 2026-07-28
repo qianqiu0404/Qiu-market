@@ -43,12 +43,15 @@ func DefaultConfig() Config {
 }
 
 type Status struct {
-	MarketID      domain.MarketID `json:"market_id"`
-	State         State           `json:"state"`
-	Sequence      uint64          `json:"sequence"`
-	QueueDepth    int             `json:"queue_depth"`
-	RecoveryCount uint64          `json:"recovery_count"`
-	LastError     string          `json:"last_error,omitempty"`
+	MarketID        domain.MarketID `json:"market_id"`
+	State           State           `json:"state"`
+	Sequence        uint64          `json:"sequence"`
+	QueueDepth      int             `json:"queue_depth"`
+	RecoveryCount   uint64          `json:"recovery_count"`
+	LastError       string          `json:"last_error,omitempty"`
+	LastIncident    string          `json:"last_incident,omitempty"`
+	LastIncidentAt  string          `json:"last_incident_at,omitempty"`
+	LastRecoveredAt string          `json:"last_recovered_at,omitempty"`
 }
 
 type operation uint8
@@ -90,13 +93,16 @@ type MarketRunner struct {
 	accepting bool
 	stopOnce  sync.Once
 
-	mu            sync.RWMutex
-	trading       *exchange.Exchange
-	state         State
-	sequence      uint64
-	lastError     string
-	recoveryCount uint64
-	closeErr      error
+	mu              sync.RWMutex
+	trading         *exchange.Exchange
+	state           State
+	sequence        uint64
+	lastError       string
+	lastIncident    string
+	lastIncidentAt  time.Time
+	lastRecoveredAt time.Time
+	recoveryCount   uint64
+	closeErr        error
 }
 
 func NewMarketRunner(
@@ -212,17 +218,23 @@ func (r *MarketRunner) Status() Status {
 	r.mu.RLock()
 	state := r.state
 	lastError := r.lastError
+	lastIncident := r.lastIncident
+	lastIncidentAt := r.lastIncidentAt
+	lastRecoveredAt := r.lastRecoveredAt
 	recoveryCount := r.recoveryCount
 	sequence := r.sequence
 	r.mu.RUnlock()
 
 	return Status{
-		MarketID:      r.market.ID,
-		State:         state,
-		Sequence:      sequence,
-		QueueDepth:    len(r.queue),
-		RecoveryCount: recoveryCount,
-		LastError:     lastError,
+		MarketID:        r.market.ID,
+		State:           state,
+		Sequence:        sequence,
+		QueueDepth:      len(r.queue),
+		RecoveryCount:   recoveryCount,
+		LastError:       lastError,
+		LastIncident:    lastIncident,
+		LastIncidentAt:  formatStatusTime(lastIncidentAt),
+		LastRecoveredAt: formatStatusTime(lastRecoveredAt),
 	}
 }
 
@@ -305,7 +317,7 @@ func (r *MarketRunner) drainAndClose() {
 			r.mu.Lock()
 			r.closeErr = err
 			if err != nil {
-				r.lastError = err.Error()
+				r.recordIncidentLocked(err)
 			}
 			r.state = StateClosed
 			r.mu.Unlock()
@@ -356,6 +368,8 @@ func (r *MarketRunner) handle(request command) {
 			cancel()
 			if snapshotErr != nil {
 				r.setLastError(fmt.Errorf("periodic snapshot: %w", snapshotErr))
+			} else {
+				r.clearLastError()
 			}
 		}
 	}
@@ -363,7 +377,10 @@ func (r *MarketRunner) handle(request command) {
 }
 
 func (r *MarketRunner) recoverAfterPersistenceError(cause error) {
-	r.setState(StateRecovering, cause.Error())
+	r.mu.Lock()
+	r.state = StateRecovering
+	r.recordIncidentLocked(cause)
+	r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	restored, err := exchange.Restore(ctx, r.market, r.eventLog, r.snapshots)
 	cancel()
@@ -372,7 +389,7 @@ func (r *MarketRunner) recoverAfterPersistenceError(cause error) {
 		r.accepting = false
 		r.mu.Lock()
 		r.state = StateFailed
-		r.lastError = fmt.Errorf("recover after persistence failure: %w", err).Error()
+		r.recordIncidentLocked(fmt.Errorf("recover after persistence failure: %w", err))
 		r.mu.Unlock()
 		r.gate.Unlock()
 		return
@@ -381,7 +398,8 @@ func (r *MarketRunner) recoverAfterPersistenceError(cause error) {
 	r.trading = restored
 	r.state = StateReady
 	r.sequence = restored.Sequence()
-	r.lastError = cause.Error()
+	r.lastError = ""
+	r.lastRecoveredAt = time.Now().UTC()
 	r.recoveryCount++
 	r.mu.Unlock()
 }
@@ -410,6 +428,29 @@ func (r *MarketRunner) setLastError(err error) {
 		return
 	}
 	r.mu.Lock()
-	r.lastError = err.Error()
+	r.recordIncidentLocked(err)
 	r.mu.Unlock()
+}
+
+func (r *MarketRunner) clearLastError() {
+	r.mu.Lock()
+	r.lastError = ""
+	r.mu.Unlock()
+}
+
+func (r *MarketRunner) recordIncidentLocked(err error) {
+	if err == nil {
+		return
+	}
+	message := err.Error()
+	r.lastError = message
+	r.lastIncident = message
+	r.lastIncidentAt = time.Now().UTC()
+}
+
+func formatStatusTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
