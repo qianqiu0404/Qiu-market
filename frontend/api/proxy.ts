@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { getCache } from '@vercel/functions'
+import { getCache, waitUntil } from '@vercel/functions'
 import {
   PublicReadCache,
   RuntimePublicReadCache,
@@ -294,8 +294,10 @@ export default async function handler(
         storedAt: Date.now(),
       }
       publicReadCache.put(cacheKey, cacheEntry)
-      await bestEffortCacheOperation(
-        runtimePublicReadCache.put(cacheKey, cacheEntry),
+      waitUntil(
+        runtimePublicReadCache
+          .put(cacheKey, cacheEntry)
+          .catch(() => false),
       )
       response.setHeader('Cache-Control', PUBLIC_CACHE_CONTROL)
       response.setHeader('Age', '0')
