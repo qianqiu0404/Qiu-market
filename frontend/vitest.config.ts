@@ -7,6 +7,7 @@ export default defineConfig({
     environment: 'jsdom',
     globals: false,
     restoreMocks: true,
-    exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
+    include: ['src/**/*.test.ts', 'server/**/*.test.ts'],
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**', '.vercel/**'],
   },
 })

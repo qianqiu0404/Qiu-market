@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isRetryableUpstreamRequest } from './proxy'
+import { isRetryableUpstreamRequest } from '../api/proxy'
 
 describe('isRetryableUpstreamRequest', () => {
   it('retries only explicitly safe trading reads and public market envelopes', () => {

@@ -100,16 +100,17 @@ function sendCachedResponse(
 async function bestEffortCacheOperation<T>(
   operation: Promise<T>,
 ): Promise<T | undefined> {
-  let timeout: ReturnType<typeof setTimeout> | undefined
+  let cancelTimeout: (() => void) | undefined
   try {
     return await Promise.race([
       operation.catch(() => undefined),
       new Promise<undefined>((resolve) => {
-        timeout = setTimeout(resolve, RUNTIME_CACHE_TIMEOUT_MS)
+        const timeout = setTimeout(resolve, RUNTIME_CACHE_TIMEOUT_MS)
+        cancelTimeout = () => clearTimeout(timeout)
       }),
     ])
   } finally {
-    if (timeout) clearTimeout(timeout)
+    cancelTimeout?.()
   }
 }
 
