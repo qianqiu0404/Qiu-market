@@ -9,26 +9,19 @@ log_dir="$support_dir/logs"
 production_env="$support_dir/production.env"
 launch_dir="$HOME/Library/LaunchAgents"
 template="$repo_root/ops/macos/com.qiumarket.role.plist.template"
+release_tool="$repo_root/ops/macos/release-production.sh"
 roles=(trading api crawler worker dex)
 
 prepare() {
-  mkdir -p "$binary_dir" "$log_dir"
+  mkdir -p "$log_dir"
   if [ ! -f "$production_env" ]; then
     cp "$repo_root/ops/macos/production.env.example" "$production_env"
     chmod 600 "$production_env"
     echo "Created private template: $production_env"
     echo "Replace every placeholder before installation." >&2
   fi
-  if grep -q 'replace-with-' "$production_env"; then
-    echo "Production environment still contains placeholders: $production_env" >&2
-    return 1
-  fi
-  (
-    cd "$repo_root"
-    go build -trimpath -o "$binary_dir/market-services" ./cmd/market-services
-  )
-  chmod 700 "$binary_dir/market-services"
-  echo "Prepared managed binary: $binary_dir/market-services"
+  "$release_tool" prepare
+  echo "Release staged only. Use release-production.sh verify and deploy to activate it."
 }
 
 render_plist() {
@@ -48,6 +41,10 @@ case "$action" in
     ;;
   install)
     prepare
+    if [ ! -x "$binary_dir/market-services" ]; then
+      echo "No active managed binary exists. Run release-production.sh verify and deploy first." >&2
+      exit 1
+    fi
     if lsof -nP -iTCP:9092 -sTCP:LISTEN >/dev/null 2>&1 ||
       lsof -nP -iTCP:9094 -sTCP:LISTEN >/dev/null 2>&1; then
       echo "Ports 9092/9094 are already in use. Stop the current Qiu Market dev roles first." >&2
@@ -67,7 +64,10 @@ case "$action" in
     done
     ;;
   reload)
-    prepare
+    if [ ! -x "$binary_dir/market-services" ]; then
+      echo "Managed binary is missing. Use release-production.sh verify and deploy first." >&2
+      exit 1
+    fi
     mkdir -p "$launch_dir"
     for role in "${roles[@]}"; do
       render_plist "$role"
@@ -87,7 +87,7 @@ case "$action" in
         exit 1
       fi
     done
-    echo "Reloaded Qiu Market LaunchAgents with current definitions."
+    echo "Reloaded Qiu Market LaunchAgents with current definitions and unchanged binary."
     ;;
   status)
     for role in "${roles[@]}"; do

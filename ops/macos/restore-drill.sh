@@ -2,37 +2,36 @@
 set -euo pipefail
 umask 077
 
-support_dir="/Users/xiuqiu/Library/Application Support/Qiu Market"
-backup_root="$support_dir/backups"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-production_env="$support_dir/production.env"
+# shellcheck disable=SC1091
+source "$repo_root/ops/macos/production-lib.sh"
+qiu_load_production_environment "$repo_root"
+qiu_require_private_environment
+
+support_dir="$QIU_MARKET_SUPPORT_DIR"
+backup_root="$support_dir/backups"
 binary="${QIU_MARKET_BINARY:-$support_dir/bin/market-services}"
 
-set -a
-if [ -f "$repo_root/.env" ]; then
-  # shellcheck disable=SC1091
-  source "$repo_root/.env"
-fi
-if [ -f "$production_env" ]; then
-  # shellcheck disable=SC1090
-  source "$production_env"
-fi
-set +a
-
-database_name="${MARKET_MASTER_DB_NAME:-${MARKET_DB_NAME:-s78_market}}"
-database_host="${MARKET_MASTER_DB_HOST:-127.0.0.1}"
-database_port="${MARKET_MASTER_DB_PORT:-5432}"
-database_user="${MARKET_MASTER_DB_USER:-$(id -un)}"
-export PGPASSWORD="${MARKET_MASTER_DB_PASSWORD:-}"
+database_name="$QIU_MARKET_DB_NAME"
+database_host="$QIU_MARKET_DB_HOST"
+database_port="$QIU_MARKET_DB_PORT"
+database_user="$QIU_MARKET_DB_USER"
 
 if [ ! -x "$binary" ]; then
   echo "Qiu Market managed binary is unavailable: $binary" >&2
   exit 1
 fi
 
-latest="$(find "$backup_root/full" -maxdepth 1 -type f -name '*.dump' -print | sort -r | head -1)"
+latest="${QIU_MARKET_BACKUP:-}"
+if [ -z "$latest" ]; then
+  latest="$(find "$backup_root/full" -maxdepth 1 -type f -name '*.dump' -print | sort -r | head -1)"
+fi
 if [ -z "$latest" ]; then
   echo "No full Qiu Market backup is available for a restore drill." >&2
+  exit 1
+fi
+if [ ! -f "$latest" ]; then
+  echo "Requested Qiu Market backup is unavailable: $latest" >&2
   exit 1
 fi
 
@@ -115,6 +114,7 @@ if [ "$source_events" -lt "$restored_events" ] ||
 fi
 
 if ! (
+  cd "$repo_root"
   export MARKET_MASTER_DB_NAME="$drill_db"
   "$binary" migrate
 ) >"$drill_log" 2>&1; then
@@ -124,6 +124,7 @@ if ! (
 fi
 
 (
+  cd "$repo_root"
   export MARKET_MASTER_DB_NAME="$drill_db"
   export MARKET_TRADING_GRPC_ADDR="127.0.0.1:0"
   export MARKET_TRADING_DEMO_MAKER_ENABLED=false
@@ -144,6 +145,36 @@ for _ in $(seq 1 80); do
 done
 if [ "$recovery_ready" != true ]; then
   echo "Restored trading process did not reach ready state." >&2
+  tail -n 20 "$drill_log" >&2
+  exit 1
+fi
+
+outbox_ready=false
+outbox_stats=""
+for _ in $(seq 1 240); do
+  outbox_stats="$(qiu_outbox_integrity_stats "$drill_db" 2>/dev/null || true)"
+  if [ -n "$outbox_stats" ]; then
+    IFS='|' read -r \
+      outbox_unpublished \
+      outbox_oldest_seconds \
+      outbox_payload_mismatches \
+      outbox_cursor_mismatches \
+      outbox_feed_rows \
+      outbox_source_rows \
+      <<<"$outbox_stats"
+    if [ "$outbox_unpublished" -eq 0 ] &&
+      [ "$outbox_oldest_seconds" -eq 0 ] &&
+      [ "$outbox_payload_mismatches" -eq 0 ] &&
+      [ "$outbox_cursor_mismatches" -eq 0 ] &&
+      { [ "$outbox_source_rows" -eq 0 ] || [ "$outbox_feed_rows" -gt 0 ]; }; then
+      outbox_ready=true
+      break
+    fi
+  fi
+  sleep 1
+done
+if [ "$outbox_ready" != true ]; then
+  echo "Restored outbox/feed/checkpoint did not converge: ${outbox_stats:-unavailable}" >&2
   tail -n 20 "$drill_log" >&2
   exit 1
 fi
@@ -178,4 +209,4 @@ if [ "$recovered_sequence" != "$restored_events" ] ||
   exit 1
 fi
 
-echo "Restore drill passed: backup_events=$restored_events current_events=$source_events recovered_sequence=$recovered_sequence state_hash_matches=true ledger_imbalances=0"
+echo "Restore drill passed: backup_events=$restored_events current_events=$source_events recovered_sequence=$recovered_sequence state_hash_matches=true ledger_imbalances=0 outbox_unpublished=0 outbox_payload_mismatches=0 outbox_cursor_mismatches=0"

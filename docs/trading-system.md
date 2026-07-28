@@ -1,6 +1,6 @@
-# S78 虚拟现货交易系统
+# Qiu Market 虚拟现货交易系统
 
-本文是 S78 BTC/USDT 虚拟现货纵切片的 canonical 工程文档。它说明已经落地的代码、运行边界、恢复模型和验收方法；业务课程的系统化学习仍以 Obsidian 的《S78交易系统与量化策略开发实战讲义》为主。
+本文是 Qiu Market BTC/USDT 虚拟现货纵切片的 canonical 工程文档。它说明已经落地的代码、运行边界、恢复模型和验收方法；业务课程的系统化学习仍以 Obsidian 的《S78交易系统与量化策略开发实战讲义》为主。
 
 ## 问题与可见结果
 
@@ -98,20 +98,26 @@ market-services trading :9094
 
 ## PostgreSQL 真值与恢复
 
-正式迁移为 `migrations/2026082100023.sql`：
+核心交易表由 `migrations/2026082100023.sql` 创建，发布游标分离由
+`migrations/2026082300025.sql` 创建：
 
 | 表 | 作用 |
 |---|---|
 | `trading_market` | 市场规则与当前 stream sequence |
 | `trading_event_batch` | 命令、结果、journal、投影增量和状态 hash；最终真值 |
 | `trading_snapshot` | versioned 完整状态与 hash |
-| `trading_outbox` | 持久化事件发布 cursor |
+| `trading_outbox` | 与命令事务一起写入的待发布事件；不是浏览器长期 replay 表 |
+| `trading_event_feed` | WebSocket/polling 使用的持久化 cursor feed |
+| `trading_outbox_checkpoint` | publisher 已提交到 feed 的最后 `(sequence,event_index)` |
 | `trading_order` / `trading_trade` | 可重建读模型 |
 | `trading_balance` / `trading_ledger_entry` | 余额投影与审计分录 |
 | `trading_projection_checkpoint` | 投影消费位置 |
 | `trading_user_session` | token hash、CSRF hash 与会话过期时间 |
 
-事件批次、账本增量、outbox 和投影在同一 pgx 事务提交。数据库唯一约束兜底跨进程重启幂等，stream sequence 使用行锁和 CAS 阻止双写。
+事件批次、账本增量、outbox 和投影在同一 pgx 事务提交。独立 publisher
+把 outbox 批次写入 event feed、推进 checkpoint、再在同一 PostgreSQL
+事务中标记源行已发布；已发布源行保留 24 小时后小批量清理。数据库唯一约束
+兜底跨进程重启幂等，stream sequence 使用行锁和 CAS 阻止双写。
 
 每 100 条命令和优雅退出时保存快照。启动流程是：
 
@@ -199,6 +205,45 @@ cd frontend && npm run dev
 MARKET_TRADING_DEMO_MAKER_ENABLED=false ./market-services trading
 ```
 
+### Mac mini 版本化发布
+
+生产发布不能再用 `manage-services.sh reload` 覆盖唯一二进制。正式流程固定为：
+
+```bash
+# 只构建到 releases/<git-sha>，不切换线上服务
+ops/macos/release-production.sh prepare
+
+# 对同一个 binary SHA 执行 Go、race、vet、前端、SLO fixture 和临时库真实恢复
+ops/macos/release-production.sh verify
+
+# 只读查看当前 binary、迁移、feed、checkpoint 与 trading/outbox 状态
+ops/macos/release-production.sh status
+
+# 新建 full + trading 备份、用本次 binary 恢复临时库、应用迁移，
+# 原子切换 symlink，并且只重启 trading/API
+ops/macos/release-production.sh deploy
+
+# 任一上线后门禁失败会自动恢复旧 binary；也可显式执行
+ops/macos/release-production.sh rollback
+```
+
+每个 release 保存 Git commit、构建时间、binary SHA-256、目标迁移 SHA-256
+和完整 migration set SHA-256；
+`verify` 的证据也绑定同一个 binary SHA。`deploy` 要求干净工作树、精确 HEAD、
+PostgreSQL ready、HMAC 已配置和数据盘至少 `35,000,000,000` 可用字节。
+迁移前必须证明所有已应用 checksum 与仓库一致，且 pending set 只能为空或
+恰好为 `2026082300025.sql`。
+迁移前的 fresh backup 必须通过临时数据库恢复、快照重放、最终 hash 和账本平衡
+检查。二进制回滚不逆向删除数据库表；迁移必须保持向后兼容。
+
+第一次切换前，旧 binary 会被捕获为 legacy release。它读取 outbox 作为 cursor
+feed，因此只允许在 24 小时兼容窗口内回滚，并且要求 event feed 的每一行仍能在
+outbox 找到；源行清理开始后自动拒绝 legacy rollback。新 release 之间都使用
+`trading_event_feed`，不受该限制。
+
+`manage-services.sh prepare` 现在只暂存 release，`reload` 只重载 plist 并继续
+运行当前 binary，避免无来源覆盖。
+
 ## 失败、降级与恢复
 
 | 故障 | 行为 | 恢复 |
@@ -246,6 +291,8 @@ go vet ./...
 go test ./trading/exchange -run='^$' -fuzz=FuzzExchange -fuzztime=10s
 go test ./trading/orderbook -run='^$' -bench=BenchmarkMatch -benchmem
 ./trading/scripts/verify-local.sh postgres
+ops/macos/release-production.sh verify
+ops/macos/release-production.sh status
 cd frontend && npm test -- --run && npm run build
 cd frontend && npm audit --audit-level=high
 cd frontend && npx playwright test
