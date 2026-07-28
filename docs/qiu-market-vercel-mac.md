@@ -145,6 +145,24 @@ provenance 响应头。不要手工把 Production alias 当成 immutable deploym
 provenance commit 都是 `2aa8bda39d2298e1d57886e472f9a090d728f56e`。旧
 `dpl_C5k5...` 没有 runtime provenance，只保留为历史证据，不再 promote。
 
+非登录 Gate 2C 可以重复执行：
+
+```bash
+bash ops/macos/verify-preview-gate.sh \
+  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
+  --deployment-url \
+    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
+  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+```
+
+报告保存在私有运行目录
+`~/Library/Application Support/Qiu Market/observations/preview-gate-latest.json`。
+OAuth 凭据或真实浏览器证据缺失时命令以退出码 2 和
+`status=environment-pending` 收口；非 OAuth 安全检查失败时退出码 1；只有全部
+证据绑定同一 deployment/commit 时才退出 0。浏览器 OAuth evidence 必须由实际
+callback、Cookie、CSRF/Origin、unknown reconcile、logout 与旧 session 401 验收
+流程生成，不得手写为通过。
+
 ## 5. 最小安全验收
 
 ```bash

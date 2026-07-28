@@ -103,6 +103,13 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
 - 公共读取实测 `MISS → FRESH`，两个响应都携带同一 provenance；
 - 40 个前端单测、生产构建、21 个本地 browser contract tests、SLO 夹具与
   diff check 通过；新 Preview 最近一次日志检查只有 200/401，没有 5xx。
+- `ops/macos/verify-preview-gate.sh` 已把非登录 Gate 2C 收敛为可重复只读验证：
+  deployment READY/Preview、当前 frontend 与 release commit 一致、普通访问被
+  Vercel Authentication 拦截、三个 SPA 深链接 200、provenance 三元组一致、
+  trading/outbox ready、匿名 session 401、直连 Funnel 401、本地登录关闭；
+- 2026-07-28 对 `dpl_7us...` 的真实验证中，上述非 OAuth 检查全部通过，报告按
+  证据门禁返回 `environment-pending / github_oauth_private_configuration_missing`，
+  没有把 preflight 误标为 Preview Gate 完成。
 
 该 Preview 已通过非登录 smoke，但仍须完成 Gate 2C 的 OAuth 与真实浏览器写操作
 验收后，才可 promote。
@@ -134,6 +141,9 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
   `redirect_uri` 使用同一基础主机和端口下的子域与匹配路径，因此上述 Preview
   callback 必须由后端固定生成，不能接受客户端任意传入；
 - 真实浏览器验证 submit/cancel/fund 的 unknown reconciliation；
+- Preview Gate 验证器只有在真实浏览器流程生成并绑定同一 deployment/commit 的
+  私有 OAuth evidence 后才会返回 `preview-gate-passed`；手工合同测试或手写 JSON
+  不能替代这份外部验收；
 - WebSocket 若环境不支持，则明确使用 cursor polling，不能伪称 WS 已验收；
 - 只 promote 已验收的同一 Preview deployment，不重新构建 Production；
 - Preview session 不跨域继承，也不能只靠 API 重启使其失效。promote 后必须在
