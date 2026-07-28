@@ -84,6 +84,11 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
   overview 均为 200（约 1.8–2.7 秒），复验 Insights 无 4xx/5xx，最近
   5 分钟 Preview Function 日志未显示 5xx。该证据只算 smoke，不算 soak。
 
+为使后续 7 天证据绑定不可变产物，BFF 已增加服务端生成的 release provenance
+响应头。旧 `dpl_C5k5...` 没有这些响应头，因此保留为历史 Preview 证据，但不再是
+最终可 promote 产物。Gate 2C 必须从包含 provenance 的新精确提交构建一次新的
+protected Preview，完成同样验收后只 promote 该 deployment。
+
 当前阻塞：
 
 - `github_oauth_enabled=false`、`local_login_enabled=false`；
@@ -125,7 +130,15 @@ Production 尚未 promote，所以正式 acceptance epoch 尚未开始。下一�
 
 - 每条样本记录 `acceptance_epoch_id`、`deployment_commit`、`scheduled_at`、
   start/end 和 duration；
+- BFF 必须从受管 `QIU_MARKET_RELEASE_COMMIT` 与 Vercel 自动提供的
+  `VERCEL_DEPLOYMENT_ID`、`VERCEL_URL` 输出 release provenance；启动 epoch 前，
+  管理脚本会从 Production 在线核对响应头与精确 deployment ID、URL、commit，
+  不匹配则拒绝开始；
 - 使用绝对墙钟分钟调度，不用会随执行时间漂移的相对间隔；
+- 只统计 schema v4、`acceptance_eligible=true` 且 epoch、Production origin、
+  deployment ID、immutable URL 与 commit 全部一致的样本。旧 713 条 schema v3
+  样本继续用于诊断，但永不计入正式 7 天窗口；缺失分钟按失败处理，同一分钟的
+  任一失败样本不能被后一个成功样本覆盖；
 - 每家 DEX 固定同 route、同名义金额 canary，route/notional 改变即重新计时；
 - 依次完成 30 分钟、24 小时、DEX 24/48/72 小时、连续 7 天；
 - 7 天覆盖率和可用率均不低于 99.5%，REST 5xx 低于 0.5%，p95 低于
@@ -157,8 +170,8 @@ chain，并额外处理 finality 与 reorg。
 ## 下一步开发顺序
 
 1. 用户提供 GitHub OAuth Client ID/Secret 后，只完成 Gate 2C；
-2. OAuth 与虚拟资金写 E2E 通过后，promote 同一 deployment
-   `dpl_C5k5...`，不重新 build；
+2. OAuth 与虚拟资金写 E2E 通过后，promote 新的同一 provenance-enabled
+   deployment，不重新 build；
 3. 从 Production promotion 时刻创建新的 acceptance epoch，依次完成
    30 分钟、24 小时、DEX 24/48/72 小时和连续 7 天；
 4. 若时间窗暴露问题，只修可信语义、恢复、对账、传输与观测；仍冻结策略、

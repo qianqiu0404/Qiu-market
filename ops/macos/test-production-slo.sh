@@ -8,18 +8,59 @@ cleanup() {
 }
 trap cleanup EXIT
 
-window_end="$(date -u '+%s')"
-window_end=$((window_end - window_end % 60))
-window_start=$((window_end - 7 * 24 * 60 * 60 + 60))
+epoch_id="qiu-market-fixture-epoch"
+deployment_id="dpl_FixtureRelease123"
+deployment_url="https://qiu-market-fixture-release.vercel.app"
+deployment_commit="19928325f9a1104d1dd3505a004dffb9fe52a714"
+production_origin="https://qiu-market.vercel.app"
+window_start=1785196800
+window_last_slot=$((window_start + 7 * 24 * 60 * 60 - 60))
+epoch_file="$fixture_dir/acceptance-epoch.json"
 healthy="$fixture_dir/healthy.jsonl"
 with_gap="$fixture_dir/with-gap.jsonl"
+with_bad_duplicates="$fixture_dir/with-bad-duplicates.jsonl"
+
+jq -n \
+  --arg epoch_id "$epoch_id" \
+  --arg production_origin "$production_origin" \
+  --arg deployment_id "$deployment_id" \
+  --arg deployment_url "$deployment_url" \
+  --arg deployment_commit "$deployment_commit" \
+  --argjson start "$window_start" '{
+    schema_version: 1,
+    epoch_id: $epoch_id,
+    status: "active",
+    production_origin: $production_origin,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    created_at: (($start - 30) | todateiso8601),
+    started_at: ($start | todateiso8601),
+    stopped_at: null
+  }' > "$epoch_file"
 
 jq -nc \
+  --arg epoch_id "$epoch_id" \
+  --arg production_origin "$production_origin" \
+  --arg deployment_id "$deployment_id" \
+  --arg deployment_url "$deployment_url" \
+  --arg deployment_commit "$deployment_commit" \
   --argjson start "$window_start" \
-  --argjson end "$window_end" '
+  --argjson end "$window_last_slot" '
   range($start; $end + 1; 60) as $at |
   {
-    observed_at: ($at | todateiso8601),
+    schema_version: 4,
+    acceptance_epoch_id: $epoch_id,
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    production_origin: $production_origin,
+    scheduled_at: ($at | todateiso8601),
+    started_at: (($at + 1) | todateiso8601),
+    finished_at: (($at + 10) | todateiso8601),
+    observed_at: (($at + 10) | todateiso8601),
+    duration_ms: 9000,
     current_checks_status: "passed",
     checks: {
       trading_bff_http: 200,
@@ -37,20 +78,86 @@ jq -nc \
   }
 ' > "$healthy"
 
+# Contamination must never count: an old schema, the same epoch with a wrong
+# commit, and a different epoch all sit inside the same JSONL history.
+jq -nc \
+  --arg epoch_id "$epoch_id" \
+  --arg production_origin "$production_origin" \
+  --arg deployment_id "$deployment_id" \
+  --arg deployment_url "$deployment_url" \
+  --arg deployment_commit "$deployment_commit" \
+  --argjson start "$window_start" '
+  {
+    schema_version: 3,
+    acceptance_epoch_id: $epoch_id,
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    production_origin: $production_origin,
+    scheduled_at: ($start | todateiso8601),
+    current_checks_status: "passed"
+  },
+  {
+    schema_version: 4,
+    acceptance_epoch_id: $epoch_id,
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: "0000000000000000000000000000000000000000",
+    production_origin: $production_origin,
+    scheduled_at: ($start | todateiso8601),
+    current_checks_status: "passed"
+  },
+  {
+    schema_version: 4,
+    acceptance_epoch_id: "qiu-market-other-epoch",
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    production_origin: $production_origin,
+    scheduled_at: ($start | todateiso8601),
+    current_checks_status: "passed"
+  }
+' >> "$healthy"
+
 healthy_report="$(
+  QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$epoch_file" \
   QIU_MARKET_SOAK_HISTORY="$healthy" \
+  QIU_MARKET_SLO_NOW_EPOCH="$window_last_slot" \
     "$repo_root/ops/macos/summarize-production-slo.sh"
 )"
 jq -e '
   .status == "production-recommendation" and
+  .acceptance_epoch_id == "qiu-market-fixture-epoch" and
+  .deployment_commit == "19928325f9a1104d1dd3505a004dffb9fe52a714" and
+  .raw_eligible_samples == 10080 and
+  .rejected_epoch_samples == 2 and
   .observed_minutes == 10080 and
   .missing_minutes == 0 and
-  .availability_percent == 100
+  .availability_percent == 100 and
+  ([.acceptance[]] | all)
 ' <<<"$healthy_report" >/dev/null
+
+partial_report="$(
+  QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$epoch_file" \
+  QIU_MARKET_SOAK_HISTORY="$healthy" \
+  QIU_MARKET_SLO_NOW_EPOCH="$((window_start + 119 * 60))" \
+    "$repo_root/ops/macos/summarize-production-slo.sh"
+)"
+jq -e '
+  .status == "environment-pending" and
+  .expected_minutes == 120 and
+  .observed_minutes == 120 and
+  .acceptance.full_7d_observation_window == false
+' <<<"$partial_report" >/dev/null
 
 awk 'NR <= 300 || NR > 360' "$healthy" > "$with_gap"
 gap_report="$(
+  QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$epoch_file" \
   QIU_MARKET_SOAK_HISTORY="$with_gap" \
+  QIU_MARKET_SLO_NOW_EPOCH="$window_last_slot" \
     "$repo_root/ops/macos/summarize-production-slo.sh"
 )"
 jq -e '
@@ -60,4 +167,68 @@ jq -e '
   .longest_observed_failure_seconds >= 3600
 ' <<<"$gap_report" >/dev/null
 
-echo "Qiu Market production SLO fixtures passed."
+cp "$healthy" "$with_bad_duplicates"
+jq -nc \
+  --arg epoch_id "$epoch_id" \
+  --arg production_origin "$production_origin" \
+  --arg deployment_id "$deployment_id" \
+  --arg deployment_url "$deployment_url" \
+  --arg deployment_commit "$deployment_commit" \
+  --argjson start "$window_start" '
+  range(300; 306) as $offset |
+  ($start + ($offset * 60)) as $at |
+  {
+    schema_version: 4,
+    acceptance_epoch_id: $epoch_id,
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    production_origin: $production_origin,
+    scheduled_at: ($at | todateiso8601),
+    started_at: (($at + 20) | todateiso8601),
+    finished_at: (($at + 30) | todateiso8601),
+    observed_at: (($at + 30) | todateiso8601),
+    duration_ms: 10000,
+    current_checks_status: "failed",
+    checks: {
+      trading_bff_http: 504,
+      system_bff_http: 200,
+      uniswap_bff_http: 200,
+      pancakeswap_bff_http: 200,
+      disk_free_bytes: (30 * 1024 * 1024 * 1024)
+    },
+    latency_ms: {
+      trading_bff: 8000,
+      system_bff: 100,
+      uniswap_bff: 100,
+      pancakeswap_bff: 100
+    }
+  }
+' >> "$with_bad_duplicates"
+duplicate_report="$(
+  QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$epoch_file" \
+  QIU_MARKET_SOAK_HISTORY="$with_bad_duplicates" \
+  QIU_MARKET_SLO_NOW_EPOCH="$window_last_slot" \
+    "$repo_root/ops/macos/summarize-production-slo.sh"
+)"
+jq -e '
+  .status == "failed" and
+  .duplicate_samples == 6 and
+  .observed_minutes == 10080 and
+  .availability_percent < 100 and
+  .longest_observed_failure_seconds == 360 and
+  .acceptance.no_interruption_over_5m == false
+' <<<"$duplicate_report" >/dev/null
+
+missing_epoch_report="$(
+  QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$fixture_dir/not-created.json" \
+  QIU_MARKET_SOAK_HISTORY="$healthy" \
+    "$repo_root/ops/macos/summarize-production-slo.sh"
+)"
+jq -e '
+  .status == "environment-pending" and
+  .reason == "acceptance_epoch_not_started"
+' <<<"$missing_epoch_report" >/dev/null
+
+echo "Qiu Market acceptance-epoch SLO fixtures passed."

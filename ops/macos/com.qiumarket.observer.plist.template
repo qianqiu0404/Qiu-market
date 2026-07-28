@@ -13,8 +13,8 @@
   <string>__REPO_ROOT__</string>
   <key>RunAtLoad</key>
   <true/>
-  <key>StartInterval</key>
-  <integer>60</integer>
+  <key>StartCalendarInterval</key>
+  <dict/>
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>

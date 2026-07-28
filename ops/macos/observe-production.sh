@@ -10,9 +10,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 support_dir="$HOME/Library/Application Support/Qiu Market"
 observation_dir="${QIU_MARKET_OBSERVATION_DIR:-$support_dir/observations}"
 production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
+epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoch.json}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
 funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
 lock_dir="$observation_dir/.observer.lock"
+started_epoch="$(date -u '+%s')"
+scheduled_epoch=$((started_epoch - started_epoch % 60))
 
 mkdir -p "$observation_dir"
 if ! mkdir "$lock_dir" 2>/dev/null; then
@@ -33,6 +36,8 @@ for command in curl jq psql; do
     exit 1
   fi
 done
+started_at="$(jq -nr --argjson epoch "$started_epoch" '$epoch | todateiso8601')"
+scheduled_at="$(jq -nr --argjson epoch "$scheduled_epoch" '$epoch | todateiso8601')"
 if [ ! -f "$repo_root/.env" ] || [ ! -f "$production_env" ]; then
   echo "Qiu Market private database or production environment is unavailable." >&2
   exit 1
@@ -50,6 +55,7 @@ curl_code() {
   local code
   local duration
   result="$(curl --silent --show-error --max-time 20 \
+    --dump-header "$output.headers" \
     --output "$output" --write-out '%{http_code} %{time_total}' "$@" \
     2>>"$temp_dir/curl-errors.log" || true)"
   code="${result%% *}"
@@ -65,6 +71,23 @@ curl_code() {
   else
     printf '000'
   fi
+}
+
+header_value() {
+  local header_file="$1"
+  local header_name="$2"
+  awk -v name="$header_name" '
+    BEGIN { IGNORECASE = 1 }
+    {
+      sub(/\r$/, "")
+      split($0, parts, ":")
+      if (tolower(parts[1]) == tolower(name)) {
+        sub(/^[^:]*:[[:space:]]*/, "", $0)
+        value = $0
+      }
+    }
+    END { print value }
+  ' "$header_file"
 }
 
 dashboard_body() {
@@ -133,6 +156,72 @@ trading_http="$(cat "$temp_dir/trading.http")"
 system_http="$(cat "$temp_dir/system.http")"
 uniswap_http="$(cat "$temp_dir/uniswap.http")"
 pancake_http="$(cat "$temp_dir/pancakeswap.http")"
+
+trading_provenance="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Provenance)"
+trading_release_commit="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Release-Commit)"
+trading_deployment_id="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Deployment-ID)"
+trading_deployment_url="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Deployment-URL)"
+system_provenance="$(header_value "$temp_dir/system.json.headers" X-Qiu-Market-Provenance)"
+system_release_commit="$(header_value "$temp_dir/system.json.headers" X-Qiu-Market-Release-Commit)"
+system_deployment_id="$(header_value "$temp_dir/system.json.headers" X-Qiu-Market-Deployment-ID)"
+system_deployment_url="$(header_value "$temp_dir/system.json.headers" X-Qiu-Market-Deployment-URL)"
+uniswap_provenance="$(header_value "$temp_dir/uniswap.json.headers" X-Qiu-Market-Provenance)"
+uniswap_release_commit="$(header_value "$temp_dir/uniswap.json.headers" X-Qiu-Market-Release-Commit)"
+uniswap_deployment_id="$(header_value "$temp_dir/uniswap.json.headers" X-Qiu-Market-Deployment-ID)"
+uniswap_deployment_url="$(header_value "$temp_dir/uniswap.json.headers" X-Qiu-Market-Deployment-URL)"
+pancake_provenance="$(header_value "$temp_dir/pancakeswap.json.headers" X-Qiu-Market-Provenance)"
+pancake_release_commit="$(header_value "$temp_dir/pancakeswap.json.headers" X-Qiu-Market-Release-Commit)"
+pancake_deployment_id="$(header_value "$temp_dir/pancakeswap.json.headers" X-Qiu-Market-Deployment-ID)"
+pancake_deployment_url="$(header_value "$temp_dir/pancakeswap.json.headers" X-Qiu-Market-Deployment-URL)"
+
+acceptance_epoch_id=""
+expected_deployment_id=""
+expected_deployment_url=""
+expected_deployment_commit=""
+epoch_started_at=""
+epoch_active=false
+if [ -s "$epoch_file" ] &&
+  jq -e '
+    .schema_version == 1 and
+    .status == "active" and
+    (.epoch_id | type == "string" and length >= 8) and
+    (.deployment_id | type == "string" and startswith("dpl_")) and
+    (.deployment_url | type == "string" and startswith("https://")) and
+    (.deployment_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+    (.started_at | type == "string") and
+    (.started_at | try fromdateiso8601 catch null | type == "number")
+  ' "$epoch_file" >/dev/null 2>&1; then
+  acceptance_epoch_id="$(jq -r '.epoch_id' "$epoch_file")"
+  expected_deployment_id="$(jq -r '.deployment_id' "$epoch_file")"
+  expected_deployment_url="$(jq -r '.deployment_url' "$epoch_file")"
+  expected_deployment_commit="$(jq -r '.deployment_commit' "$epoch_file")"
+  epoch_started_at="$(jq -r '.started_at' "$epoch_file")"
+  if [ "$scheduled_epoch" -ge "$(jq -r '.started_at | fromdateiso8601' "$epoch_file")" ]; then
+    epoch_active=true
+  fi
+fi
+
+release_provenance_match=false
+if [ "$epoch_active" = true ] &&
+  [ "$(jq -r '.production_origin' "$epoch_file")" = "$production_origin" ] &&
+  [ "$trading_provenance" = VERIFIED ] &&
+  [ "$system_provenance" = VERIFIED ] &&
+  [ "$uniswap_provenance" = VERIFIED ] &&
+  [ "$pancake_provenance" = VERIFIED ] &&
+  [ "$trading_release_commit" = "$expected_deployment_commit" ] &&
+  [ "$system_release_commit" = "$expected_deployment_commit" ] &&
+  [ "$uniswap_release_commit" = "$expected_deployment_commit" ] &&
+  [ "$pancake_release_commit" = "$expected_deployment_commit" ] &&
+  [ "$trading_deployment_id" = "$expected_deployment_id" ] &&
+  [ "$system_deployment_id" = "$expected_deployment_id" ] &&
+  [ "$uniswap_deployment_id" = "$expected_deployment_id" ] &&
+  [ "$pancake_deployment_id" = "$expected_deployment_id" ] &&
+  [ "${trading_deployment_url%/}" = "$expected_deployment_url" ] &&
+  [ "${system_deployment_url%/}" = "$expected_deployment_url" ] &&
+  [ "${uniswap_deployment_url%/}" = "$expected_deployment_url" ] &&
+  [ "${pancake_deployment_url%/}" = "$expected_deployment_url" ]; then
+  release_provenance_match=true
+fi
 
 dex_summary() {
   local provider="$1"
@@ -332,7 +421,11 @@ if jq -e '
   historical_complete=true
 fi
 
-observed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+finished_epoch="$(date -u '+%s')"
+finished_at="$(jq -nr --argjson epoch "$finished_epoch" '$epoch | todateiso8601')"
+duration_ms=$(((finished_epoch - started_epoch) * 1000))
+schedule_lag_ms=$(((started_epoch - scheduled_epoch) * 1000))
+observed_at="$finished_at"
 site_latency_ms="$(cat "$temp_dir/site.html.latency-ms")"
 funnel_latency_ms="$(cat "$temp_dir/funnel-health.txt.latency-ms")"
 trading_latency_ms="$(cat "$temp_dir/trading.json.latency-ms")"
@@ -342,7 +435,35 @@ pancake_latency_ms="$(cat "$temp_dir/pancakeswap.json.latency-ms")"
 latest_report="$observation_dir/latest.json"
 history_file="$observation_dir/production-soak.jsonl"
 jq -n \
+  --arg started_at "$started_at" \
+  --arg scheduled_at "$scheduled_at" \
+  --arg finished_at "$finished_at" \
   --arg observed_at "$observed_at" \
+  --arg acceptance_epoch_id "$acceptance_epoch_id" \
+  --arg expected_deployment_id "$expected_deployment_id" \
+  --arg expected_deployment_url "$expected_deployment_url" \
+  --arg expected_deployment_commit "$expected_deployment_commit" \
+  --arg epoch_started_at "$epoch_started_at" \
+  --arg epoch_active "$epoch_active" \
+  --arg release_provenance_match "$release_provenance_match" \
+  --arg trading_provenance "$trading_provenance" \
+  --arg trading_release_commit "$trading_release_commit" \
+  --arg trading_deployment_id "$trading_deployment_id" \
+  --arg trading_deployment_url "$trading_deployment_url" \
+  --arg system_provenance "$system_provenance" \
+  --arg system_release_commit "$system_release_commit" \
+  --arg system_deployment_id "$system_deployment_id" \
+  --arg system_deployment_url "$system_deployment_url" \
+  --arg uniswap_provenance "$uniswap_provenance" \
+  --arg uniswap_release_commit "$uniswap_release_commit" \
+  --arg uniswap_deployment_id "$uniswap_deployment_id" \
+  --arg uniswap_deployment_url "$uniswap_deployment_url" \
+  --arg pancake_provenance "$pancake_provenance" \
+  --arg pancake_release_commit "$pancake_release_commit" \
+  --arg pancake_deployment_id "$pancake_deployment_id" \
+  --arg pancake_deployment_url "$pancake_deployment_url" \
+  --arg duration_ms "$duration_ms" \
+  --arg schedule_lag_ms "$schedule_lag_ms" \
   --arg production_origin "$production_origin" \
   --arg funnel_origin "$funnel_origin" \
   --arg site_http "$site_http" \
@@ -372,7 +493,27 @@ jq -n \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
   '{
-    schema_version: 3,
+    schema_version: 4,
+    acceptance_epoch_id: (
+      if $acceptance_epoch_id == "" then null else $acceptance_epoch_id end
+    ),
+    acceptance_eligible: (
+      $epoch_active == "true" and $release_provenance_match == "true"
+    ),
+    deployment_id: (
+      if $trading_deployment_id == "" then null else $trading_deployment_id end
+    ),
+    deployment_url: (
+      if $trading_deployment_url == "" then null else $trading_deployment_url end
+    ),
+    deployment_commit: (
+      if $trading_release_commit == "" then null else $trading_release_commit end
+    ),
+    scheduled_at: $scheduled_at,
+    started_at: $started_at,
+    finished_at: $finished_at,
+    duration_ms: ($duration_ms | tonumber),
+    schedule_lag_ms: ($schedule_lag_ms | tonumber),
     observed_at: $observed_at,
     status: (
       if $sample_ok != "true" then "failed"
@@ -388,6 +529,48 @@ jq -n \
     ),
     production_origin: $production_origin,
     funnel_origin: $funnel_origin,
+    acceptance_epoch: {
+      active: ($epoch_active == "true"),
+      started_at: (
+        if $epoch_started_at == "" then null else $epoch_started_at end
+      ),
+      expected_deployment_id: (
+        if $expected_deployment_id == "" then null else $expected_deployment_id end
+      ),
+      expected_deployment_url: (
+        if $expected_deployment_url == "" then null else $expected_deployment_url end
+      ),
+      expected_deployment_commit: (
+        if $expected_deployment_commit == "" then null else $expected_deployment_commit end
+      )
+    },
+    release_provenance: {
+      all_bff_probes_match: ($release_provenance_match == "true"),
+      trading: {
+        status: $trading_provenance,
+        commit: $trading_release_commit,
+        deployment_id: $trading_deployment_id,
+        deployment_url: $trading_deployment_url
+      },
+      system: {
+        status: $system_provenance,
+        commit: $system_release_commit,
+        deployment_id: $system_deployment_id,
+        deployment_url: $system_deployment_url
+      },
+      uniswap: {
+        status: $uniswap_provenance,
+        commit: $uniswap_release_commit,
+        deployment_id: $uniswap_deployment_id,
+        deployment_url: $uniswap_deployment_url
+      },
+      pancakeswap: {
+        status: $pancake_provenance,
+        commit: $pancake_release_commit,
+        deployment_id: $pancake_deployment_id,
+        deployment_url: $pancake_deployment_url
+      }
+    },
     checks: {
       production_page_http: ($site_http | tonumber? // 0),
       funnel_health_http: ($funnel_health_http | tonumber? // 0),

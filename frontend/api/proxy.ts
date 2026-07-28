@@ -18,6 +18,8 @@ const RUNTIME_CACHE_TIMEOUT_MS = 250
 const PUBLIC_REVALIDATION_CONCURRENCY = 2
 const PUBLIC_CACHE_CONTROL =
   'public, max-age=0, s-maxage=15, stale-while-revalidate=300, stale-if-error=300'
+const RELEASE_COMMIT_PATTERN = /^[0-9a-f]{40}$/i
+const DEPLOYMENT_ID_PATTERN = /^dpl_[A-Za-z0-9]+$/
 const RETRYABLE_GET_PATHS = [
   /^\/api\/v1\/trading\/auth\/capabilities$/,
   /^\/api\/v1\/trading\/session$/,
@@ -46,6 +48,78 @@ interface QiuProxyResponse extends ServerResponse {
   status(code: number): QiuProxyResponse
   json(value: unknown): void
   send(value: Buffer): void
+}
+
+export interface ReleaseProvenance {
+  status: 'VERIFIED' | 'UNCONFIGURED'
+  commit?: string
+  deploymentID?: string
+  deploymentURL?: string
+}
+
+function normalizedDeploymentURL(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed || /[\r\n]/.test(trimmed)) return undefined
+  try {
+    const url = new URL(
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+        ? trimmed
+        : `https://${trimmed}`,
+    )
+    if (
+      url.protocol !== 'https:' ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    ) {
+      return undefined
+    }
+    url.pathname = url.pathname.replace(/\/+$/, '')
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return undefined
+  }
+}
+
+export function releaseProvenance(): ReleaseProvenance {
+  const commit = process.env.QIU_MARKET_RELEASE_COMMIT?.trim().toLowerCase()
+  const deploymentID = (
+    process.env.QIU_MARKET_DEPLOYMENT_ID ??
+    process.env.VERCEL_DEPLOYMENT_ID
+  )?.trim()
+  const deploymentURL = normalizedDeploymentURL(
+    process.env.QIU_MARKET_DEPLOYMENT_URL ?? process.env.VERCEL_URL,
+  )
+  if (
+    !commit ||
+    !RELEASE_COMMIT_PATTERN.test(commit) ||
+    !deploymentID ||
+    !DEPLOYMENT_ID_PATTERN.test(deploymentID) ||
+    !deploymentURL
+  ) {
+    return { status: 'UNCONFIGURED' }
+  }
+  return {
+    status: 'VERIFIED',
+    commit,
+    deploymentID,
+    deploymentURL,
+  }
+}
+
+function setReleaseProvenanceHeaders(response: QiuProxyResponse): void {
+  const provenance = releaseProvenance()
+  response.setHeader('X-Qiu-Market-Provenance', provenance.status)
+  if (provenance.commit) {
+    response.setHeader('X-Qiu-Market-Release-Commit', provenance.commit)
+  }
+  if (provenance.deploymentID) {
+    response.setHeader('X-Qiu-Market-Deployment-ID', provenance.deploymentID)
+  }
+  if (provenance.deploymentURL) {
+    response.setHeader('X-Qiu-Market-Deployment-URL', provenance.deploymentURL)
+  }
 }
 
 function requiredEnvironment(name: string): string {
@@ -264,6 +338,7 @@ export default async function handler(
   response: QiuProxyResponse,
 ): Promise<void> {
   response.setHeader('Cache-Control', 'no-store')
+  setReleaseProvenanceHeaders(response)
   const requestID = firstHeader(request.headers['x-request-id']) ?? randomUUID()
   const startedAt = Date.now()
   response.setHeader('X-Request-ID', requestID)

@@ -128,12 +128,16 @@ VITE_TRADING_WS_ORIGIN=https://<node>.<tailnet>.ts.net
 
 ```text
 VITE_TRADING_EVENT_MODE=polling
+QIU_MARKET_RELEASE_COMMIT=<当前精确 40 字符 Git commit>
 ```
 
 当前账号环境先使用同源 cursor polling；Vercel WebSocket beta 未完成实测前不宣称
 WebSocket 已验收。先从本地精确 commit 构建 Preview，完成页面、API、鉴权和恢复
 验收后，再将同一 deployment promote 到 Production，不重新构建。BFF 的完整
 upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请求从不自动重试。
+项目必须启用 Vercel 的 System Environment Variables。`VERCEL_DEPLOYMENT_ID` 和
+`VERCEL_URL` 由 Vercel 自动提供，BFF 将两者与受管 release commit 作为不可变
+provenance 响应头。不要手工把 Production alias 当成 immutable deployment URL。
 
 ## 5. 最小安全验收
 
@@ -171,7 +175,8 @@ bash ops/macos/compact-kline-indexes.sh
 
 ## 7. 24/48/72 小时与 7 天生产观察
 
-生产观察器是只读验收定时器，不是第六个业务服务。它每 60 秒检查：
+生产观察器是只读验收定时器，不是第六个业务服务。LaunchAgent 使用绝对墙钟分钟
+调度，每个 UTC 分钟触发一次，而不是从上次结束后相对等待 60 秒。它检查：
 
 - Production 页面和 Vercel BFF；
 - Funnel `/healthz` 以及未签名 REST 必须返回 401；
@@ -193,16 +198,37 @@ bash ops/macos/manage-observer.sh status
 bash ops/macos/summarize-production-slo.sh
 ```
 
+未 promote 时不要创建正式 epoch。promote 同一 Preview deployment、完成
+Production OAuth 和最小写验收后，使用 Vercel 返回的真实 deployment ID、
+immutable deployment URL 与完整提交创建 epoch：
+
+```bash
+bash ops/macos/manage-acceptance-epoch.sh start \
+  --deployment-id dpl_... \
+  --deployment-url https://<immutable-deployment>.vercel.app \
+  --commit <40-character-release-commit>
+```
+
+脚本先请求 Production BFF，只有 provenance 响应头与三个参数完全相符才写入
+私有 epoch 文件。窗口从下一个 UTC 整分钟开始；已有 active epoch 不会被覆盖，
+需要放弃时必须显式 `stop`，旧文件会在下一次 start 前归档。
+
 证据保存在私有运行目录，不进入仓库：
 
 ```text
 ~/Library/Application Support/Qiu Market/observations/latest.json
 ~/Library/Application Support/Qiu Market/observations/production-soak.jsonl
+~/Library/Application Support/Qiu Market/observations/acceptance-epoch.json
 ```
 
-`latest.json` 是当前状态，JSONL 是追加式审计历史。滚动汇总只有在至少 10,080 个
-一分钟样本、可用率不低于 99.5%、REST 5xx 低于 0.5%、REST p95 低于 5 秒、单次
-中断不超过 5 分钟且磁盘始终不少于 25GiB 时，才输出
+`latest.json` 是当前状态，JSONL 是追加式审计历史。正式汇总不是混合部署的滚动
+窗口：它只接受 schema v4、epoch ID、Production origin、deployment ID、immutable
+URL 和 release commit 全部匹配且 provenance 在线校验通过的样本。旧 schema、
+其它 epoch 和其它 release 永远不计入；漏掉的墙钟分钟按失败处理，同一分钟的重复
+样本采用“任一失败即失败”。
+
+只有完整 10,080 个预定分钟、监控覆盖率和可用率均不低于 99.5%、REST 5xx 低于
+0.5%、REST p95 低于 5 秒、单次中断不超过 5 分钟且磁盘始终不少于 25GiB 时，才输出
 `production-recommendation`。顶层 `status = observing`
 表示当前检查通过但长窗口仍在积累；只有六个 provider/window 组合全部通过才成为
 `passed`，当前检查失败则为 `failed`。停止观察器不会删除历史：

@@ -28,7 +28,10 @@ vi.mock('@vercel/functions', () => ({
   },
 }))
 
-import handler, { isRetryableUpstreamRequest } from '../api/proxy'
+import handler, {
+  isRetryableUpstreamRequest,
+  releaseProvenance,
+} from '../api/proxy'
 
 function proxyRequest(pageSize = 37) {
   return {
@@ -77,6 +80,10 @@ function proxyResponse() {
 beforeEach(() => {
   process.env.S78_BACKEND_ORIGIN = 'https://backend.example'
   process.env.S78_PROXY_HMAC_SECRET = 'unit-test-secret'
+  process.env.QIU_MARKET_RELEASE_COMMIT =
+    '19928325f9a1104d1dd3505a004dffb9fe52a714'
+  process.env.VERCEL_DEPLOYMENT_ID = 'dpl_PreviewFixture123'
+  process.env.VERCEL_URL = 'qiu-market-preview.vercel.app'
   vercelFunctions.values.clear()
   vercelFunctions.waitTasks.length = 0
 })
@@ -86,6 +93,53 @@ afterEach(() => {
   vi.unstubAllGlobals()
   delete process.env.S78_BACKEND_ORIGIN
   delete process.env.S78_PROXY_HMAC_SECRET
+  delete process.env.QIU_MARKET_RELEASE_COMMIT
+  delete process.env.QIU_MARKET_DEPLOYMENT_ID
+  delete process.env.QIU_MARKET_DEPLOYMENT_URL
+  delete process.env.VERCEL_DEPLOYMENT_ID
+  delete process.env.VERCEL_URL
+})
+
+describe('releaseProvenance', () => {
+  it('normalizes immutable release identity without trusting request input', () => {
+    expect(releaseProvenance()).toEqual({
+      status: 'VERIFIED',
+      commit: '19928325f9a1104d1dd3505a004dffb9fe52a714',
+      deploymentID: 'dpl_PreviewFixture123',
+      deploymentURL: 'https://qiu-market-preview.vercel.app',
+    })
+  })
+
+  it('fails closed when either release identity component is invalid', () => {
+    process.env.QIU_MARKET_RELEASE_COMMIT = '1992832'
+    process.env.QIU_MARKET_DEPLOYMENT_URL = 'https://bad.example/\r\ninjected'
+    expect(releaseProvenance()).toEqual({ status: 'UNCONFIGURED' })
+  })
+
+  it('does not claim verified provenance without the deployment ID', () => {
+    delete process.env.VERCEL_DEPLOYMENT_ID
+    expect(releaseProvenance()).toEqual({ status: 'UNCONFIGURED' })
+  })
+
+  it('attaches provenance even to BFF validation failures', async () => {
+    const rejected = proxyResponse()
+    await handler({
+      ...proxyRequest(),
+      query: {},
+    } as never, rejected.response as never)
+
+    expect(rejected.result.statusCode).toBe(400)
+    expect(rejected.result.headers.get('x-qiu-market-provenance')).toBe('VERIFIED')
+    expect(rejected.result.headers.get('x-qiu-market-release-commit')).toBe(
+      '19928325f9a1104d1dd3505a004dffb9fe52a714',
+    )
+    expect(rejected.result.headers.get('x-qiu-market-deployment-id')).toBe(
+      'dpl_PreviewFixture123',
+    )
+    expect(rejected.result.headers.get('x-qiu-market-deployment-url')).toBe(
+      'https://qiu-market-preview.vercel.app',
+    )
+  })
 })
 
 describe('isRetryableUpstreamRequest', () => {
@@ -166,6 +220,10 @@ describe('public stale-while-revalidate', () => {
     )
     await Promise.all([...vercelFunctions.waitTasks])
     expect(first.result.headers.get('x-qiu-market-cache')).toBe('MISS')
+    expect(first.result.headers.get('x-qiu-market-provenance')).toBe('VERIFIED')
+    expect(first.result.headers.get('x-qiu-market-release-commit')).toBe(
+      '19928325f9a1104d1dd3505a004dffb9fe52a714',
+    )
 
     vercelFunctions.waitTasks.length = 0
     vi.setSystemTime(new Date('2026-07-28T00:00:16Z'))
@@ -178,6 +236,9 @@ describe('public stale-while-revalidate', () => {
     expect(vercelFunctions.waitTasks).toHaveLength(1)
     expect(staleOne.result.statusCode).toBe(200)
     expect(staleOne.result.headers.get('x-qiu-market-cache')).toBe('STALE')
+    expect(staleOne.result.headers.get('x-qiu-market-deployment-url')).toBe(
+      'https://qiu-market-preview.vercel.app',
+    )
     expect(staleOne.result.headers.get('age')).toBe('16')
     const agedRow = JSON.parse(staleOne.result.body.toString()).result[0]
     expect(agedRow.freshness_age_seconds).toBe(66)

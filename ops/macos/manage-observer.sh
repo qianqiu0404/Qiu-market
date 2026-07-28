@@ -6,6 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 support_dir="$HOME/Library/Application Support/Qiu Market"
 log_dir="$support_dir/logs"
 observation_dir="$support_dir/observations"
+epoch_file="$observation_dir/acceptance-epoch.json"
 launch_dir="$HOME/Library/LaunchAgents"
 label="com.qiumarket.observer"
 target="$launch_dir/$label.plist"
@@ -35,7 +36,7 @@ install_observer() {
     echo "Failed to install Qiu Market production observer." >&2
     return 1
   fi
-  echo "Installed Qiu Market production observer (every 60 seconds)."
+  echo "Installed Qiu Market production observer (on UTC wall-clock minute boundaries)."
 }
 
 case "$action" in
@@ -53,6 +54,17 @@ case "$action" in
     fi
     if [ -f "$observation_dir/latest.json" ]; then
       jq '{
+        schema_version,
+        acceptance_epoch_id,
+        acceptance_eligible,
+        deployment_id,
+        deployment_url,
+        deployment_commit,
+        scheduled_at,
+        started_at,
+        finished_at,
+        duration_ms,
+        schedule_lag_ms,
         observed_at,
         status,
         current_checks_status,
@@ -63,6 +75,20 @@ case "$action" in
       }' "$observation_dir/latest.json"
     else
       echo "No production observation has been recorded yet."
+    fi
+    if [ -f "$epoch_file" ]; then
+      echo "acceptance epoch:"
+      jq '{
+        epoch_id,
+        status,
+        deployment_id,
+        deployment_url,
+        deployment_commit,
+        started_at,
+        stopped_at
+      }' "$epoch_file"
+    else
+      echo "acceptance epoch: not-started"
     fi
     ;;
   uninstall)
