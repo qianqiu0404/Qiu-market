@@ -28,6 +28,7 @@ deployment_id=""
 deployment_url=""
 deployment_commit=""
 window_id=""
+window_opened_at=""
 rollback_required=false
 lock_owned=false
 
@@ -404,6 +405,7 @@ load_identity_from_state() {
   deployment_url="$(jq -r '.deployment_url // ""' "$state_file")"
   deployment_commit="$(jq -r '.deployment_commit // ""' "$state_file")"
   window_id="$(jq -r '.window_id // ""' "$state_file")"
+  window_opened_at="$(jq -r '.opened_at // ""' "$state_file")"
   production_origin="$(jq -r '.production_origin // ""' "$state_file")"
   production_callback="$(jq -r '.production_callback // ""' "$state_file")"
 }
@@ -441,6 +443,7 @@ finish_restoration() {
     --arg deployment_url "$deployment_url" \
     --arg deployment_commit "$deployment_commit" \
     --arg window_id "$window_id" \
+    --arg window_opened_at "$window_opened_at" \
     --arg completed_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
       {
         schema_version: 1,
@@ -449,6 +452,7 @@ finish_restoration() {
         deployment_url: $deployment_url,
         deployment_commit: $deployment_commit,
         window_id: $window_id,
+        window_opened_at: $window_opened_at,
         production_configuration_restored: true,
         production_oauth_runtime_verified: true,
         completed_at: $completed_at
@@ -621,8 +625,13 @@ case "$action" in
     rewrite_environment "$original_allowed,$deployment_url" "$preview_callback"
     restart_and_wait_for_api
     verify_oauth_runtime preview "$preview_callback"
-    opened_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    write_state open "$original_allowed" "$original_redirect" "$backup_sha" "$opened_at"
+    window_opened_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    write_state \
+      open \
+      "$original_allowed" \
+      "$original_redirect" \
+      "$backup_sha" \
+      "$window_opened_at"
 
     rollback_required=false
     trap - EXIT HUP INT TERM
@@ -654,7 +663,7 @@ case "$action" in
       echo "Preview OAuth window is not in the closeable open phase." >&2
       exit 1
     fi
-    opened_at="$(jq -r '.opened_at // ""' "$state_file")"
+    opened_at="$window_opened_at"
     evidence_mode=""
     if [ -f "$preclose_evidence" ] && [ ! -L "$preclose_evidence" ]; then
       evidence_mode="$(stat -f '%Lp' "$preclose_evidence")"

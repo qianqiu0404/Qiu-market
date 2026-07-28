@@ -210,8 +210,11 @@ bash ops/macos/manage-preview-oauth-window.sh close
 `close` 只有在 pre-close evidence 完整时才恢复 Production；恢复后还会再次在线
 核对 OAuth capability、固定 Production callback 和 state Cookie。浏览器保留原
 Preview context，再验证 session 为 401、写操作被拒绝，最后才生成供
-`verify-preview-gate.sh` 使用的完整 `preview-oauth-evidence.json`。因此 pre-close
-证据和最终 Gate 证据是两个阶段，不能提前把 stale-session 写成通过。
+`verify-preview-gate.sh` 使用的 schema v2 `preview-oauth-evidence.json`。最终证据
+必须逐项匹配私有 `preview-oauth-window/last.json` 中的 deployment、commit、
+`window_id`、`window_opened_at` 与 `completed_at`，而且 last 状态必须是
+`closed_after_verified_logout`；`abort` 报告或旧窗口 evidence 都不能通过。因此
+pre-close 证据和最终 Gate 证据是两个阶段，不能提前把 stale-session 写成通过。
 
 如果浏览器验收失败、用户中止或无法安全生成 logout 证据，执行：
 

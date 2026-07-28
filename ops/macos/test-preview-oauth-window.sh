@@ -111,7 +111,10 @@ after_close_sha="$(shasum -a 256 "$production_env" | awk '{print $1}')"
 jq -e '
   .status == "closed_after_verified_logout" and
   .production_configuration_restored == true and
-  .production_oauth_runtime_verified == true
+  .production_oauth_runtime_verified == true and
+  ((.window_id // "") | test("^[0-9a-f]{32}$")) and
+  ((.window_opened_at // "") | length > 0) and
+  .completed_at >= .window_opened_at
 ' "$fixture_dir/close.json" >/dev/null
 [ ! -e "$support_dir/preview-oauth-window/active.json" ]
 [ ! -e "$support_dir/preview-oauth-window/production.env.before-preview" ]

@@ -117,6 +117,10 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
   Production 且永不升级验收状态。夹具已覆盖无变更预检、成功打开、重复打开拒绝、
   无 evidence 关闭拒绝、正常关闭、打开后故障回滚和紧急中止。它减少手工配置风险，
   但不替代尚未执行的真实 GitHub OAuth 浏览器验收。
+- 最终 Preview gate 只接受 schema v2 浏览器 evidence，并要求它与受管 close 报告
+  的 deployment、commit、随机 `window_id`、打开时间和关闭时间完全一致；close
+  报告还必须证明 Production 配置已恢复且 OAuth runtime 已复验。旧 schema v1、
+  `abort`、错 window 或只完成 logout 未验证 stale session 的证据都保持 pending。
 - 2026-07-28 对真实私有环境运行受管 `preflight` 返回退出码 2：
   `GitHub OAuth credentials are still missing`；前后环境文件 SHA-256 一致，窗口状态
   仍为 `closed / never_opened`。因此没有打开维护窗、没有重启 API、没有改变

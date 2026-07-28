@@ -7,6 +7,7 @@ support_dir="$HOME/Library/Application Support/Qiu Market"
 production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
 evidence_file="${QIU_MARKET_PREVIEW_OAUTH_EVIDENCE_FILE:-$support_dir/observations/preview-oauth-evidence.json}"
 report_file="${QIU_MARKET_PREVIEW_GATE_REPORT:-$support_dir/observations/preview-gate-latest.json}"
+window_report="${QIU_MARKET_PREVIEW_OAUTH_WINDOW_REPORT:-$support_dir/preview-oauth-window/last.json}"
 funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
 
 deployment_id=""
@@ -249,13 +250,58 @@ if [ -f "$production_env" ]; then
   unset oauth_client_id oauth_client_secret
 fi
 
+managed_oauth_close_evidence=false
+closed_window_id=""
+closed_window_opened_at=""
+closed_at=""
+window_report_mode=""
+if [ -f "$window_report" ] && [ ! -L "$window_report" ]; then
+  window_report_mode="$(stat -f '%Lp' "$window_report")"
+fi
+if { [ "$window_report_mode" = 600 ] || [ "$window_report_mode" = 400 ]; } &&
+  jq -e \
+    --arg deployment_id "$deployment_id" \
+    --arg deployment_commit "$deployment_commit" '
+      .schema_version == 1 and
+      .status == "closed_after_verified_logout" and
+      .deployment_id == $deployment_id and
+      .deployment_commit == $deployment_commit and
+      ((.window_id // "") | test("^[0-9a-f]{32}$")) and
+      ((.window_opened_at // "") | length > 0) and
+      .production_configuration_restored == true and
+      .production_oauth_runtime_verified == true and
+      (
+        (.window_opened_at) as $opened |
+        (.completed_at) as $closed |
+        try (($opened | fromdateiso8601) <= ($closed | fromdateiso8601))
+        catch false
+      )
+    ' "$window_report" >/dev/null 2>&1; then
+  managed_oauth_close_evidence=true
+  closed_window_id="$(jq -r '.window_id' "$window_report")"
+  closed_window_opened_at="$(jq -r '.window_opened_at' "$window_report")"
+  closed_at="$(jq -r '.completed_at' "$window_report")"
+fi
+
 oauth_browser_evidence=false
-if [ -s "$evidence_file" ] && jq -e \
+evidence_mode=""
+if [ -f "$evidence_file" ] && [ ! -L "$evidence_file" ]; then
+  evidence_mode="$(stat -f '%Lp' "$evidence_file")"
+fi
+if [ "$managed_oauth_close_evidence" = true ] &&
+  { [ "$evidence_mode" = 600 ] || [ "$evidence_mode" = 400 ]; } &&
+  [ -s "$evidence_file" ] && jq -e \
   --arg deployment_id "$deployment_id" \
-  --arg deployment_commit "$deployment_commit" '
-    .schema_version == 1 and
+  --arg deployment_commit "$deployment_commit" \
+  --arg window_id "$closed_window_id" \
+  --arg window_opened_at "$closed_window_opened_at" \
+  --arg maintenance_closed_at "$closed_at" '
+    .schema_version == 2 and
     .deployment_id == $deployment_id and
     .deployment_commit == $deployment_commit and
+    .window_id == $window_id and
+    .window_opened_at == $window_opened_at and
+    .maintenance_closed_at == $maintenance_closed_at and
     .callback_single_use == true and
     .secure_cookie == true and
     .csrf_rejected == true and
@@ -265,7 +311,14 @@ if [ -s "$evidence_file" ] && jq -e \
     .fund_unknown_reconciled == true and
     .preview_logout_204 == true and
     .stale_preview_session_401 == true and
-    (.completed_at | type == "string")
+    (
+      (.completed_at) as $completed |
+      try (
+        ($completed | fromdateiso8601) >=
+        ($maintenance_closed_at | fromdateiso8601)
+      )
+      catch false
+    )
   ' "$evidence_file" >/dev/null 2>&1; then
   oauth_browser_evidence=true
 fi
@@ -292,10 +345,16 @@ if [ "$non_oauth_checks" = true ]; then
   exit_code=2
   if [ "$oauth_private_configured" = true ] &&
     [ "$github_oauth_capability" = true ]; then
+    reason=managed_oauth_close_evidence_missing
+  fi
+  if [ "$oauth_private_configured" = true ] &&
+    [ "$github_oauth_capability" = true ] &&
+    [ "$managed_oauth_close_evidence" = true ]; then
     reason=oauth_browser_evidence_missing
   fi
   if [ "$oauth_private_configured" = true ] &&
     [ "$github_oauth_capability" = true ] &&
+    [ "$managed_oauth_close_evidence" = true ] &&
     [ "$oauth_browser_evidence" = true ]; then
     status=preview-gate-passed
     reason=all_preview_security_evidence_verified
@@ -322,6 +381,7 @@ jq -n \
   --arg local_login_disabled "$local_login_disabled" \
   --arg oauth_private_configured "$oauth_private_configured" \
   --arg github_oauth_capability "$github_oauth_capability" \
+  --arg managed_oauth_close_evidence "$managed_oauth_close_evidence" \
   --arg oauth_browser_evidence "$oauth_browser_evidence" \
   '{
     schema_version: 1,
@@ -348,6 +408,8 @@ jq -n \
         ($oauth_private_configured == "true"),
       github_oauth_runtime_capability:
         ($github_oauth_capability == "true"),
+      managed_oauth_close_evidence_verified:
+        ($managed_oauth_close_evidence == "true"),
       oauth_browser_evidence_verified:
         ($oauth_browser_evidence == "true")
     }
