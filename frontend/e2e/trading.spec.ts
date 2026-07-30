@@ -449,9 +449,39 @@ test('trade page does not probe a session when every login method is disabled', 
   await page.goto('/trade/BTC-USDT')
 
   await expect(page.getByText('登录未配置')).toBeVisible()
-  await expect(page.getByText('polling', { exact: true })).toHaveCount(2)
   await expect(page.getByText('offline', { exact: true })).toHaveCount(0)
+  await expect(page.getByTestId('terminal-availability')).toHaveText('LIVE')
+  await expect(page.getByTestId('transport-state')).toHaveText('polling')
   expect(sessionRequests).toBe(0)
+})
+
+test('status older than ten seconds degrades the terminal and closes every write gate', async ({ page }) => {
+  await page.addInitScript(() => {
+    const realNow = Date.now.bind(Date)
+    const clock = window as typeof window & { __tradeClockOffset?: number }
+    clock.__tradeClockOffset = 0
+    Date.now = () => realNow() + (clock.__tradeClockOffset ?? 0)
+  })
+  const harness = await installHarness(page)
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+  await expect(page.getByTestId('terminal-availability')).toHaveText('LIVE')
+  await expect(page.getByTestId('write-gate-reason')).toContainText('write_gate=ready')
+
+  harness.setPanelFailure('status')
+  await page.evaluate(() => {
+    const clock = window as typeof window & { __tradeClockOffset?: number }
+    clock.__tradeClockOffset = 11_500
+  })
+
+  await expect(page.getByTestId('terminal-availability')).toHaveText('DEGRADED')
+  await expect(page.getByTestId('matching-state')).toHaveText('stale')
+  await expect(page.getByText(/data_age_seconds=1[1-9]/)).toBeVisible()
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=matching_status_stale',
+  )
+  await expect(page.getByRole('button', { name: '买入 BTC' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '发放虚拟资金' })).toBeDisabled()
 })
 
 test('slow public polling reuses one in-flight refresh batch', async ({ page }) => {
@@ -575,6 +605,11 @@ test('open cancel unknown replays the original request ID exactly once', async (
 
   await page.getByRole('button', { name: '撤单' }).click()
   await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
+  await expect(page.getByTestId('terminal-availability')).toHaveText('DEGRADED')
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=reconcile_pending',
+  )
+  await expect(page.getByRole('button', { name: '买入 BTC' })).toBeDisabled()
   expect(harness.orders[0]?.status).toBe('open')
 
   await page.getByRole('button', { name: '使用原 ID 核对' }).click()

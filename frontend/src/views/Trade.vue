@@ -45,6 +45,10 @@ import {
   panelReadAvailability,
   type PanelReadState,
 } from '../trading/panel-state'
+import {
+  deriveTerminalHealth,
+  type EventTransportState,
+} from '../trading/terminal-health'
 
 echarts.use([
   CandlestickChart,
@@ -89,9 +93,8 @@ const status = ref<TradingStatus>({
 const errorMessage = ref('')
 const notice = ref('')
 const busy = ref(false)
-const wsState = ref<'offline' | 'connecting' | 'live' | 'retrying' | 'polling'>('polling')
+const wsState = ref<EventTransportState>('polling')
 const cursor = ref<EventEnvelope>()
-const lastStatusAt = ref(0)
 const lastPrivateAt = ref(0)
 const pendingWrite = ref<PendingTradingWrite | null>(null)
 const nowMs = ref(Date.now())
@@ -118,6 +121,7 @@ let reconnectTimer: number | undefined
 let publicTimer: number | undefined
 let marketTimer: number | undefined
 let refreshTimer: number | undefined
+let clockTimer: number | undefined
 let publicRefreshPromise: Promise<void> | undefined
 let marketRefreshRunning = false
 
@@ -147,26 +151,18 @@ const referenceIsFresh = computed(() =>
 )
 const bestAsk = computed(() => book.value.asks[0]?.price ?? '')
 const bestBid = computed(() => book.value.bids[0]?.price ?? '')
-const statusAgeSeconds = computed(() =>
-  lastStatusAt.value ? Math.max(0, Math.floor((Date.now() - lastStatusAt.value) / 1000)) : -1,
-)
-const matchingState = computed(() => {
-  if (statusAgeSeconds.value < 0 || statusAgeSeconds.value > 10) return 'degraded'
-  return status.value.state
-})
-const liquidityState = computed(() =>
-  book.value.bids.length > 0 && book.value.asks.length > 0 ? 'active' : 'paused',
-)
-const transportState = computed(() => {
-  const failures = [
-    panels.orderbook.error,
-    panels.publicTrades.error,
-    panels.status.error,
-  ].filter(Boolean).length
-  if (failures === 0 && statusAgeSeconds.value >= 0 && statusAgeSeconds.value <= 10) return 'live'
-  if (lastStatusAt.value > 0) return 'degraded'
-  return 'offline'
-})
+const terminalHealth = computed(() => deriveTerminalHealth({
+  now: nowMs.value,
+  loggedIn: principal.value !== null,
+  matchingStatus: status.value.state,
+  statusRead: panels.status,
+  orderbookRead: panels.orderbook,
+  hasBids: book.value.bids.length > 0,
+  hasAsks: book.value.asks.length > 0,
+  eventTransport: wsState.value,
+  privateDataAt: lastPrivateAt.value,
+  reconcileComplete: pendingWrite.value === null,
+}))
 const unknownClientOrderID = computed(() =>
   pendingWrite.value?.operation === 'submit'
     ? pendingWrite.value.request_id
@@ -182,15 +178,11 @@ const pendingWriteLabel = computed(() => {
   return `${operation} ${pendingWrite.value.request_id}`
 })
 const writesEnabled = computed(() => {
-  if (!loggedIn.value || busy.value || pendingWrite.value) return false
-  if (statusAgeSeconds.value < 0 || statusAgeSeconds.value > 10 || status.value.state !== 'ready') {
-    return false
-  }
-  if (tradingEventMode() === 'polling') {
-    return lastPrivateAt.value > 0 && Date.now() - lastPrivateAt.value <= 10_000
-  }
-  return wsState.value === 'live'
+  return !busy.value && terminalHealth.value.writesAllowed
 })
+const writeGateReason = computed(() =>
+  busy.value ? 'request_in_flight' : (terminalHealth.value.writeBlockReason || 'ready'),
+)
 
 function randomID(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
@@ -331,7 +323,6 @@ async function loadPublicOnce(): Promise<void> {
   }
   if (statusResult.status === 'fulfilled') {
     status.value = statusResult.value
-    lastStatusAt.value = Date.now()
     completePanel('status')
   } else {
     failPanel('status', statusResult.reason)
@@ -790,6 +781,9 @@ watch(klineInterval, () => void loadKline())
 
 onMounted(async () => {
   restorePendingWrite()
+  clockTimer = window.setInterval(() => {
+    nowMs.value = Date.now()
+  }, 1000)
   await Promise.all([loadPublic(), refreshMarketData(), loadAuthCapabilities()])
   if (
     authCapabilities.value.github_oauth_enabled ||
@@ -809,6 +803,7 @@ onBeforeUnmount(() => {
   if (publicTimer) window.clearInterval(publicTimer)
   if (marketTimer) window.clearInterval(marketTimer)
   if (refreshTimer) window.clearTimeout(refreshTimer)
+  if (clockTimer) window.clearInterval(clockTimer)
   window.removeEventListener('resize', resizeChart)
   chart?.dispose()
   chart = null
@@ -869,22 +864,31 @@ onBeforeUnmount(() => {
         </em>
       </article>
       <article class="trade-metric card">
-        <span>撮合运行时</span>
-        <strong>{{ matchingState }}</strong>
+        <span>终端一致性</span>
+        <strong
+          data-testid="terminal-availability"
+          :class="`terminal-availability terminal-availability--${terminalHealth.availability.toLowerCase()}`"
+        >{{ terminalHealth.availability }}</strong>
         <em>
-          sequence {{ status.sequence }} · {{ panelStateLabel('status') }}
-          <template v-if="panels.status.error"> · {{ panels.status.error }}</template>
+          data_age_seconds={{ terminalHealth.dataAgeSeconds < 0 ? 'unknown' : terminalHealth.dataAgeSeconds }}
+          · write_gate={{ writeGateReason }}
         </em>
       </article>
       <article class="trade-metric card">
-        <span>恢复与事件</span>
-        <strong>{{ status.recovery_count }}</strong>
-        <em>recovery count · hash replay guarded</em>
+        <span>撮合运行时</span>
+        <strong data-testid="matching-state">{{ terminalHealth.matchingState }}</strong>
+        <em>
+          matching_state={{ terminalHealth.matchingState }} · sequence {{ status.sequence }}
+          · {{ panelStateLabel('status') }}
+        </em>
       </article>
       <article class="trade-metric card">
         <span>传输 / 流动性</span>
-        <strong>{{ transportState }}</strong>
-        <em>{{ wsState }} · liquidity {{ liquidityState }}</em>
+        <strong data-testid="transport-state">{{ terminalHealth.transportState }}</strong>
+        <em>
+          transport_state={{ terminalHealth.transportState }}
+          · liquidity_state={{ terminalHealth.liquidityState }}
+        </em>
       </article>
     </section>
 
@@ -966,7 +970,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="book-spread">
           <button :disabled="!bestBid" @click="useBookPrice('bid')">Bid {{ bestBid || '—' }}</button>
-          <strong>{{ matchingState.toUpperCase() }}</strong>
+          <strong>{{ terminalHealth.matchingState.toUpperCase() }}</strong>
           <button :disabled="!bestAsk" @click="useBookPrice('ask')">Ask {{ bestAsk || '—' }}</button>
         </div>
         <div class="book-side book-side--bids">
@@ -1037,6 +1041,9 @@ onBeforeUnmount(() => {
             </label>
           </div>
           <p v-if="marketSell" class="entry-hint">Market Sell 使用 BTC 数量，并固定为 IOC。</p>
+          <p class="entry-hint" data-testid="write-gate-reason">
+            write_gate={{ writeGateReason }} · status freshness limit 10s
+          </p>
           <button
             class="submit-order"
             :class="`submit-order--${form.side}`"
@@ -1274,6 +1281,9 @@ onBeforeUnmount(() => {
 
 .trade-metric strong small { color: var(--text-3); font-size: 11px; }
 .trade-metric em { color: var(--text-3); font-size: 11px; font-style: normal; }
+.terminal-availability--live { color: var(--up); }
+.terminal-availability--degraded { color: var(--warn); }
+.terminal-availability--offline { color: var(--down); }
 .freshness--fresh { color: var(--up) !important; }
 .freshness--stale { color: var(--warn) !important; }
 .freshness--unavailable { color: var(--down) !important; }
