@@ -5,6 +5,13 @@ import {
   getMarketDashboard,
   getMarketPriceTicks,
   getTop50VenueInsights,
+  isMarketPriceFactMonotonic,
+  marketTickCacheKey,
+  mergeMarketPriceTickSnapshot,
+  unavailableMarketPriceFact,
+  type MarketPriceFact,
+  type MarketPriceTick,
+  type MarketVenue,
 } from './market'
 
 const available = (value: string) => ({ value, available: true })
@@ -30,6 +37,23 @@ const priceFact = (
   contributors,
   version: 101,
 })
+const typedPriceFact = (
+  value: string,
+  kind: string,
+  source: string,
+  contributors: string[],
+): MarketPriceFact => {
+  const raw = priceFact(value, kind, source, contributors)
+  return {
+    ...raw,
+    price_usd: { value: Number(raw.price_usd.value), available: true },
+    change_24h_pct: { value: Number(raw.change_24h_pct.value), available: true },
+    turnover_24h_usd: {
+      value: Number(raw.turnover_24h_usd.value),
+      available: true,
+    },
+  }
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -244,6 +268,143 @@ describe('getMarketPriceTicks', () => {
       }),
       version: 101,
     })])
+  })
+})
+
+describe('market tick identity and monotonic merge', () => {
+  const tick = (
+    venue: MarketVenue,
+    assetID: string,
+    fact: MarketPriceFact,
+  ): MarketPriceTick => ({
+    asset_id: assetID,
+    provider: venue,
+    price_kind: venue === 'all' ? 'composite_spot' : 'venue_spot',
+    price_usd: fact.price_usd,
+    change_24h_pct: fact.change_24h_pct,
+    turnover_24h_usd: fact.turnover_24h_usd,
+    venue_price: fact,
+    dex_route_price: unavailableMarketPriceFact(),
+    display_price: venue === 'all' ? fact : unavailableMarketPriceFact(),
+    available: fact.available,
+    freshness_status: fact.freshness_status,
+    freshness_age_seconds: fact.freshness_age_seconds,
+    source_time: fact.source_time,
+    observed_at: fact.observed_at,
+    last_success_at: fact.last_success_at,
+    version: fact.version,
+  })
+
+  it('keeps identical prices isolated by real CEX identity', () => {
+    let lastGood = new Map<string, MarketPriceFact>()
+    for (const venue of ['binance', 'coinbase', 'bybit', 'okx'] as const) {
+      const fact = typedPriceFact('64200.00', 'venue_spot', venue, [venue])
+      const merged = mergeMarketPriceTickSnapshot(lastGood, {
+        venue,
+        server_time: 1785400003000,
+        items: [tick(venue, 'asset-btc', fact)],
+      }, venue, ['asset-btc'])
+      lastGood = merged.lastGood
+      expect(merged.states.get('asset-btc')?.status).toBe('live')
+    }
+
+    expect([...lastGood.entries()].map(([key, fact]) => [key, fact.source])).toEqual([
+      [marketTickCacheKey('binance', 'asset-btc'), 'binance'],
+      [marketTickCacheKey('coinbase', 'asset-btc'), 'coinbase'],
+      [marketTickCacheKey('bybit', 'asset-btc'), 'bybit'],
+      [marketTickCacheKey('okx', 'asset-btc'), 'okx'],
+    ])
+  })
+
+  it('accepts a same-version same-price refresh with a newer observation time', () => {
+    const previous = typedPriceFact('64200', 'venue_spot', 'binance', ['binance'])
+    const next = {
+      ...previous,
+      observed_at: previous.observed_at + 3_000,
+      last_success_at: previous.last_success_at + 3_000,
+      source_time: previous.source_time + 3_000,
+      freshness_age_seconds: 0,
+    }
+
+    expect(isMarketPriceFactMonotonic(previous, next)).toBe(true)
+    const merged = mergeMarketPriceTickSnapshot(new Map([
+      [marketTickCacheKey('binance', 'asset-btc'), previous],
+    ]), {
+      venue: 'binance',
+      server_time: next.observed_at,
+      items: [tick('binance', 'asset-btc', next)],
+    }, 'binance', ['asset-btc'])
+
+    expect(merged.states.get('asset-btc')?.status).toBe('live')
+    expect(merged.lastGood.get(marketTickCacheKey('binance', 'asset-btc'))?.observed_at)
+      .toBe(next.observed_at)
+  })
+
+  it('rejects lower-version or older cached facts and preserves last-good', () => {
+    const previous = {
+      ...typedPriceFact('64210', 'venue_spot', 'bybit', ['bybit']),
+      version: 12,
+    }
+    const cached = {
+      ...typedPriceFact('64100', 'venue_spot', 'bybit', ['bybit']),
+      version: 11,
+      observed_at: previous.observed_at - 5_000,
+      last_success_at: previous.last_success_at - 5_000,
+    }
+    const cacheKey = marketTickCacheKey('bybit', 'asset-btc')
+    const merged = mergeMarketPriceTickSnapshot(new Map([[cacheKey, previous]]), {
+      venue: 'bybit',
+      server_time: 1785400003000,
+      items: [tick('bybit', 'asset-btc', cached)],
+    }, 'bybit', ['asset-btc'])
+
+    expect(merged.states.get('asset-btc')).toMatchObject({
+      status: 'out_of_order',
+      fact: previous,
+    })
+    expect(merged.lastGood.get(cacheKey)).toEqual(previous)
+  })
+
+  it('preserves only the affected asset last-good when a venue is partially offline', () => {
+    const btc = typedPriceFact('64210', 'venue_spot', 'okx', ['okx'])
+    const eth = typedPriceFact('3200', 'venue_spot', 'okx', ['okx'])
+    const previous = new Map([
+      [marketTickCacheKey('okx', 'asset-btc'), btc],
+      [marketTickCacheKey('okx', 'asset-eth'), eth],
+    ])
+    const newerBTC = { ...btc, observed_at: btc.observed_at + 3_000 }
+    const merged = mergeMarketPriceTickSnapshot(previous, {
+      venue: 'okx',
+      server_time: 1785400005000,
+      items: [
+        tick('okx', 'asset-btc', newerBTC),
+        tick('okx', 'asset-eth', unavailableMarketPriceFact()),
+      ],
+    }, 'okx', ['asset-btc', 'asset-eth'])
+
+    expect(merged.states.get('asset-btc')?.status).toBe('live')
+    expect(merged.states.get('asset-eth')).toMatchObject({
+      status: 'unavailable',
+      fact: eth,
+    })
+    expect(merged.lastGood.get(marketTickCacheKey('okx', 'asset-eth'))).toEqual(eth)
+  })
+
+  it('rejects a composite-labeled fact on a CEX venue', () => {
+    const composite = typedPriceFact(
+      '64203',
+      'composite_reference',
+      'cex_composite',
+      ['binance', 'coinbase'],
+    )
+    const merged = mergeMarketPriceTickSnapshot(new Map(), {
+      venue: 'coinbase',
+      server_time: 1785400003000,
+      items: [tick('coinbase', 'asset-btc', composite)],
+    }, 'coinbase', ['asset-btc'])
+
+    expect(merged.states.get('asset-btc')?.status).toBe('source_mismatch')
+    expect(merged.lastGood.size).toBe(0)
   })
 })
 

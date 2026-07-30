@@ -124,7 +124,8 @@ source、空 contributors 和明确的 `unavailable` 状态，不能把旧来源
 被拒绝的是继续提供一个“当前最方便展示的数字”并让客户端根据 tab 猜它究竟是
 venue、route 还是 reference。那样字段少，但缓存、延迟或局部故障时会静默换
 口径。当前方案多传三个小对象，并暂时保留旧平铺字段作为兼容层；新代码只消费
-价格事实是后续页面切换的目标，本切片先完成 HTTP 与 TypeScript 类型边界。这个
+价格事实。HTTP 与 TypeScript 类型边界已经固化，Markets 的 3 秒 CEX tick 已按
+query generation 与 version/observed time 消费；DEX 双栏仍由后续切片完成。这个
 契约不改变综合价贡献规则，也不把 CoinGecko reference 变成 All 指数。
 
 ## 综合现货价规则

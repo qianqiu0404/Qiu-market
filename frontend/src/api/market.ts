@@ -246,6 +246,24 @@ export interface MarketPriceTickSnapshot {
   items: MarketPriceTick[]
 }
 
+export type MarketTickStateStatus =
+  | 'live'
+  | 'missing'
+  | 'unavailable'
+  | 'delayed'
+  | 'source_mismatch'
+  | 'out_of_order'
+
+export interface MarketTickState {
+  status: MarketTickStateStatus
+  fact: MarketPriceFact | null
+}
+
+export interface MarketTickMergeResult {
+  lastGood: Map<string, MarketPriceFact>
+  states: Map<string, MarketTickState>
+}
+
 export interface AssetMarketV2Item {
   market_id: string
   market_code: string
@@ -530,25 +548,29 @@ function toAvailableDecimal(value: unknown): AvailableDecimal {
     : { value: null, available: false }
 }
 
+export function unavailableMarketPriceFact(): MarketPriceFact {
+  return {
+    price_usd: { value: null, available: false },
+    change_24h_pct: { value: null, available: false },
+    turnover_24h_usd: { value: null, available: false },
+    available: false,
+    kind: 'unavailable',
+    source: '',
+    source_time: 0,
+    observed_at: 0,
+    last_success_at: 0,
+    freshness_status: 'unavailable',
+    freshness_age_seconds: 0,
+    quality: 'unavailable',
+    contributor_count: 0,
+    contributors: [],
+    version: 0,
+  }
+}
+
 function toMarketPriceFact(value: unknown): MarketPriceFact {
   if (value == null || typeof value !== 'object') {
-    return {
-      price_usd: { value: null, available: false },
-      change_24h_pct: { value: null, available: false },
-      turnover_24h_usd: { value: null, available: false },
-      available: false,
-      kind: 'unavailable',
-      source: '',
-      source_time: 0,
-      observed_at: 0,
-      last_success_at: 0,
-      freshness_status: 'unavailable',
-      freshness_age_seconds: 0,
-      quality: 'unavailable',
-      contributor_count: 0,
-      contributors: [],
-      version: 0,
-    }
+    return unavailableMarketPriceFact()
   }
   const raw = value as Record<string, unknown>
   const price = toAvailableDecimal(raw.price_usd)
@@ -577,6 +599,35 @@ function toMarketPriceFact(value: unknown): MarketPriceFact {
       ? toArray(raw.contributors).map(toStr).filter(Boolean)
       : [],
     version: available ? toNum(raw.version) : 0,
+  }
+}
+
+function legacyTickPriceFact(
+  raw: Record<string, unknown>,
+  kind: string,
+  source: string,
+): MarketPriceFact {
+  const price = toAvailableDecimal(raw.price_usd)
+  if (!Boolean(raw.available) || !price.available) {
+    return unavailableMarketPriceFact()
+  }
+  const contributors = source === 'cex_composite' ? [] : [source]
+  return {
+    price_usd: price,
+    change_24h_pct: toAvailableDecimal(raw.change_24h_pct),
+    turnover_24h_usd: toAvailableDecimal(raw.turnover_24h_usd),
+    available: true,
+    kind,
+    source,
+    source_time: toNum(raw.source_time),
+    observed_at: toNum(raw.observed_at),
+    last_success_at: toNum(raw.last_success_at),
+    freshness_status: toStr(raw.freshness_status) || 'unknown',
+    freshness_age_seconds: toNum(raw.freshness_age_seconds),
+    quality: toStr(raw.quality) || 'unknown',
+    contributor_count: Math.max(toNum(raw.contributor_count), contributors.length),
+    contributors,
+    version: toNum(raw.version),
   }
 }
 
@@ -789,6 +840,19 @@ export async function getAssetDashboardV2(
       item.display_change_24h_pct == null && !strictDexDisplay
         ? change24hPct
         : toAvailableDecimal(item.display_change_24h_pct)
+    let venuePrice = toMarketPriceFact(item.venue_price)
+    const dexRoutePrice = toMarketPriceFact(item.dex_route_price)
+    let displayPrice = toMarketPriceFact(item.display_price)
+    if (item.venue_price == null &&
+      ['binance', 'coinbase', 'bybit', 'okx', 'hyperliquid'].includes(requestedVenue)) {
+      const legacySource = (toStr(item.price_source) || requestedVenue).toLowerCase()
+      if (legacySource === requestedVenue) {
+        venuePrice = legacyTickPriceFact(item, toStr(item.price_kind), legacySource)
+      }
+    }
+    if (item.display_price == null && requestedVenue === 'all') {
+      displayPrice = legacyTickPriceFact(item, 'composite_reference', 'cex_composite')
+    }
     return {
       rank,
       selection_version: toNum(item.selection_version),
@@ -811,9 +875,9 @@ export async function getAssetDashboardV2(
         : Boolean(item.display_available),
       display_observed_at: toNum(item.display_observed_at),
       dex_route_available: Boolean(item.dex_route_available),
-      venue_price: toMarketPriceFact(item.venue_price),
-      dex_route_price: toMarketPriceFact(item.dex_route_price),
-      display_price: toMarketPriceFact(item.display_price),
+      venue_price: venuePrice,
+      dex_route_price: dexRoutePrice,
+      display_price: displayPrice,
       change_24h_pct: toAvailableDecimal(item.change_24h_pct),
       market_cap_usd: toAvailableDecimal(item.market_cap_usd),
       covered_turnover_24h_usd: toAvailableDecimal(item.covered_turnover_24h_usd),
@@ -857,21 +921,38 @@ export async function getMarketPriceTicks(
     venue,
     asset_ids: uniqueAssetIDs,
   })
+  const responseVenue = (toStr(response.venue) || venue) as MarketVenue
   return {
-    venue: (toStr(response.venue) || venue) as MarketVenue,
+    venue: responseVenue,
     server_time: toNum(response.server_time),
     items: toArray(response.result).map((raw): MarketPriceTick => {
       const item = (raw ?? {}) as Record<string, unknown>
+      const provider = toStr(item.provider)
+      const priceKind = toStr(item.price_kind)
+      let venuePrice = toMarketPriceFact(item.venue_price)
+      let dexRoutePrice = toMarketPriceFact(item.dex_route_price)
+      let displayPrice = toMarketPriceFact(item.display_price)
+      if (item.venue_price == null &&
+        ['binance', 'coinbase', 'bybit', 'okx', 'hyperliquid'].includes(responseVenue)) {
+        venuePrice = legacyTickPriceFact(item, priceKind, provider)
+      }
+      if (item.dex_route_price == null &&
+        (responseVenue === 'uniswap' || responseVenue === 'pancakeswap')) {
+        dexRoutePrice = legacyTickPriceFact(item, 'dex_route', provider)
+      }
+      if (item.display_price == null && responseVenue === 'all') {
+        displayPrice = legacyTickPriceFact(item, 'composite_reference', 'cex_composite')
+      }
       return {
         asset_id: toStr(item.asset_id),
-        provider: toStr(item.provider),
-        price_kind: toStr(item.price_kind),
+        provider,
+        price_kind: priceKind,
         price_usd: toAvailableDecimal(item.price_usd),
         change_24h_pct: toAvailableDecimal(item.change_24h_pct),
         turnover_24h_usd: toAvailableDecimal(item.turnover_24h_usd),
-        venue_price: toMarketPriceFact(item.venue_price),
-        dex_route_price: toMarketPriceFact(item.dex_route_price),
-        display_price: toMarketPriceFact(item.display_price),
+        venue_price: venuePrice,
+        dex_route_price: dexRoutePrice,
+        display_price: displayPrice,
         available: Boolean(item.available),
         freshness_status: toStr(item.freshness_status),
         freshness_age_seconds: toNum(item.freshness_age_seconds),
@@ -882,6 +963,113 @@ export async function getMarketPriceTicks(
       }
     }),
   }
+}
+
+export function marketTickCacheKey(venue: MarketVenue, assetID: string): string {
+  return `${venue}\u0000${assetID.trim()}`
+}
+
+export function isMarketPriceFactMonotonic(
+  previous: MarketPriceFact,
+  next: MarketPriceFact,
+): boolean {
+  if (previous.source !== next.source || previous.kind !== next.kind) return false
+  if (previous.version > 0 && next.version > 0 && next.version < previous.version) return false
+  if (previous.observed_at > 0 && next.observed_at < previous.observed_at) return false
+  if (previous.source_time > 0 && next.source_time > 0 &&
+    next.source_time < previous.source_time) return false
+  return true
+}
+
+function tickFactForVenue(
+  tick: MarketPriceTick,
+  venue: MarketVenue,
+): MarketTickState {
+  const provider = tick.provider.trim().toLowerCase()
+  let fact = unavailableMarketPriceFact()
+  let expectedKind = ''
+  let expectedSource: string = venue
+  switch (venue) {
+    case 'all':
+      if (provider !== 'all') return { status: 'source_mismatch', fact: null }
+      fact = tick.display_price
+      expectedKind = 'composite_reference'
+      expectedSource = 'cex_composite'
+      break
+    case 'binance':
+    case 'coinbase':
+    case 'bybit':
+    case 'okx':
+      if (provider !== venue) return { status: 'source_mismatch', fact: null }
+      fact = tick.venue_price
+      expectedKind = 'venue_spot'
+      break
+    case 'hyperliquid':
+      if (provider !== venue) return { status: 'source_mismatch', fact: null }
+      fact = tick.venue_price
+      expectedKind = 'perp_mark'
+      break
+    case 'uniswap':
+    case 'pancakeswap':
+      if (provider !== venue) return { status: 'source_mismatch', fact: null }
+      fact = tick.dex_route_price
+      expectedKind = 'dex_route'
+      break
+  }
+  if (!fact.available || !fact.price_usd.available) {
+    return { status: 'unavailable', fact: null }
+  }
+  if (fact.source.trim().toLowerCase() !== expectedSource ||
+    fact.kind.trim().toLowerCase() !== expectedKind) {
+    return { status: 'source_mismatch', fact: null }
+  }
+  if (fact.freshness_status !== 'fresh') {
+    return { status: 'delayed', fact: null }
+  }
+  return { status: 'live', fact }
+}
+
+export function mergeMarketPriceTickSnapshot(
+  previousLastGood: ReadonlyMap<string, MarketPriceFact>,
+  snapshot: MarketPriceTickSnapshot,
+  expectedVenue: MarketVenue,
+  expectedAssetIDs: string[],
+): MarketTickMergeResult {
+  const lastGood = new Map(previousLastGood)
+  const states = new Map<string, MarketTickState>()
+  const assetIDs = [...new Set(expectedAssetIDs.map((value) => value.trim()).filter(Boolean))]
+  if (snapshot.venue !== expectedVenue) {
+    for (const assetID of assetIDs) {
+      const previous = lastGood.get(marketTickCacheKey(expectedVenue, assetID)) ?? null
+      states.set(assetID, { status: 'source_mismatch', fact: previous })
+    }
+    return { lastGood, states }
+  }
+  const received = new Map<string, MarketPriceTick>()
+  for (const tick of snapshot.items) {
+    if (tick.asset_id.trim() !== '') received.set(tick.asset_id.trim(), tick)
+  }
+  for (const assetID of assetIDs) {
+    const cacheKey = marketTickCacheKey(expectedVenue, assetID)
+    const previous = lastGood.get(cacheKey) ?? null
+    const tick = received.get(assetID)
+    if (!tick) {
+      states.set(assetID, { status: 'missing', fact: previous })
+      continue
+    }
+    const candidate = tickFactForVenue(tick, expectedVenue)
+    if (candidate.status !== 'live' || candidate.fact == null) {
+      states.set(assetID, { status: candidate.status, fact: previous })
+      continue
+    }
+    if (previous && !isMarketPriceFactMonotonic(previous, candidate.fact)) {
+      states.set(assetID, { status: 'out_of_order', fact: previous })
+      continue
+    }
+    lastGood.set(cacheKey, candidate.fact)
+    states.set(assetID, candidate)
+  }
+  return { lastGood, states }
 }
 
 export async function getTop50VenueInsights(): Promise<Top50VenueInsights> {

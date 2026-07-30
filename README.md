@@ -115,13 +115,14 @@ V2 资产首页与 3 秒轻量 tick 还返回结构化的 `venue_price`、
 绑在一起；调用方不再从一个裸数值猜来源。`display_price` 是 CEX
 composite 或明确的 market reference 分栏，DEX route 只进入
 `dex_route_price`。原平铺字段暂时保留为兼容层；当前 HTTP/TypeScript
-契约已固化，Markets 的 tick/DEX 展示会在后续切片逐步只消费价格事实。
+契约已固化，Markets 的 3 秒 tick 已只消费匹配 venue 的价格事实，DEX
+双栏展示在后续切片完成。
 
 ### 前端工程
 
 - **设计令牌**：色彩 / 圆角 / 字体 / 间距全部集中在 `src/style.css` 的 CSS 变量，组件不硬编码颜色；Apple 风格蓝白金融产品主题，数字统一 tabular-nums。
 - **组件化**：DataTable（排序 / 搜索 / 分页）、StatusBadge、AssetLogo、StatCard、骨架屏、ErrorState、EmptyState 等共享组件，页面只组合不复制样式。
-- **数据层**：`usePolling` 组合式函数统一 30s 轮询（System 页 15s），页面隐藏自动暂停，卸载自动清理；API 层对后端"数字序列化为字符串"的情况统一做类型兜底。
+- **数据层**：`usePolling` 组合式函数统一慢速快照轮询（Markets 15s、System 15s，其余通常 30s），页面隐藏自动暂停，卸载自动清理；Markets 另有 3 秒轻量 tick，按 query generation、venue identity、version 与 observed time 拒绝旧响应。失败时只显示五分钟内并明确标记的同 venue last-good，不回退综合价。API 层对后端"数字序列化为字符串"的情况统一做类型兜底。
 - **类型与构建**：全部页面 `<script setup lang="ts">`，TS strict + noUnusedLocals，`npm run build` 先过 vue-tsc 再构建；ECharts 按需引入且仅行情详情 / Insights 加载（独立 chunk）。
 
 ### 不使用 Mock 行情兜底

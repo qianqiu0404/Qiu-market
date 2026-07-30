@@ -2,6 +2,28 @@ import { expect, test } from '@playwright/test'
 
 const available = (value: string) => ({ value, available: true })
 const unavailable = { value: null, available: false }
+const marketPriceFact = (
+  value: string,
+  kind: string,
+  source: string,
+  observedAt = Date.now(),
+) => ({
+  price_usd: available(value),
+  change_24h_pct: available('1.25'),
+  turnover_24h_usd: available('500000000'),
+  available: true,
+  kind,
+  source,
+  source_time: observedAt - 500,
+  observed_at: observedAt,
+  last_success_at: observedAt,
+  freshness_status: 'fresh',
+  freshness_age_seconds: 0,
+  quality: 'low',
+  contributor_count: 1,
+  contributors: [source],
+  version: 10,
+})
 
 const asset = {
   rank: 1,
@@ -163,6 +185,12 @@ test.beforeEach(async ({ page }) => {
     const pageStart = (pageNumber - 1) * pageSize
     let body: Record<string, unknown>
     if (path.endsWith('/get_market_price_ticks')) {
+      const priceKind = venue === 'all'
+        ? 'composite_reference'
+        : venue === 'hyperliquid'
+          ? 'perp_mark'
+          : 'venue_spot'
+      const source = venue === 'all' ? 'cex_composite' : venue
       body = {
         code: 2000,
         venue,
@@ -170,7 +198,7 @@ test.beforeEach(async ({ page }) => {
         result: (request.asset_ids ?? []).map((assetID) => ({
           asset_id: assetID,
           provider: venue,
-          price_kind: venue === 'all' ? 'composite_spot' : 'venue_spot',
+          price_kind: venue === 'all' ? 'composite_spot' : priceKind,
           price_usd: assetID === 'asset-btc'
             ? available(liveBTCPrices[venue] ?? '64200')
             : unavailable,
@@ -183,6 +211,24 @@ test.beforeEach(async ({ page }) => {
           observed_at: Date.now() - 500,
           last_success_at: Date.now() - 500,
           version: 10,
+          ...(assetID === 'asset-btc' && venue === 'all'
+            ? {
+                display_price: marketPriceFact(
+                  liveBTCPrices[venue] ?? '64200',
+                  priceKind,
+                  source,
+                ),
+              }
+            : {}),
+          ...(assetID === 'asset-btc' && venue !== 'all'
+            ? {
+                venue_price: marketPriceFact(
+                  liveBTCPrices[venue] ?? '64200',
+                  priceKind,
+                  source,
+                ),
+              }
+            : {}),
         })),
       }
     } else if (path.endsWith('/get_market_overview')) {
@@ -295,6 +341,85 @@ test('rapid CEX switching renders the selected venue tick instead of the previou
   await expect(bitcoin).not.toContainText('$64,173.20')
 })
 
+test('A to B to A switching rejects the old A generation even when the query key matches again', async ({ page }) => {
+  let releaseOld: (() => void) | undefined
+  let releaseNew: (() => void) | undefined
+  let signalOld: (() => void) | undefined
+  let signalNew: (() => void) | undefined
+  const oldRequested = new Promise<void>((resolve) => { signalOld = resolve })
+  const newRequested = new Promise<void>((resolve) => { signalNew = resolve })
+  const oldResponse = new Promise<void>((resolve) => { releaseOld = resolve })
+  const newResponse = new Promise<void>((resolve) => { releaseNew = resolve })
+  let coinbaseRequests = 0
+
+  await page.route('**/api/v2/get_market_price_ticks', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      venue?: string
+      asset_ids?: string[]
+    }
+    if (request.venue !== 'coinbase') {
+      await route.fallback()
+      return
+    }
+    coinbaseRequests += 1
+    const isOld = coinbaseRequests === 1
+    if (isOld) {
+      signalOld?.()
+      await oldResponse
+    } else {
+      signalNew?.()
+      await newResponse
+    }
+    const value = isOld ? '63000.00' : '64180.00'
+    const version = isOld ? 1 : 2
+    const observedAt = Date.now()
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        venue: 'coinbase',
+        server_time: observedAt,
+        result: (request.asset_ids ?? []).map((assetID) => ({
+          asset_id: assetID,
+          provider: 'coinbase',
+          price_kind: 'venue_spot',
+          available: assetID === 'asset-btc',
+          price_usd: assetID === 'asset-btc' ? available(value) : unavailable,
+          change_24h_pct: assetID === 'asset-btc' ? available('1') : unavailable,
+          turnover_24h_usd: assetID === 'asset-btc' ? available('1') : unavailable,
+          freshness_status: assetID === 'asset-btc' ? 'fresh' : 'unavailable',
+          freshness_age_seconds: 0,
+          observed_at: observedAt,
+          last_success_at: observedAt,
+          version,
+          ...(assetID === 'asset-btc'
+            ? {
+                venue_price: {
+                  ...marketPriceFact(value, 'venue_spot', 'coinbase', observedAt),
+                  version,
+                },
+              }
+            : {}),
+        })),
+      }),
+    })
+  })
+
+  await page.goto('/markets?venue=coinbase')
+  await oldRequested
+  await page.getByRole('button', { name: 'Bybit', exact: true }).click()
+  await page.getByRole('button', { name: 'Coinbase', exact: true }).click()
+  releaseOld?.()
+  await newRequested
+
+  const bitcoin = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
+  await expect(bitcoin).not.toContainText('$63,000.00')
+  releaseNew?.()
+  await expect(bitcoin).toContainText('$64,180.00')
+  await expect(bitcoin).toContainText('Coinbase live')
+})
+
 test('a failed live tick keeps the verified venue snapshot without falling back to composite', async ({ page }) => {
   await page.route('**/api/v2/get_market_price_ticks', async (route) => {
     await route.fulfill({
@@ -317,6 +442,11 @@ test('a failed live tick keeps the verified venue snapshot without falling back 
         result: [{
           ...asset,
           price_usd: available('64111.25'),
+          venue_price: marketPriceFact(
+            '64111.25',
+            'venue_spot',
+            'binance',
+          ),
           display_price_usd: available('65000.00'),
           display_price_kind: 'composite_reference',
           price_kind: 'venue_spot',
@@ -332,7 +462,7 @@ test('a failed live tick keeps the verified venue snapshot without falling back 
   const bitcoin = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
   await expect(bitcoin).toContainText('$64,111.25')
   await expect(bitcoin).not.toContainText('$65,000.00')
-  await expect(bitcoin).toContainText('verified snapshot · live ticks delayed')
+  await expect(bitcoin).toContainText('Binance last-good · tick request failed')
   await expect(page.getByText(/Live price ticks are delayed/)).toBeVisible()
 })
 

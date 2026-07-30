@@ -13,13 +13,17 @@ import {
   getFiatRates,
   getMarketOverviewV2,
   getMarketPriceTicks,
+  marketTickCacheKey,
+  mergeMarketPriceTickSnapshot,
+  unavailableMarketPriceFact,
   type AssetDashboardV2Item,
   type AssetFilter,
   type AssetMarketV2Item,
   type AvailableDecimal,
   type MarketOverviewV2,
-  type MarketPriceTick,
+  type MarketPriceFact,
   type MarketPriceTickSnapshot,
+  type MarketTickState,
   type MarketVenue,
   type Paged,
 } from '../api/market'
@@ -177,7 +181,14 @@ const assets = computed(() => currentDashboard.value?.items ?? [])
 const total = computed(() => currentDashboard.value?.total ?? 0)
 interface PriceTickSnapshot {
   queryKey: string
+  generation: number
   data: MarketPriceTickSnapshot
+}
+
+interface PriceTickFailure {
+  queryKey: string
+  generation: number
+  message: string
 }
 
 function priceTickQueryKey(selectedVenue = venue.value, rows = assets.value): string {
@@ -188,20 +199,37 @@ function priceTickQueryKey(selectedVenue = venue.value, rows = assets.value): st
 }
 
 const currentPriceTickQueryKey = computed(() => priceTickQueryKey())
+const priceTickGeneration = ref(0)
+const priceTickFailure = ref<PriceTickFailure | null>(null)
+const lastGoodTickFacts = ref<Map<string, MarketPriceFact>>(new Map())
+const latestTickStates = ref<Map<string, MarketTickState>>(new Map())
 const priceTicks = usePolling(
   async (): Promise<PriceTickSnapshot> => {
     const requestedVenue = venue.value
     const assetIDs = assets.value.map((asset) => asset.asset_id)
     const queryKey = priceTickQueryKey(requestedVenue, assets.value)
+    const generation = priceTickGeneration.value
     if (!REALTIME_VENUES.has(requestedVenue) || assetIDs.length === 0) {
       return {
         queryKey,
+        generation,
         data: { venue: requestedVenue, server_time: 0, items: [] },
       }
     }
-    return {
-      queryKey,
-      data: await getMarketPriceTicks(requestedVenue, assetIDs),
+    try {
+      const data = await getMarketPriceTicks(requestedVenue, assetIDs)
+      if (generation === priceTickGeneration.value &&
+        queryKey === currentPriceTickQueryKey.value) {
+        priceTickFailure.value = null
+      }
+      return { queryKey, generation, data }
+    } catch (error) {
+      priceTickFailure.value = {
+        queryKey,
+        generation,
+        message: error instanceof Error ? error.message : 'Live tick request failed',
+      }
+      throw error
     }
   },
   { interval: 3_000 },
@@ -209,15 +237,29 @@ const priceTicks = usePolling(
 const currentPriceTicks = computed(() => {
   const snapshot = priceTicks.data.value
   return snapshot?.queryKey === currentPriceTickQueryKey.value &&
+    snapshot.generation === priceTickGeneration.value &&
     snapshot.data.venue === venue.value
     ? snapshot.data
     : null
 })
-const currentPriceTickMap = computed(() =>
-  new Map(
-    (currentPriceTicks.value?.items ?? []).map((item) => [item.asset_id, item]),
-  ),
-)
+const currentPriceTickFailure = computed(() => {
+  const failure = priceTickFailure.value
+  return failure?.queryKey === currentPriceTickQueryKey.value &&
+    failure.generation === priceTickGeneration.value
+    ? failure
+    : null
+})
+watch(currentPriceTicks, (snapshot) => {
+  if (!snapshot) return
+  const merged = mergeMarketPriceTickSnapshot(
+    lastGoodTickFacts.value,
+    snapshot,
+    venue.value,
+    assets.value.map((asset) => asset.asset_id),
+  )
+  lastGoodTickFacts.value = merged.lastGood
+  latestTickStates.value = merged.states
+}, { immediate: true })
 const priceRefreshedAt = computed(() => {
   const serverTime = currentPriceTicks.value?.server_time ?? 0
   return serverTime > 0
@@ -313,7 +355,12 @@ watch([venue, filter, page, pageSize, sortKey, sortDir], ([nextVenue, nextFilter
 
 watch(
   currentPriceTickQueryKey,
-  () => void priceTicks.refresh(),
+  () => {
+    priceTickGeneration.value += 1
+    latestTickStates.value = new Map()
+    void priceTicks.refresh()
+  },
+  { flush: 'sync' },
 )
 
 let searchTimer: number | undefined
@@ -435,47 +482,120 @@ function confidenceVariant(confidence: string): 'live' | 'delayed' | 'accent' {
 
 function assetQualityLabel(asset: AssetDashboardV2Item): string {
   if (isDexVenue() && asset.display_available && !asset.dex_route_available) return 'reference'
+  if (REALTIME_VENUES.has(venue.value)) {
+    const resolved = resolveRealtimePrice(asset)
+    if (resolved.mode === 'last_good') return 'last-good'
+    if (resolved.mode === 'unavailable') return 'unavailable'
+    return resolved.fact.quality || asset.quality || asset.confidence || 'unknown'
+  }
   if (asset.freshness_status === 'stale') return 'stale'
   if (asset.freshness_status === 'unavailable') return 'unavailable'
   return asset.quality || asset.confidence || 'unknown'
+}
+
+function assetQualityVariant(asset: AssetDashboardV2Item): 'live' | 'delayed' | 'accent' {
+  if (REALTIME_VENUES.has(venue.value)) {
+    const resolved = resolveRealtimePrice(asset)
+    if (resolved.mode === 'last_good' || resolved.mode === 'dashboard') return 'delayed'
+    if (resolved.mode === 'unavailable') return 'accent'
+    return confidenceVariant(resolved.fact.quality)
+  }
+  return confidenceVariant(asset.confidence)
 }
 
 function isDexVenue(): boolean {
   return venue.value === 'uniswap' || venue.value === 'pancakeswap'
 }
 
-function isCexVenue(): boolean {
-  return venue.value === 'binance' ||
-    venue.value === 'coinbase' ||
-    venue.value === 'bybit' ||
-    venue.value === 'okx'
+type RealtimePriceMode = 'live' | 'last_good' | 'dashboard' | 'unavailable'
+
+interface RealtimePriceResolution {
+  fact: MarketPriceFact
+  mode: RealtimePriceMode
+  reason: string
 }
 
-function liveTick(asset: AssetDashboardV2Item): MarketPriceTick | undefined {
-  if (priceTicks.error.value) return undefined
-  return currentPriceTickMap.value.get(asset.asset_id)
+function dashboardRealtimeFact(asset: AssetDashboardV2Item): MarketPriceFact {
+  const fact = venue.value === 'all' ? asset.display_price : asset.venue_price
+  const expectedSource = venue.value === 'all' ? 'cex_composite' : venue.value
+  const expectedKind = venue.value === 'all'
+    ? 'composite_reference'
+    : venue.value === 'hyperliquid'
+      ? 'perp_mark'
+      : 'venue_spot'
+  return fact.source === expectedSource && fact.kind === expectedKind
+    ? fact
+    : unavailableMarketPriceFact()
+}
+
+function priceFactAgeSeconds(fact: MarketPriceFact): number {
+  if (!fact.available || fact.observed_at <= 0) return Number.POSITIVE_INFINITY
+  const wallAge = Math.max(0, Math.floor((Date.now() - fact.observed_at) / 1_000))
+  return Math.max(fact.freshness_age_seconds, wallAge)
+}
+
+function fresherFact(
+  left: MarketPriceFact | undefined,
+  right: MarketPriceFact | undefined,
+): MarketPriceFact | undefined {
+  if (!left?.available) return right?.available ? right : undefined
+  if (!right?.available) return left
+  if (left.version !== right.version) return left.version > right.version ? left : right
+  return left.observed_at >= right.observed_at ? left : right
+}
+
+function resolveRealtimePrice(asset: AssetDashboardV2Item): RealtimePriceResolution {
+  const state = latestTickStates.value.get(asset.asset_id)
+  if (!currentPriceTickFailure.value && state?.status === 'live' && state.fact) {
+    return { fact: state.fact, mode: 'live', reason: '' }
+  }
+  const cached = lastGoodTickFacts.value.get(
+    marketTickCacheKey(venue.value, asset.asset_id),
+  )
+  const dashboardFact = dashboardRealtimeFact(asset)
+  const fallback = fresherFact(cached, dashboardFact)
+  const reason = currentPriceTickFailure.value
+    ? 'request_failed'
+    : state?.status ?? 'pending'
+  if (fallback?.available && priceFactAgeSeconds(fallback) <= 300) {
+    const degraded = Boolean(currentPriceTickFailure.value) ||
+      (state != null && state.status !== 'live') ||
+      priceFactAgeSeconds(fallback) > 30 ||
+      fallback.freshness_status !== 'fresh'
+    return {
+      fact: fallback,
+      mode: degraded || cached === fallback ? 'last_good' : 'dashboard',
+      reason,
+    }
+  }
+  return {
+    fact: unavailableMarketPriceFact(),
+    mode: 'unavailable',
+    reason,
+  }
 }
 
 function displayPrice(asset: AssetDashboardV2Item): AvailableDecimal {
-  const tick = liveTick(asset)
-  if (tick) return tick.price_usd
   if (isDexVenue()) return asset.display_price_usd
-  // A venue tab must never silently fall back to the cross-venue composite.
-  if (isCexVenue() || venue.value === 'hyperliquid' || venue.value === 'all') {
-    return asset.price_usd
+  if (REALTIME_VENUES.has(venue.value)) {
+    return resolveRealtimePrice(asset).fact.price_usd
   }
   return asset.display_price_usd
 }
 
 function displayChange(asset: AssetDashboardV2Item): AvailableDecimal {
-  const tick = liveTick(asset)
-  if (tick) return tick.change_24h_pct
   if (isDexVenue()) return asset.display_change_24h_pct
+  if (REALTIME_VENUES.has(venue.value)) {
+    return resolveRealtimePrice(asset).fact.change_24h_pct
+  }
   return asset.change_24h_pct
 }
 
 function displayTurnover(asset: AssetDashboardV2Item): AvailableDecimal {
-  return liveTick(asset)?.turnover_24h_usd ?? asset.covered_turnover_24h_usd
+  if (REALTIME_VENUES.has(venue.value)) {
+    return resolveRealtimePrice(asset).fact.turnover_24h_usd
+  }
+  return asset.covered_turnover_24h_usd
 }
 
 function marketCount(asset: AssetDashboardV2Item): number {
@@ -494,21 +614,26 @@ function marketCountLabel(asset: AssetDashboardV2Item): string {
 }
 
 function priceCaption(asset: AssetDashboardV2Item): string {
-  const tick = currentPriceTickMap.value.get(asset.asset_id)
-  if (tick && !tick.available) {
-    return `${selectedVenueLabel.value} live feed unavailable`
+  if (isDexVenue() && asset.display_price_kind === 'composite_reference') {
+    return 'CEX composite reference · no fresh route'
   }
-  if (priceTicks.error.value) {
-    return `${selectedVenueLabel.value} verified snapshot · live ticks delayed`
+  if (isDexVenue() && asset.display_price_kind === 'market_reference') {
+    return 'CoinGecko reference · no fresh route'
   }
-  if (tick?.available) {
-    const source = venue.value === 'all'
-      ? 'Composite'
-      : selectedVenueLabel.value
-    return `${source} live · ${tick.freshness_age_seconds}s old`
+  if (REALTIME_VENUES.has(venue.value)) {
+    const resolved = resolveRealtimePrice(asset)
+    const source = venue.value === 'all' ? 'Composite' : selectedVenueLabel.value
+    const age = priceFactAgeSeconds(resolved.fact)
+    if (resolved.mode === 'live') return `${source} live · ${age}s old`
+    if (resolved.mode === 'dashboard') {
+      return `${source} verified snapshot · live tick pending · ${age}s old`
+    }
+    const reason = tickDegradationLabel(resolved.reason)
+    if (resolved.mode === 'last_good') {
+      return `${source} last-good · ${reason} · ${age}s old`
+    }
+    return `${source} unavailable · ${reason}`
   }
-  if (asset.display_price_kind === 'composite_reference') return 'CEX composite reference · no fresh route'
-  if (asset.display_price_kind === 'market_reference') return 'CoinGecko reference · no fresh route'
   if (asset.freshness_status === 'stale') {
     return `Stale · ${asset.freshness_age_seconds}s old`
   }
@@ -519,6 +644,18 @@ function priceCaption(asset: AssetDashboardV2Item): string {
   if (venue.value === 'hyperliquid') return 'Perpetual mark'
   if (isDexVenue()) return 'Fresh on-chain route indication'
   return `${selectedVenueLabel.value} spot`
+}
+
+function tickDegradationLabel(reason: string): string {
+  switch (reason) {
+    case 'request_failed': return 'tick request failed'
+    case 'missing': return 'asset missing from tick'
+    case 'unavailable': return 'venue feed unavailable'
+    case 'delayed': return 'tick delayed'
+    case 'source_mismatch': return 'wrong source rejected'
+    case 'out_of_order': return 'older tick rejected'
+    default: return 'live tick pending'
+  }
 }
 
 function quoteNotionalLabel(market: AssetMarketV2Item): string {
@@ -576,10 +713,10 @@ function coverageReasonLabel(reason: string): string {
       Fiat endpoint unavailable — the non-USD display uses a local fallback rate.
     </p>
     <p
-      v-if="REALTIME_VENUES.has(venue) && priceTicks.error.value"
+      v-if="REALTIME_VENUES.has(venue) && currentPriceTickFailure"
       class="fallback-hint"
     >
-      Live price ticks are delayed — the latest verified dashboard snapshot remains visible.
+      Live price ticks are delayed — an age-bounded last-good venue fact remains visible.
     </p>
 
     <div class="market-overview-strip" aria-label="Global market overview">
@@ -755,7 +892,7 @@ function coverageReasonLabel(reason: string): string {
               </td>
               <td class="align-center">
                 <StatusBadge
-                  :variant="confidenceVariant(asset.confidence)"
+                  :variant="assetQualityVariant(asset)"
                   :label="assetQualityLabel(asset)"
                 />
               </td>
