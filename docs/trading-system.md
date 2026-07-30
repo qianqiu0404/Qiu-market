@@ -214,6 +214,38 @@ go test ./trading/reliability \
   -count=1
 ```
 
+### E. 有界随机命令、并发与复现
+
+`TestBoundedRandomCommandSequence` 默认用 seed `20260730` 执行 192 步，硬上限
+2048 步。命令只经过现有 `exchange.Exchange`：虚拟 fund、limit/market submit、
+cancel、同 ID replay、snapshot 和 restore。每 8 步审计完整 journal，每 17 步
+强制恢复并核对 hash，每 31 步保存 snapshot；失败信息总是带 seed、step 和
+command。指定 seed 可闭环复现：
+
+```bash
+go test ./trading/reliability \
+  -run '^TestBoundedRandomCommandSequence$' -count=1 \
+  -args -reliability.seed=20260730 -reliability.steps=192
+```
+
+`TestConcurrentSameIDAndUniqueCommands` 让 32 个 goroutine 同时重放一个 fund ID，
+另 32 个提交不同 ID。前者只能形成一个 sequence/ledger transaction，后者必须
+各有唯一 sequence；最终余额、record count 和恢复证明完全相等。race detector
+用于证明实现没有数据竞争，不把某次 goroutine 调度顺序写成业务保证。
+
+fuzz 的每个输入最多 64 步，benchmark 固定 96 步历史，因此两者都有明确边界：
+
+```bash
+GOMAXPROCS=2 go test ./trading/reliability \
+  -run '^$' -fuzz '^FuzzBoundedCommandRecovery$' -fuzztime=10s
+go test ./trading/reliability \
+  -run '^$' -bench '^BenchmarkAuditAndRestore$' -benchtime=100x -benchmem
+```
+
+这里拒绝无上限随机跑和只打印随机失败、不记录 seed 的做法。代价是 bounded
+property test 只能证明覆盖到的状态空间；长期 soak、跨进程 PostgreSQL 并发和
+浏览器断网仍需单独环境验收。
+
 ## PostgreSQL 真值与恢复
 
 核心交易表由 `migrations/2026082100023.sql` 创建，发布游标分离由
