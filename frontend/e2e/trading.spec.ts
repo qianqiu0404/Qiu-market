@@ -80,6 +80,7 @@ const btcVenue = {
 interface HarnessOptions {
   realKlines?: boolean
   authDisabled?: boolean
+  publicReadDelayMs?: number
   cancelCommittedButResponseLostOnce?: boolean
   cancelResponseLostBeforeCommitOnce?: boolean
   fundCommittedButResponseLostOnce?: boolean
@@ -90,6 +91,8 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
   let sequence = 10
   let cancelAttempts = 0
   let fundAttempts = 0
+  let activePublicReads = 0
+  let maximumConcurrentPublicReads = 0
   let loseCancelBeforeCommit = options.cancelResponseLostBeforeCommitOnce === true
   let balances: Array<{ asset: string; available: string; held: string }> = []
   let orders: Array<Record<string, unknown>> = []
@@ -125,6 +128,21 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       contentType: 'application/json',
       body: JSON.stringify(body),
     })
+    const publicJSON = async (status: number, body: unknown) => {
+      activePublicReads += 1
+      maximumConcurrentPublicReads = Math.max(
+        maximumConcurrentPublicReads,
+        activePublicReads,
+      )
+      try {
+        if (options.publicReadDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, options.publicReadDelayMs))
+        }
+        await json(status, body)
+      } finally {
+        activePublicReads -= 1
+      }
+    }
     const marketEnvelope = (result: unknown) => json(200, { code: 2000, result })
 
     if (path === '/api/v2/get_asset_dashboard') {
@@ -184,7 +202,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/markets/BTC-USDT/orderbook') {
-      await json(200, {
+      await publicJSON(200, {
         market_id: 'BTC-USDT',
         sequence: String(sequence),
         bids: [{ price: '64990', quantity: '0.5', order_count: 1 }],
@@ -193,7 +211,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/markets/BTC-USDT/status') {
-      await json(200, {
+      await publicJSON(200, {
         market_id: 'BTC-USDT',
         state: 'ready',
         sequence: String(sequence),
@@ -204,7 +222,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/markets/BTC-USDT/trades') {
-      await json(200, { trades })
+      await publicJSON(200, { trades })
       return
     }
     if (path === '/api/v1/trading/balances') {
@@ -378,6 +396,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     get cancelRequestIDs() { return [...cancelRequestIDs] },
     get fundAttempts() { return fundAttempts },
     get fundRequests() { return [...fundRequests] },
+    get maximumConcurrentPublicReads() { return maximumConcurrentPublicReads },
   }
 }
 
@@ -401,7 +420,22 @@ test('trade page does not probe a session when every login method is disabled', 
   await page.goto('/trade/BTC-USDT')
 
   await expect(page.getByText('登录未配置')).toBeVisible()
+  await expect(page.getByText('polling', { exact: true })).toHaveCount(2)
+  await expect(page.getByText('offline', { exact: true })).toHaveCount(0)
   expect(sessionRequests).toBe(0)
+})
+
+test('slow public polling reuses one in-flight refresh batch', async ({ page }) => {
+  const harness = await installHarness(page, {
+    authDisabled: true,
+    publicReadDelayMs: 3_500,
+  })
+  await page.goto('/trade/BTC-USDT')
+
+  await expect(page.getByText('sequence 10', { exact: false })).toBeVisible()
+  await page.waitForTimeout(7_000)
+
+  expect(harness.maximumConcurrentPublicReads).toBe(3)
 })
 
 test('admin can fund, place, cancel and fill virtual orders with fee evidence', async ({ page }) => {

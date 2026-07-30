@@ -69,7 +69,7 @@ const status = ref<TradingStatus>({
 const errorMessage = ref('')
 const notice = ref('')
 const busy = ref(false)
-const wsState = ref<'offline' | 'connecting' | 'live' | 'retrying' | 'polling'>('offline')
+const wsState = ref<'offline' | 'connecting' | 'live' | 'retrying' | 'polling'>('polling')
 const cursor = ref<EventEnvelope>()
 const lastStatusAt = ref(0)
 const lastPrivateAt = ref(0)
@@ -94,6 +94,7 @@ let reconnectTimer: number | undefined
 let publicTimer: number | undefined
 let marketTimer: number | undefined
 let refreshTimer: number | undefined
+let publicRefreshPromise: Promise<void> | undefined
 let marketRefreshRunning = false
 
 const form = reactive({
@@ -239,7 +240,7 @@ function showError(error: unknown): void {
   }, 6000)
 }
 
-async function loadPublic(): Promise<void> {
+async function loadPublicOnce(): Promise<void> {
   const [bookResult, tradesResult, statusResult] = await Promise.allSettled([
     tradingAPI.orderBook(),
     tradingAPI.publicTrades(),
@@ -278,6 +279,14 @@ async function loadPublic(): Promise<void> {
   if (Object.values(publicPanelErrors).every(Boolean)) {
     showError('Qiu Market transport is offline; last known data remains visible.')
   }
+}
+
+function loadPublic(): Promise<void> {
+  if (publicRefreshPromise) return publicRefreshPromise
+  publicRefreshPromise = loadPublicOnce().finally(() => {
+    publicRefreshPromise = undefined
+  })
+  return publicRefreshPromise
 }
 
 async function loadPrivate(): Promise<void> {
@@ -529,7 +538,7 @@ async function connectEvents(): Promise<void> {
     socket.onclose = () => {
       socket = undefined
       if (!principal.value) {
-        wsState.value = 'offline'
+        wsState.value = 'polling'
         return
       }
       wsState.value = 'retrying'
@@ -547,7 +556,7 @@ function closeEvents(): void {
   reconnectTimer = undefined
   socket?.close()
   socket = undefined
-  wsState.value = 'offline'
+  wsState.value = 'polling'
 }
 
 async function loadReference(): Promise<void> {
@@ -950,7 +959,7 @@ onBeforeUnmount(() => {
           <div class="runtime-grid">
             <span>恢复次数 <strong>{{ status.recovery_count }}</strong></span>
             <span>事件序列 <strong>{{ status.sequence }}</strong></span>
-            <span>WS 重连 <strong>{{ wsState }}</strong></span>
+            <span>事件通道 <strong>{{ wsState }}</strong></span>
           </div>
         </div>
       </article>

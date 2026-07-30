@@ -34,5 +34,10 @@ source "$repo_root/.env"
 source "$production_env"
 set +a
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$script_dir/proxy-env.sh"
+qiu_export_system_proxy
+
 cd "$repo_root"
 exec "$binary" "$role"
