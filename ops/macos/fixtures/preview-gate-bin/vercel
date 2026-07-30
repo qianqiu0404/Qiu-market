@@ -62,7 +62,15 @@ JSON
         body='{"code":"unauthorized"}'
         ;;
     esac
-    release_commit="2aa8bda39d2298e1d57886e472f9a090d728f56e"
+    if [ "$endpoint" = "${FIXTURE_TRANSIENT_ENDPOINT:-}" ] &&
+      [ -n "${FIXTURE_TRANSIENT_STATE:-}" ] &&
+      [ ! -e "$FIXTURE_TRANSIENT_STATE" ]; then
+      : > "$FIXTURE_TRANSIENT_STATE"
+      status=502
+      content_type="application/json"
+      body='{"code":"transient_fixture"}'
+    fi
+    release_commit="${FIXTURE_DEPLOYMENT_COMMIT:-2aa8bda39d2298e1d57886e472f9a090d728f56e}"
     if [ "${FIXTURE_BAD_PROVENANCE:-0}" = 1 ]; then
       release_commit="0000000000000000000000000000000000000000"
     fi

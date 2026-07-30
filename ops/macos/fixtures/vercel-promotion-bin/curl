@@ -34,7 +34,7 @@ current_production_id="$(
   jq -r '.production_id' "${QIU_MARKET_FIXTURE_VERCEL_STATE:?}"
 )"
 if [ "${QIU_MARKET_FIXTURE_PRODUCTION_FAIL:-0}" = 1 ] &&
-  [ "$current_production_id" = "${QIU_MARKET_FIXTURE_CANDIDATE_ID:?}" ] &&
+  [ "$current_production_id" = "${QIU_MARKET_FIXTURE_PROMOTED_ID:?}" ] &&
   [[ "$request_url" == *"/api/v1/trading/markets/BTC-USDT/status" ]]; then
   printf '{"state":"failed"}\n' > "$output_file"
   printf 'HTTP/2 503\r\ncontent-type: application/json\r\n\r\n' > "$header_file"
@@ -44,13 +44,17 @@ fi
 
 case "$request_url" in
   */api/v1/trading/markets/BTC-USDT/status)
+    provenance_id="$current_production_id"
+    provenance_url="https://$(
+      jq -r '.production_host' "${QIU_MARKET_FIXTURE_VERCEL_STATE:?}"
+    )"
     printf '{"state":"ready","last_error":"","outbox_state":"ready","outbox_last_error":""}\n' \
       > "$output_file"
     {
       printf 'HTTP/2 200\r\n'
       printf 'X-Qiu-Market-Provenance: VERIFIED\r\n'
-      printf 'X-Qiu-Market-Deployment-ID: %s\r\n' "${QIU_MARKET_FIXTURE_CANDIDATE_ID:?}"
-      printf 'X-Qiu-Market-Deployment-URL: https://%s\r\n' "${QIU_MARKET_FIXTURE_CANDIDATE_HOST:?}"
+      printf 'X-Qiu-Market-Deployment-ID: %s\r\n' "$provenance_id"
+      printf 'X-Qiu-Market-Deployment-URL: %s\r\n' "$provenance_url"
       printf 'X-Qiu-Market-Release-Commit: %s\r\n' "${QIU_MARKET_FIXTURE_COMMIT:?}"
       printf '\r\n'
     } > "$header_file"

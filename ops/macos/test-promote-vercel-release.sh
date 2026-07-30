@@ -5,6 +5,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixture_bin="$repo_root/ops/macos/fixtures/vercel-promotion-bin"
 fixture_dir="$(mktemp -d /tmp/qiu-market-vercel-promotion.XXXXXX)"
 cleanup() {
+  if [ "${QIU_MARKET_KEEP_PROMOTION_FIXTURE:-false}" = true ]; then
+    printf 'Promotion fixture retained at %s\n' "$fixture_dir" >&2
+    return
+  fi
   find "$fixture_dir" -depth -delete
 }
 trap cleanup EXIT
@@ -18,7 +22,9 @@ chmod 700 "$support_dir" "$observations"
 candidate_id="dpl_PromotionFixture123"
 candidate_host="qiu-market-promotion-fixture.vercel.app"
 candidate_url="https://$candidate_host"
-candidate_commit="2aa8bda39d2298e1d57886e472f9a090d728f56e"
+promoted_id="dpl_PromotedFixture123"
+promoted_host="qiu-market-promoted-fixture.vercel.app"
+candidate_commit="$(git -C "$repo_root" rev-parse HEAD)"
 previous_id="dpl_PreviousFixture123"
 previous_host="qiu-market-previous-fixture.vercel.app"
 vercel_state="$fixture_dir/vercel-state.json"
@@ -33,13 +39,20 @@ export QIU_MARKET_PRODUCTION_AUTH_EVIDENCE_FILE="$production_evidence"
 export QIU_MARKET_FIXTURE_VERCEL_STATE="$vercel_state"
 export QIU_MARKET_FIXTURE_CANDIDATE_ID="$candidate_id"
 export QIU_MARKET_FIXTURE_CANDIDATE_HOST="$candidate_host"
+export QIU_MARKET_FIXTURE_PROMOTED_ID="$promoted_id"
+export QIU_MARKET_FIXTURE_PROMOTED_HOST="$promoted_host"
 export QIU_MARKET_FIXTURE_PREVIOUS_ID="$previous_id"
 export QIU_MARKET_FIXTURE_PREVIOUS_HOST="$previous_host"
 export QIU_MARKET_FIXTURE_COMMIT="$candidate_commit"
+export QIU_MARKET_FIXTURE_PROJECT_ID="$(
+  jq -r '.projectId' "$repo_root/frontend/.vercel/project.json"
+)"
 export QIU_MARKET_PRODUCTION_ORIGIN="https://qiu-market.vercel.app"
 export QIU_MARKET_FUNNEL_ORIGIN="https://fixture-funnel.invalid"
 export QIU_MARKET_PROMOTION_SMOKE_ATTEMPTS=1
 export QIU_MARKET_PROMOTION_SMOKE_INTERVAL_SECONDS=0
+export QIU_MARKET_PROMOTION_RESOLVE_ATTEMPTS=3
+export QIU_MARKET_PROMOTION_RESOLVE_INTERVAL_SECONDS=0
 
 manager="$repo_root/ops/macos/promote-vercel-release.sh"
 identity_args=(
@@ -49,6 +62,7 @@ identity_args=(
 )
 
 reset_vercel() {
+  rm -f "$vercel_state.project-api-count"
   jq -n \
     --arg id "$previous_id" \
     --arg host "$previous_host" \
@@ -134,7 +148,7 @@ jq -e '
   .phase == "awaiting-production-auth" and
   ((.promotion_id // "") | test("^[0-9a-f]{32}$"))
 ' "$fixture_dir/promoted.json" >/dev/null
-[ "$(jq -r '.production_id' "$vercel_state")" = "$candidate_id" ]
+[ "$(jq -r '.production_id' "$vercel_state")" = "$promoted_id" ]
 
 if "$manager" confirm >/dev/null 2>&1; then
   echo "Production confirmation unexpectedly accepted missing evidence." >&2
@@ -148,17 +162,32 @@ jq -e '
 
 reset_vercel
 write_gate
+export QIU_MARKET_FIXTURE_STALE_PROMOTED_FIRST=1
+"$manager" promote --execute "${identity_args[@]}" > "$fixture_dir/promoted-after-stale.json"
+unset QIU_MARKET_FIXTURE_STALE_PROMOTED_FIRST
+jq -e \
+  --arg promoted_id "$promoted_id" '
+    .phase == "awaiting-production-auth" and
+    .promoted.id == $promoted_id
+  ' "$fixture_dir/promoted-after-stale.json" >/dev/null
+"$manager" rollback >/dev/null
+[ "$(jq -r '.production_id' "$vercel_state")" = "$previous_id" ]
+
+reset_vercel
+write_gate
 "$manager" promote --execute "${identity_args[@]}" >/dev/null
 promotion_id="$(jq -r '.promotion_id' "$release_dir/active.json")"
 promoted_at="$(jq -r '.promoted_at' "$release_dir/active.json")"
 jq -n \
   --arg promotion_id "$promotion_id" \
   --arg deployment_id "$candidate_id" \
+  --arg production_deployment_id "$promoted_id" \
   --arg deployment_commit "$candidate_commit" \
   --arg completed_at "$promoted_at" '{
     schema_version: 1,
     promotion_id: $promotion_id,
     deployment_id: $deployment_id,
+    production_deployment_id: $production_deployment_id,
     deployment_commit: $deployment_commit,
     production_login: true,
     github_login: "qianqiu0404",
@@ -181,6 +210,15 @@ jq -e '
   .rollback_verified == false
 ' "$fixture_dir/confirmed.json" >/dev/null
 [ ! -e "$release_dir/active.json" ]
+
+if ! grep -Fq 'for attempt in 1 2 3' "$manager" ||
+  ! grep -Fq '000|5??)' "$manager" ||
+  ! grep -Fq -- '--silent --show-error --max-time 20' "$manager" ||
+  ! grep -Fq 'production_request \' "$manager" ||
+  ! grep -Fq 'baseline-oauth-start \' "$manager"; then
+  echo "Promotion preflight candidate reads are not bounded and retry-safe." >&2
+  exit 1
+fi
 
 reset_vercel
 write_gate

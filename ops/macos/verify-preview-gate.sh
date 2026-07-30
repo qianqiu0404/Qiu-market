@@ -57,7 +57,7 @@ if [[ ! "$deployment_id" =~ ^dpl_[A-Za-z0-9]+$ ]] ||
   usage
 fi
 
-for required_command in curl git jq vercel; do
+for required_command in curl git jq python3 vercel; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     echo "Required Preview gate dependency is unavailable: $required_command" >&2
     exit 1
@@ -100,6 +100,92 @@ http_code() {
       END { if (value == "") print "000"; else print value }'
 }
 
+validate_close_evidence() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import datetime
+import json
+import re
+import sys
+
+path, deployment_id, deployment_commit = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    value = json.load(handle)
+try:
+    opened = datetime.datetime.fromisoformat(
+        value["window_opened_at"].replace("Z", "+00:00")
+    )
+    closed = datetime.datetime.fromisoformat(
+        value["completed_at"].replace("Z", "+00:00")
+    )
+except (KeyError, TypeError, ValueError):
+    raise SystemExit(1)
+valid = (
+    value.get("schema_version") == 1
+    and value.get("status") == "closed_after_verified_logout"
+    and value.get("deployment_id") == deployment_id
+    and value.get("deployment_commit") == deployment_commit
+    and re.fullmatch(r"[0-9a-f]{32}", value.get("window_id", "")) is not None
+    and value.get("production_configuration_restored") is True
+    and value.get("production_oauth_runtime_verified") is True
+    and closed >= opened
+)
+raise SystemExit(0 if valid else 1)
+PY
+}
+
+validate_browser_evidence() {
+  python3 - "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
+import datetime
+import json
+import sys
+
+(
+    path,
+    deployment_id,
+    deployment_commit,
+    window_id,
+    window_opened_at,
+    maintenance_closed_at,
+) = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    value = json.load(handle)
+try:
+    completed = datetime.datetime.fromisoformat(
+        value["completed_at"].replace("Z", "+00:00")
+    )
+    closed = datetime.datetime.fromisoformat(
+        maintenance_closed_at.replace("Z", "+00:00")
+    )
+except (KeyError, TypeError, ValueError):
+    raise SystemExit(1)
+required_true = (
+    "callback_single_use",
+    "secure_cookie",
+    "csrf_rejected",
+    "origin_rejected",
+    "submit_unknown_reconciled",
+    "cancel_unknown_reconciled",
+    "fund_unknown_reconciled",
+    "preview_logout_204",
+    "stale_preview_session_401",
+    "stale_preview_write_401",
+    "visual_trade_page",
+)
+valid = (
+    value.get("schema_version") == 2
+    and value.get("deployment_id") == deployment_id
+    and value.get("deployment_commit") == deployment_commit
+    and value.get("window_id") == window_id
+    and value.get("window_opened_at") == window_opened_at
+    and value.get("maintenance_closed_at") == maintenance_closed_at
+    and all(value.get(name) is True for name in required_true)
+    and value.get("console_error_count") == 0
+    and completed >= closed
+)
+raise SystemExit(0 if valid else 1)
+PY
+}
+
 ordinary_request() {
   local label="$1"
   local request_url="$2"
@@ -115,38 +201,109 @@ ordinary_request() {
   http_code "$result"
 }
 
+ordinary_read_request() {
+  local label="$1"
+  local request_url="$2"
+  local code="000"
+  local attempt
+  for attempt in 1 2 3; do
+    code="$(ordinary_request "$label" "$request_url")"
+    case "$code" in
+      000|5??)
+        ;;
+      *)
+        break
+        ;;
+    esac
+    if [ "$attempt" -lt 3 ]; then
+      sleep 1
+    fi
+  done
+  printf '%s\n' "$code"
+}
+
+unsigned_funnel_request() {
+  local code="000"
+  local attempt
+  for attempt in 1 2 3; do
+    code="$(
+      ordinary_request unsigned-funnel \
+        "$funnel_origin/api/v2/get_market_overview" \
+        --request POST \
+        --header 'content-type: application/json' \
+        --data '{"consumer_token":"preview-gate","venue":"all","universe":"provider_union"}'
+    )"
+    case "$code" in
+      000|5??)
+        ;;
+      *)
+        break
+        ;;
+    esac
+    if [ "$attempt" -lt 3 ]; then
+      sleep 1
+    fi
+  done
+  printf '%s\n' "$code"
+}
+
 protected_request() {
   local label="$1"
   local endpoint="$2"
   shift 2
   local result
-  result="$(
-    cd "$frontend_root"
-    vercel curl "$endpoint" --deployment "$deployment_id" -- \
-      --silent --show-error \
-      --output "$temp_dir/$label.body" \
-      --dump-header "$temp_dir/$label.headers" \
-      --write-out '%{http_code}' \
-      "$@" 2>"$temp_dir/$label.error" || true
-  )"
-  http_code "$result"
+  local code="000"
+  local attempt=1
+  while [ "$attempt" -le 3 ]; do
+    result="$(
+      cd "$frontend_root"
+      vercel curl "$endpoint" --deployment "${deployment_url#https://}" -- \
+        --silent --show-error --max-time 20 \
+        --output "$temp_dir/$label.body" \
+        --dump-header "$temp_dir/$label.headers" \
+        --write-out '%{http_code}' \
+        "$@" 2>"$temp_dir/$label.error" || true
+    )"
+    code="$(http_code "$result")"
+    case "$code" in
+      000|5??)
+        ;;
+      *)
+        break
+        ;;
+    esac
+    attempt=$((attempt + 1))
+    if [ "$attempt" -le 3 ]; then
+      sleep 1
+    fi
+  done
+  printf '%s\n' "$code"
 }
 
 inspect_ok=false
-if (
-  cd "$frontend_root"
-  vercel inspect "$deployment_id" --format=json \
-    > "$temp_dir/inspect.json" 2>"$temp_dir/inspect.error"
-) && jq -e \
-  --arg id "$deployment_id" \
-  --arg url "${deployment_url#https://}" '
-    .id == $id and
-    .url == $url and
-    .readyState == "READY" and
-    .target == "preview"
-  ' "$temp_dir/inspect.json" >/dev/null 2>&1; then
-  inspect_ok=true
-fi
+inspect_attempt=1
+while [ "$inspect_attempt" -le 3 ]; do
+  (
+    cd "$frontend_root"
+    vercel inspect "${deployment_url#https://}" --format=json \
+      > "$temp_dir/inspect.json" 2>"$temp_dir/inspect.error"
+  ) || true
+  if jq -e \
+    --arg id "$deployment_id" \
+    --arg url "${deployment_url#https://}" '
+      .id == $id and
+      .url == $url and
+      .readyState == "READY" and
+      .target == "preview"
+    ' "$temp_dir/inspect.json" >/dev/null 2>&1; then
+    inspect_ok=true
+    break
+  fi
+  inspect_attempt=$((inspect_attempt + 1))
+  if [ "$inspect_attempt" -le 3 ]; then
+    sleep 1
+  fi
+done
 
 frontend_source_match=false
 if git -C "$repo_root" cat-file -e "$deployment_commit^{commit}" 2>/dev/null &&
@@ -155,10 +312,10 @@ if git -C "$repo_root" cat-file -e "$deployment_commit^{commit}" 2>/dev/null &&
 fi
 
 ordinary_page_http="$(
-  ordinary_request ordinary-page "$deployment_url/trade/BTC-USDT"
+  ordinary_read_request ordinary-page "$deployment_url/trade/BTC-USDT"
 )"
 ordinary_api_http="$(
-  ordinary_request ordinary-api \
+  ordinary_read_request ordinary-api \
     "$deployment_url/api/v1/trading/markets/BTC-USDT/status"
 )"
 
@@ -176,13 +333,7 @@ capabilities_http="$(
 session_http="$(
   protected_request session /api/v1/trading/session
 )"
-unsigned_funnel_http="$(
-  ordinary_request unsigned-funnel \
-    "$funnel_origin/api/v2/get_market_overview" \
-    --request POST \
-    --header 'content-type: application/json' \
-    --data '{"consumer_token":"preview-gate","venue":"all","universe":"provider_union"}'
-)"
+unsigned_funnel_http="$(unsigned_funnel_request)"
 
 protected_html_ok=false
 if [ "$markets_http" = 200 ] &&
@@ -201,11 +352,41 @@ if [[ "$ordinary_page_http" =~ ^(302|401|403)$ ]] &&
 fi
 
 provenance_ok=false
-if [ "$trading_http" = 200 ] &&
-  [ "$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Provenance)" = VERIFIED ] &&
-  [ "$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Deployment-ID)" = "$deployment_id" ] &&
-  [ "$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Deployment-URL)" = "$deployment_url" ] &&
-  [ "$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Release-Commit)" = "$deployment_commit" ]; then
+observed_provenance="$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Provenance)"
+observed_deployment_id="$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Deployment-ID)"
+observed_deployment_url="$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Deployment-URL)"
+observed_deployment_commit="$(header_value "$temp_dir/trading.headers" X-Qiu-Market-Release-Commit)"
+if python3 - \
+  "$trading_http" \
+  "$observed_provenance" \
+  "$observed_deployment_id" \
+  "$observed_deployment_url" \
+  "$observed_deployment_commit" \
+  "$deployment_id" \
+  "$deployment_url" \
+  "$deployment_commit" <<'PY'
+import sys
+
+(
+    status,
+    provenance,
+    observed_id,
+    observed_url,
+    observed_commit,
+    expected_id,
+    expected_url,
+    expected_commit,
+) = sys.argv[1:]
+valid = (
+    status == "200"
+    and provenance == "VERIFIED"
+    and observed_id == expected_id
+    and observed_url == expected_url
+    and observed_commit == expected_commit
+)
+raise SystemExit(0 if valid else 1)
+PY
+then
   provenance_ok=true
 fi
 
@@ -258,29 +439,16 @@ window_report_mode=""
 if [ -f "$window_report" ] && [ ! -L "$window_report" ]; then
   window_report_mode="$(stat -f '%Lp' "$window_report")"
 fi
-if { [ "$window_report_mode" = 600 ] || [ "$window_report_mode" = 400 ]; } &&
-  jq -e \
-    --arg deployment_id "$deployment_id" \
-    --arg deployment_commit "$deployment_commit" '
-      .schema_version == 1 and
-      .status == "closed_after_verified_logout" and
-      .deployment_id == $deployment_id and
-      .deployment_commit == $deployment_commit and
-      ((.window_id // "") | test("^[0-9a-f]{32}$")) and
-      ((.window_opened_at // "") | length > 0) and
-      .production_configuration_restored == true and
-      .production_oauth_runtime_verified == true and
-      (
-        (.window_opened_at) as $opened |
-        (.completed_at) as $closed |
-        try (($opened | fromdateiso8601) <= ($closed | fromdateiso8601))
-        catch false
-      )
-    ' "$window_report" >/dev/null 2>&1; then
-  managed_oauth_close_evidence=true
-  closed_window_id="$(jq -r '.window_id' "$window_report")"
-  closed_window_opened_at="$(jq -r '.window_opened_at' "$window_report")"
-  closed_at="$(jq -r '.completed_at' "$window_report")"
+if [ "$window_report_mode" = 600 ] || [ "$window_report_mode" = 400 ]; then
+  if validate_close_evidence \
+    "$window_report" \
+    "$deployment_id" \
+    "$deployment_commit"; then
+    closed_window_id="$(jq -r '.window_id' "$window_report")"
+    closed_window_opened_at="$(jq -r '.window_opened_at' "$window_report")"
+    closed_at="$(jq -r '.completed_at' "$window_report")"
+    managed_oauth_close_evidence=true
+  fi
 fi
 
 oauth_browser_evidence=false
@@ -290,40 +458,35 @@ if [ -f "$evidence_file" ] && [ ! -L "$evidence_file" ]; then
 fi
 if [ "$managed_oauth_close_evidence" = true ] &&
   { [ "$evidence_mode" = 600 ] || [ "$evidence_mode" = 400 ]; } &&
-  [ -s "$evidence_file" ] && jq -e \
-  --arg deployment_id "$deployment_id" \
-  --arg deployment_commit "$deployment_commit" \
-  --arg window_id "$closed_window_id" \
-  --arg window_opened_at "$closed_window_opened_at" \
-  --arg maintenance_closed_at "$closed_at" '
-    .schema_version == 2 and
-    .deployment_id == $deployment_id and
-    .deployment_commit == $deployment_commit and
-    .window_id == $window_id and
-    .window_opened_at == $window_opened_at and
-    .maintenance_closed_at == $maintenance_closed_at and
-    .callback_single_use == true and
-    .secure_cookie == true and
-    .csrf_rejected == true and
-    .origin_rejected == true and
-    .submit_unknown_reconciled == true and
-    .cancel_unknown_reconciled == true and
-    .fund_unknown_reconciled == true and
-    .preview_logout_204 == true and
-    .stale_preview_session_401 == true and
-    .stale_preview_write_401 == true and
-    .visual_trade_page == true and
-    .console_error_count == 0 and
-    (
-      (.completed_at) as $completed |
-      try (
-        ($completed | fromdateiso8601) >=
-        ($maintenance_closed_at | fromdateiso8601)
-      )
-      catch false
-    )
-  ' "$evidence_file" >/dev/null 2>&1; then
-  oauth_browser_evidence=true
+  [ -s "$evidence_file" ]; then
+  if validate_browser_evidence \
+    "$evidence_file" \
+    "$deployment_id" \
+    "$deployment_commit" \
+    "$closed_window_id" \
+    "$closed_window_opened_at" \
+    "$closed_at"; then
+    oauth_browser_evidence=true
+  fi
+fi
+
+if [ "${QIU_MARKET_GATE_DIAGNOSTICS:-false}" = true ]; then
+  printf 'preview_gate_diagnostics inspect=%s provenance=%s close_mode=%s close=%s browser_mode=%s browser=%s\n' \
+    "$inspect_ok" \
+    "$provenance_ok" \
+    "$window_report_mode" \
+    "$managed_oauth_close_evidence" \
+    "$evidence_mode" \
+    "$oauth_browser_evidence" >&2
+  printf 'preview_gate_identity observed_id=%s observed_url=%s observed_commit=%s\n' \
+    "$observed_deployment_id" \
+    "$observed_deployment_url" \
+    "$observed_deployment_commit" >&2
+  if [ -s "$temp_dir/inspect.json" ]; then
+    jq -c '{id,url,readyState,target}' "$temp_dir/inspect.json" >&2 || true
+  elif [ -s "$temp_dir/inspect.error" ]; then
+    sed -n '1p' "$temp_dir/inspect.error" >&2
+  fi
 fi
 
 non_oauth_checks=false

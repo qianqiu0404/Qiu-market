@@ -14,6 +14,7 @@
     "test:gate-lib": "node --test scripts/live-gate-lib.test.mjs",
     "test:e2e": "playwright test",
     "gate:preview-oauth": "node scripts/run-preview-oauth-gate.mjs",
+    "gate:production-auth": "node scripts/run-production-auth-gate.mjs",
     "typecheck:functions": "tsc --noEmit -p tsconfig.functions.json"
   },
   "dependencies": {

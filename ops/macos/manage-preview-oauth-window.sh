@@ -310,15 +310,27 @@ PY
 verify_oauth_runtime() {
   local mode="$1"
   local callback="$2"
-  local capabilities_http
+  local capabilities_http="000"
+  local capabilities_attempt=1
   local start_http
-  if [ "$mode" = preview ]; then
-    capabilities_http="$(preview_request runtime-capabilities /api/v1/trading/auth/capabilities)"
-    start_http="$(preview_request runtime-oauth-start /api/v1/trading/auth/github/start)"
-  else
-    capabilities_http="$(production_request runtime-capabilities /api/v1/trading/auth/capabilities)"
-    start_http="$(production_request runtime-oauth-start /api/v1/trading/auth/github/start)"
-  fi
+  while [ "$capabilities_attempt" -le 3 ]; do
+    if [ "$mode" = preview ]; then
+      capabilities_http="$(preview_request runtime-capabilities /api/v1/trading/auth/capabilities)"
+    else
+      capabilities_http="$(production_request runtime-capabilities /api/v1/trading/auth/capabilities)"
+    fi
+    case "$capabilities_http" in
+      000|5??)
+        ;;
+      *)
+        break
+        ;;
+    esac
+    capabilities_attempt=$((capabilities_attempt + 1))
+    if [ "$capabilities_attempt" -le 3 ]; then
+      sleep 1
+    fi
+  done
 
   if [ "$capabilities_http" != 200 ] ||
     ! jq -e '
@@ -327,6 +339,11 @@ verify_oauth_runtime() {
     ' "$window_dir/runtime-capabilities.body" >/dev/null 2>&1; then
     echo "OAuth runtime capabilities are not safe after the API restart." >&2
     return 1
+  fi
+  if [ "$mode" = preview ]; then
+    start_http="$(preview_request runtime-oauth-start /api/v1/trading/auth/github/start)"
+  else
+    start_http="$(production_request runtime-oauth-start /api/v1/trading/auth/github/start)"
   fi
   if [ "$start_http" != 302 ]; then
     echo "OAuth start did not return the required single redirect; HTTP $start_http." >&2

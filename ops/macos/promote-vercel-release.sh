@@ -18,6 +18,8 @@ production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app
 funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
 promotion_smoke_attempts="${QIU_MARKET_PROMOTION_SMOKE_ATTEMPTS:-6}"
 promotion_smoke_interval="${QIU_MARKET_PROMOTION_SMOKE_INTERVAL_SECONDS:-5}"
+promotion_resolve_attempts="${QIU_MARKET_PROMOTION_RESOLVE_ATTEMPTS:-10}"
+promotion_resolve_interval="${QIU_MARKET_PROMOTION_RESOLVE_INTERVAL_SECONDS:-2}"
 state_file="$release_dir/active.json"
 last_report="$release_dir/last.json"
 lock_dir="$release_dir/operation.lock"
@@ -25,9 +27,12 @@ lock_dir="$release_dir/operation.lock"
 deployment_id=""
 deployment_url=""
 deployment_commit=""
+promoted_id=""
+promoted_url=""
 execute_promotion=false
 lock_owned=false
 promotion_may_be_applied=false
+promotion_started_at_ms=0
 
 usage() {
   cat >&2 <<'USAGE'
@@ -36,7 +41,8 @@ Usage:
   promote-vercel-release.sh preflight --deployment-id dpl_... \
     --deployment-url https://immutable-preview.vercel.app --commit <40-hex-sha>
   promote-vercel-release.sh promote --execute --deployment-id dpl_... \
-    --deployment-url https://immutable-preview.vercel.app --commit <40-hex-sha>
+    --deployment-url https://immutable-preview.vercel.app --commit <40-hex-sha> \
+    [--promoted-id dpl_... --promoted-url https://production-copy.vercel.app]
   promote-vercel-release.sh confirm
   promote-vercel-release.sh rollback
 
@@ -64,6 +70,16 @@ while [ "$#" -gt 0 ]; do
     --commit)
       [ "$#" -ge 2 ] || usage
       deployment_commit="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+      shift 2
+      ;;
+    --promoted-id)
+      [ "$#" -ge 2 ] || usage
+      promoted_id="$2"
+      shift 2
+      ;;
+    --promoted-url)
+      [ "$#" -ge 2 ] || usage
+      promoted_url="${2%/}"
       shift 2
       ;;
     --execute)
@@ -117,6 +133,11 @@ require_identity() {
     [[ ! "$deployment_commit" =~ ^[0-9a-f]{40}$ ]]; then
     usage
   fi
+  if [ -n "$promoted_id$promoted_url" ] &&
+    { [[ ! "$promoted_id" =~ ^dpl_[A-Za-z0-9]+$ ]] ||
+      [[ ! "$promoted_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]; }; then
+    usage
+  fi
 }
 
 require_commands() {
@@ -131,6 +152,10 @@ require_commands() {
     echo "Qiu Market frontend is not linked to Vercel." >&2
     return 1
   fi
+}
+
+project_identity() {
+  jq -er "$1 // empty" "$frontend_root/.vercel/project.json"
 }
 
 private_json_mode() {
@@ -202,25 +227,51 @@ http_code() {
 inspect_deployment() {
   local reference="$1"
   local output_file="$2"
-  (
-    cd "$frontend_root"
-    vercel inspect "$reference" --format=json
-  ) > "$output_file"
+  local attempt
+  for attempt in 1 2 3; do
+    (
+      cd "$frontend_root"
+      vercel inspect "$reference" --format=json
+    ) > "$output_file" || true
+    if jq -e 'type == "object" and ((.id // "") | startswith("dpl_"))' \
+      "$output_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      sleep 1
+    fi
+  done
+  return 1
 }
 
 preview_request() {
   local label="$1"
   local endpoint="$2"
   local result
-  result="$(
-    cd "$frontend_root"
-    vercel curl "$endpoint" --deployment "$deployment_id" -- \
-      --silent --show-error --max-time 20 \
-      --output "$release_dir/$label.body" \
-      --dump-header "$release_dir/$label.headers" \
-      --write-out '%{http_code}' 2>"$release_dir/$label.error" || true
-  )"
-  http_code "$result"
+  local code="000"
+  local attempt
+  for attempt in 1 2 3; do
+    result="$(
+      cd "$frontend_root"
+      vercel curl "$endpoint" --deployment "${deployment_url#https://}" -- \
+        --silent --show-error --max-time 20 \
+        --output "$release_dir/$label.body" \
+        --dump-header "$release_dir/$label.headers" \
+        --write-out '%{http_code}' 2>"$release_dir/$label.error" || true
+    )"
+    code="$(http_code "$result")"
+    case "$code" in
+      000|5??)
+        ;;
+      *)
+        break
+        ;;
+    esac
+    if [ "$attempt" -lt 3 ]; then
+      sleep 1
+    fi
+  done
+  printf '%s\n' "$code"
 }
 
 production_request() {
@@ -238,13 +289,37 @@ production_request() {
   http_code "$result"
 }
 
+production_read_request() {
+  local label="$1"
+  local endpoint="$2"
+  shift 2
+  local code="000"
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    code="$(production_request "$label" "$endpoint" "$@")"
+    case "$code" in
+      000|5??)
+        ;;
+      *)
+        break
+        ;;
+    esac
+    if [ "$attempt" -lt 6 ]; then
+      sleep 1
+    fi
+  done
+  printf '%s\n' "$code"
+}
+
 verify_runtime_provenance() {
   local prefix="$1"
   local status_http="$2"
+  local expected_id="${3:-$deployment_id}"
+  local expected_url="${4:-$deployment_url}"
   if [ "$status_http" != 200 ] ||
     [ "$(header_value "$release_dir/$prefix.headers" X-Qiu-Market-Provenance)" != VERIFIED ] ||
-    [ "$(header_value "$release_dir/$prefix.headers" X-Qiu-Market-Deployment-ID)" != "$deployment_id" ] ||
-    [ "$(header_value "$release_dir/$prefix.headers" X-Qiu-Market-Deployment-URL)" != "$deployment_url" ] ||
+    [ "$(header_value "$release_dir/$prefix.headers" X-Qiu-Market-Deployment-ID)" != "$expected_id" ] ||
+    [ "$(header_value "$release_dir/$prefix.headers" X-Qiu-Market-Deployment-URL)" != "$expected_url" ] ||
     [ "$(header_value "$release_dir/$prefix.headers" X-Qiu-Market-Release-Commit)" != "$deployment_commit" ] ||
     ! jq -e '
       .state == "ready" and
@@ -321,13 +396,13 @@ verify_pre_promotion_production() {
   local state_cookie
   local state_cookie_lower
 
-  code="$(production_request baseline-page /)"
+  code="$(production_read_request baseline-page /)"
   if [ "$code" != 200 ]; then
     echo "Current Production page is not a healthy rollback baseline." >&2
     return 1
   fi
   code="$(
-    production_request \
+    production_read_request \
       baseline-status \
       /api/v1/trading/markets/BTC-USDT/status
   )"
@@ -341,7 +416,7 @@ verify_pre_promotion_production() {
     return 1
   fi
   code="$(
-    production_request \
+    production_read_request \
       baseline-capabilities \
       /api/v1/trading/auth/capabilities
   )"
@@ -408,7 +483,7 @@ read_only_preflight() {
     return 1
   fi
 
-  inspect_deployment "$deployment_id" "$release_dir/candidate-inspect.json"
+  inspect_deployment "$deployment_url" "$release_dir/candidate-inspect.json"
   if ! jq -e \
     --arg id "$deployment_id" \
     --arg url "${deployment_url#https://}" '
@@ -444,6 +519,8 @@ load_state() {
   deployment_id="$(jq -r '.candidate.id // ""' "$state_file")"
   deployment_url="$(jq -r '.candidate.url // ""' "$state_file")"
   deployment_commit="$(jq -r '.candidate.commit // ""' "$state_file")"
+  promoted_id="$(jq -r '.promoted.id // ""' "$state_file")"
+  promoted_url="$(jq -r '.promoted.url // ""' "$state_file")"
   promotion_id="$(jq -r '.promotion_id // ""' "$state_file")"
   previous_id="$(jq -r '.previous.id // ""' "$state_file")"
   previous_url="$(jq -r '.previous.url // ""' "$state_file")"
@@ -464,6 +541,8 @@ write_state() {
     --arg candidate_id "$deployment_id" \
     --arg candidate_url "$deployment_url" \
     --arg candidate_commit "$deployment_commit" \
+    --arg promoted_id "$promoted_id" \
+    --arg promoted_url "$promoted_url" \
     --arg previous_id "$previous_id_value" \
     --arg previous_url "$previous_url_value" \
     --arg production_origin "$production_origin" \
@@ -477,6 +556,10 @@ write_state() {
           id: $candidate_id,
           url: $candidate_url,
           commit: $candidate_commit
+        },
+        promoted: {
+          id: $promoted_id,
+          url: $promoted_url
         },
         previous: {
           id: $previous_id,
@@ -494,10 +577,11 @@ write_state() {
 verify_production_alias() {
   local expected_id="$1"
   local attempts="${2:-1}"
+  local reference="${3:-$production_origin}"
   local attempt
   for attempt in $(seq 1 "$attempts"); do
     if inspect_deployment \
-      "$production_origin" \
+      "$reference" \
       "$release_dir/production-current.json" 2>/dev/null &&
       jq -e \
         --arg id "$expected_id" '
@@ -514,11 +598,177 @@ verify_production_alias() {
   return 1
 }
 
+validate_promoted_production() {
+  local actual_id="$1"
+  local actual_url="$2"
+  local team_id
+  local project_id
+  team_id="$(project_identity '.orgId')"
+  project_id="$(project_identity '.projectId')"
+  (
+    cd "$frontend_root"
+    vercel api "/v13/deployments/$actual_id" \
+      --scope "$team_id" \
+      --raw
+  ) > "$release_dir/promoted-api.json" 2>/dev/null || true
+  jq -e \
+    --arg actual_id "$actual_id" \
+    --arg actual_url "${actual_url#https://}" \
+    --arg candidate_id "$deployment_id" \
+    --arg commit "$deployment_commit" \
+    --arg project_id "$project_id" '
+      .id == $actual_id and
+      .url == $actual_url and
+      .projectId == $project_id and
+      .readyState == "READY" and
+      .target == "production" and
+      .meta.action == "promote" and
+      .meta.originalDeploymentId == $candidate_id and
+      .meta.gitCommitSha == $commit and
+      .meta.qiuMarketReleaseCommit == $commit
+    ' "$release_dir/promoted-api.json" >/dev/null 2>&1
+}
+
+snapshot_existing_promoted_ids() {
+  local team_id
+  local project_id
+  team_id="$(project_identity '.orgId')"
+  project_id="$(project_identity '.projectId')"
+  (
+    cd "$frontend_root"
+    vercel api "/v9/projects/$project_id" \
+      --scope "$team_id" \
+      --raw
+  ) > "$release_dir/project-before-promotion.json"
+  jq -e '
+      (.latestDeployments | type == "array") and
+      all(.latestDeployments[]; (.id | type == "string"))
+    ' "$release_dir/project-before-promotion.json" >/dev/null
+  jq '[.latestDeployments[].id] | unique' \
+    "$release_dir/project-before-promotion.json" \
+    > "$release_dir/promoted-ids-before.json"
+}
+
+resolve_latest_promoted_production() {
+  local team_id
+  local project_id
+  local result
+  local attempt
+  local earliest_created_at
+  team_id="$(project_identity '.orgId')"
+  project_id="$(project_identity '.projectId')"
+  if [[ ! "$promotion_started_at_ms" =~ ^[0-9]+$ ]] ||
+    [ "$promotion_started_at_ms" -le 0 ]; then
+    echo "Promotion start time is unavailable; refusing ambiguous clone discovery." >&2
+    return 1
+  fi
+  if ! jq -e 'type == "array" and all(.[]; type == "string")' \
+    "$release_dir/promoted-ids-before.json" >/dev/null 2>&1; then
+    echo "Pre-promotion deployment identity snapshot is unavailable." >&2
+    return 1
+  fi
+  earliest_created_at=$((promotion_started_at_ms - 5000))
+  if [ "$earliest_created_at" -lt 0 ]; then
+    earliest_created_at=0
+  fi
+  for attempt in $(seq 1 "$promotion_resolve_attempts"); do
+    (
+      cd "$frontend_root"
+      vercel api "/v9/projects/$project_id" \
+        --scope "$team_id" \
+        --raw
+    ) > "$release_dir/project-api.json" 2>/dev/null || true
+    result="$(
+      jq -er \
+        --arg candidate_id "$deployment_id" \
+        --arg commit "$deployment_commit" \
+        --argjson earliest_created_at "$earliest_created_at" \
+        --slurpfile prior "$release_dir/promoted-ids-before.json" '
+          [
+            .latestDeployments[] |
+            select(
+              .id as $id |
+              .readyState == "READY" and
+              .target == "production" and
+              .meta.action == "promote" and
+              .meta.originalDeploymentId == $candidate_id and
+              .meta.gitCommitSha == $commit and
+              .meta.qiuMarketReleaseCommit == $commit and
+              (.createdAt | type == "number") and
+              .createdAt >= $earliest_created_at and
+              ($prior[0] | index($id)) == null
+            )
+          ] |
+          max_by(.createdAt) |
+          [.id, ("https://" + .url)] |
+          @tsv
+        ' "$release_dir/project-api.json" 2>/dev/null
+    )" || result=""
+    if [ -n "$result" ]; then
+      promoted_id="${result%%$'\t'*}"
+      promoted_url="${result#*$'\t'}"
+      if validate_promoted_production "$promoted_id" "$promoted_url"; then
+        return 0
+      fi
+    fi
+    if [ "$attempt" -lt "$promotion_resolve_attempts" ]; then
+      sleep "$promotion_resolve_interval"
+    fi
+  done
+  echo "Fresh promoted Production clone was not discoverable after promotion." >&2
+  return 1
+}
+
+load_production_aliases() {
+  local team_id
+  local project_id
+  team_id="$(project_identity '.orgId')"
+  project_id="$(project_identity '.projectId')"
+  (
+    cd "$frontend_root"
+    vercel api "/v9/projects/$project_id" \
+      --scope "$team_id" \
+      --raw
+  ) > "$release_dir/project-aliases-api.json" 2>/dev/null || true
+  jq -er '.targets.production.alias[]' \
+    "$release_dir/project-aliases-api.json" > "$release_dir/production-aliases.txt"
+  if ! grep -Fxq "${production_origin#https://}" "$release_dir/production-aliases.txt" ||
+    [ "$(wc -l < "$release_dir/production-aliases.txt" | tr -d ' ')" -gt 10 ] ||
+    grep -Ev '^[A-Za-z0-9.-]+\.vercel\.app$' \
+      "$release_dir/production-aliases.txt" >/dev/null; then
+    echo "Production alias set is unsafe or incomplete." >&2
+    return 1
+  fi
+}
+
+set_production_aliases() {
+  local deployment="$1"
+  local alias
+  while IFS= read -r alias; do
+    (
+      cd "$frontend_root"
+      vercel alias set "$deployment" "$alias"
+    )
+  done < "$release_dir/production-aliases.txt"
+}
+
+verify_production_aliases() {
+  local expected_id="$1"
+  local alias
+  while IFS= read -r alias; do
+    if ! verify_production_alias "$expected_id" 10 "$alias"; then
+      return 1
+    fi
+  done < "$release_dir/production-aliases.txt"
+}
+
 verify_production_smoke() {
   local page
   local code
+  local result
+  local attempt
   for page in / /markets /trade/BTC-USDT /system; do
-    code="$(production_request "page-$(printf '%s' "$page" | tr '/-' '__')" "$page")"
+    code="$(production_read_request "page-$(printf '%s' "$page" | tr '/-' '__')" "$page")"
     if [ "$code" != 200 ]; then
       echo "Production page failed after promotion: $page HTTP $code" >&2
       return 1
@@ -526,16 +776,20 @@ verify_production_smoke() {
   done
 
   code="$(
-    production_request \
+    production_read_request \
       production-status \
       /api/v1/trading/markets/BTC-USDT/status
   )"
-  if ! verify_runtime_provenance production-status "$code"; then
+  if ! verify_runtime_provenance \
+    production-status \
+    "$code" \
+    "$promoted_id" \
+    "$promoted_url"; then
     return 1
   fi
 
   code="$(
-    production_request \
+    production_read_request \
       production-capabilities \
       /api/v1/trading/auth/capabilities
   )"
@@ -547,24 +801,38 @@ verify_production_smoke() {
     return 1
   fi
 
-  code="$(production_request production-session /api/v1/trading/session)"
+  code="$(production_read_request production-session /api/v1/trading/session)"
   if [ "$code" != 401 ]; then
     echo "Anonymous Production session must remain 401; got $code." >&2
     return 1
   fi
 
-  result="$(
-    curl --silent --show-error --max-time 20 \
-      --output "$release_dir/unsigned-funnel.body" \
-      --dump-header "$release_dir/unsigned-funnel.headers" \
-      --write-out '%{http_code}' \
-      --request POST \
-      --header 'content-type: application/json' \
-      --data '{"consumer_token":"promotion-gate","venue":"all","universe":"provider_union"}' \
-      "$funnel_origin/api/v2/get_market_overview" \
-      2>"$release_dir/unsigned-funnel.error" || true
-  )"
-  if [ "$(http_code "$result")" != 401 ]; then
+  code="000"
+  for attempt in 1 2 3; do
+    result="$(
+      curl --silent --show-error --max-time 20 \
+        --output "$release_dir/unsigned-funnel.body" \
+        --dump-header "$release_dir/unsigned-funnel.headers" \
+        --write-out '%{http_code}' \
+        --request POST \
+        --header 'content-type: application/json' \
+        --data '{"consumer_token":"promotion-gate","venue":"all","universe":"provider_union"}' \
+        "$funnel_origin/api/v2/get_market_overview" \
+        2>"$release_dir/unsigned-funnel.error" || true
+    )"
+    code="$(http_code "$result")"
+    case "$code" in
+      000|5??)
+        ;;
+      *)
+        break
+        ;;
+    esac
+    if [ "$attempt" -lt 3 ]; then
+      sleep 1
+    fi
+  done
+  if [ "$code" != 401 ]; then
     echo "Unsigned Funnel REST is no longer rejected after promotion." >&2
     return 1
   fi
@@ -600,6 +868,8 @@ write_last_report() {
     --arg candidate_id "$deployment_id" \
     --arg candidate_url "$deployment_url" \
     --arg candidate_commit "$deployment_commit" \
+    --arg promoted_id "${promoted_id:-}" \
+    --arg promoted_url "${promoted_url:-}" \
     --arg previous_id "${previous_id:-}" \
     --arg previous_url "${previous_url:-}" \
     --arg rollback_verified "$rollback_verified" \
@@ -613,6 +883,10 @@ write_last_report() {
           id: $candidate_id,
           url: $candidate_url,
           commit: $candidate_commit
+        },
+        promoted: {
+          id: $promoted_id,
+          url: $promoted_url
         },
         previous: {
           id: $previous_id,
@@ -628,11 +902,8 @@ write_last_report() {
 }
 
 rollback_previous() {
-  (
-    cd "$frontend_root"
-    vercel rollback "$previous_id" --yes --timeout 3m
-  )
-  verify_production_alias "$previous_id" 30
+  set_production_aliases "$previous_url"
+  verify_production_aliases "$previous_id"
 }
 
 reject_production_acceptance() {
@@ -717,18 +988,34 @@ case "$action" in
     trap 'exit 130' INT
     trap 'exit 143' TERM
     read_only_preflight
+    load_production_aliases
     previous_id="$(jq -r '.id' "$release_dir/production-before.json")"
     previous_url="https://$(jq -r '.url' "$release_dir/production-before.json")"
+    if [ -n "$promoted_id" ]; then
+      validate_promoted_production "$promoted_id" "$promoted_url"
+    fi
     promotion_id="$(openssl rand -hex 16)"
+    if [ -z "$promoted_id" ]; then
+      snapshot_existing_promoted_ids
+    fi
     write_state promoting "$promotion_id" "$previous_id" "$previous_url"
 
     promotion_may_be_applied=true
     trap handle_promotion_failure EXIT
-    (
-      cd "$frontend_root"
-      vercel promote "$deployment_id" --yes --timeout 3m
-    )
-    verify_production_alias "$deployment_id" 30
+    if [ -z "$promoted_id" ]; then
+      promotion_started_at_ms="$(python3 - <<'PY'
+import time
+print(time.time_ns() // 1_000_000)
+PY
+)"
+      (
+        cd "$frontend_root"
+        vercel promote "$deployment_url" --yes --timeout 3m
+      )
+      resolve_latest_promoted_production
+    fi
+    set_production_aliases "$promoted_url"
+    verify_production_aliases "$promoted_id"
     wait_for_production_smoke
     promoted_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     write_state \
@@ -757,8 +1044,13 @@ case "$action" in
     fi
     require_identity
     require_commands
-    if ! verify_production_alias "$deployment_id"; then
-      echo "Production alias no longer points to the candidate deployment." >&2
+    if [[ ! "$promoted_id" =~ ^dpl_[A-Za-z0-9]+$ ]] ||
+      [[ ! "$promoted_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]]; then
+      echo "Promoted Production identity is missing from release state." >&2
+      exit 1
+    fi
+    if ! verify_production_aliases "$promoted_id"; then
+      echo "One or more Production aliases no longer point to the promoted deployment." >&2
       exit 1
     fi
     if ! verify_production_smoke; then
@@ -775,11 +1067,13 @@ case "$action" in
         --arg promotion_id "$promotion_id" \
         --arg deployment_id "$deployment_id" \
         --arg deployment_commit "$deployment_commit" \
+        --arg promoted_id "$promoted_id" \
         --arg promoted_at "$promoted_at" '
           .schema_version == 1 and
           .promotion_id == $promotion_id and
           .deployment_id == $deployment_id and
           .deployment_commit == $deployment_commit and
+          .production_deployment_id == $promoted_id and
           .production_login == true and
           .github_login == "qianqiu0404" and
           .secure_cookie == true and

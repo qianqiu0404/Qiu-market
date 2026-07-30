@@ -6,12 +6,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { chromium } from '@playwright/test'
+import { chromium, request } from '@playwright/test'
 
 import {
   balanceAvailable,
   canonicalJSON,
   invariant,
+  loopbackHTTPProxy,
   parseDecimalAtoms,
   requestID,
   requirePrivateRegularFile,
@@ -194,7 +195,7 @@ async function committedResponseLostOnce(page, context, origin, endpoint, body) 
   return { committed: committed.body, replay: replay.body }
 }
 
-async function runSecurityChecks(page, context, origin, principal) {
+async function runSecurityChecks(page, context, apiContext, origin, principal) {
   const cookies = await context.cookies(origin)
   const sessionCookie = cookies.find((cookie) => cookie.name === 's78_trading_session')
   const csrfCookie = cookies.find((cookie) => cookie.name === 's78_trading_csrf')
@@ -223,7 +224,7 @@ async function runSecurityChecks(page, context, origin, principal) {
   })
   invariant(missingCSRF.status === 403, `missing CSRF was not rejected: ${missingCSRF.status}`)
 
-  const originRejected = await context.request.post(
+  const originRejected = await apiContext.post(
     `${origin}/api/v1/trading/admin/fund`,
     {
       headers: {
@@ -416,20 +417,24 @@ async function main() {
   const manager = path.join(repoRoot, 'ops/macos/manage-preview-oauth-window.sh')
   const verifier = path.join(repoRoot, 'ops/macos/verify-preview-gate.sh')
   let context
+  let apiContext
   let managedCloseCompleted = false
   let callbackURL = ''
   let callbackResponses = 0
   const callbackStatuses = []
   const consoleErrors = []
+  const proxy = loopbackHTTPProxy()
 
   try {
     await mkdir(browserProfile, { recursive: true, mode: 0o700 })
     await chmod(browserProfile, 0o700)
-    context = await chromium.launchPersistentContext(browserProfile, {
+    const browserOptions = {
       channel: 'chrome',
       headless,
       viewport: { width: 1440, height: 900 },
-    })
+    }
+    if (proxy) browserOptions.proxy = proxy
+    context = await chromium.launchPersistentContext(browserProfile, browserOptions)
     await context.clearCookies({ name: /^s78_trading_/ })
     const pages = context.pages()
     const page = pages[0] ?? await context.newPage()
@@ -509,12 +514,20 @@ async function main() {
     await page.screenshot({ path: screenshotFile, fullPage: true })
     await chmod(screenshotFile, 0o600)
 
-    const replay = await context.request.get(callbackURL, { maxRedirects: 0 })
-    invariant(replay.status() === 400, `OAuth callback replay was not rejected: ${replay.status()}`)
+    // Replay exactly once through the authenticated browser's same-origin
+    // transport. Playwright's separate APIRequestContext bypasses the Chrome
+    // network path on this host and can reset before an HTTP response exists;
+    // retrying the one-time OAuth callback would be unsafe.
+    const replay = await browserFetch(page, callbackURL)
+    invariant(replay.status === 400, `OAuth callback replay was not rejected: ${replay.status}`)
 
+    const apiContextOptions = { storageState: await context.storageState() }
+    if (proxy) apiContextOptions.proxy = proxy
+    apiContext = await request.newContext(apiContextOptions)
     const security = await runSecurityChecks(
       page,
       context,
+      apiContext,
       identity.deploymentURL,
       principal,
     )
@@ -648,6 +661,7 @@ async function main() {
     }
     throw error
   } finally {
+    await apiContext?.dispose()
     await context?.close()
   }
 }

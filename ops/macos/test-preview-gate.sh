@@ -18,7 +18,10 @@ export QIU_MARKET_ENV_FILE="$fixture_dir/production.env"
 verifier="$repo_root/ops/macos/verify-preview-gate.sh"
 deployment_id="dpl_FixturePreview123"
 deployment_url="https://qiu-market-fixture-preview.vercel.app"
-deployment_commit="2aa8bda39d2298e1d57886e472f9a090d728f56e"
+deployment_commit="$(git -C "$repo_root" rev-parse HEAD)"
+export FIXTURE_DEPLOYMENT_COMMIT="$deployment_commit"
+export FIXTURE_TRANSIENT_ENDPOINT="/api/v1/trading/session"
+export FIXTURE_TRANSIENT_STATE="$fixture_dir/session-transient-once"
 
 run_verifier() {
   "$verifier" \
@@ -50,6 +53,8 @@ jq -e '
   .checks.unsigned_funnel_rest_http == 401 and
   .checks.local_login_disabled == true
 ' "$fixture_dir/report.json" >/dev/null
+test -f "$FIXTURE_TRANSIENT_STATE"
+unset FIXTURE_TRANSIENT_ENDPOINT FIXTURE_TRANSIENT_STATE
 
 printf '%s\n' \
   'MARKET_TRADING_GITHUB_CLIENT_ID=fixture-client-id' \
@@ -130,7 +135,7 @@ jq -n \
     stale_preview_write_401: true,
     visual_trade_page: true,
     console_error_count: 0,
-    completed_at: "2026-07-28T00:11:00Z"
+    completed_at: "2026-07-28T00:11:00.123Z"
   }' > "$fixture_dir/oauth-evidence.json"
 chmod 600 "$fixture_dir/oauth-evidence.json"
 run_verifier
@@ -183,5 +188,11 @@ jq -e '
   .reason == "non_oauth_preview_check_failed" and
   .checks.runtime_provenance_matches == false
 ' "$fixture_dir/report.json" >/dev/null
+
+if ! grep -Fq -- '--silent --show-error --max-time 20' \
+  "$repo_root/ops/macos/verify-preview-gate.sh"; then
+  echo "Preview gate protected reads do not have a bounded transport timeout." >&2
+  exit 1
+fi
 
 echo "Qiu Market protected Preview gate fixtures passed."

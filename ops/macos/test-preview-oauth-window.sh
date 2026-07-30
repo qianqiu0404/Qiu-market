@@ -62,7 +62,10 @@ after_locked_open_sha="$(shasum -a 256 "$production_env" | awk '{print $1}')"
 
 mkdir "$support_dir/preview-oauth-window/operation.lock"
 printf '999999\n' > "$support_dir/preview-oauth-window/operation.lock/pid"
+export QIU_MARKET_FIXTURE_CAPABILITY_TRANSIENT_STATE="$fixture_dir/capability-transient-once"
 "$manager" open "${identity_args[@]}" > "$fixture_dir/open.json"
+test -f "$QIU_MARKET_FIXTURE_CAPABILITY_TRANSIENT_STATE"
+unset QIU_MARKET_FIXTURE_CAPABILITY_TRANSIENT_STATE
 jq -e '.phase == "open"' "$fixture_dir/open.json" >/dev/null
 grep -Fx \
   "MARKET_TRADING_ALLOWED_ORIGINS=https://qiu-market.vercel.app,$deployment_url" \

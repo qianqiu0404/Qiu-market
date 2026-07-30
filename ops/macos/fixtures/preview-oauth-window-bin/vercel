@@ -34,6 +34,14 @@ fi
 source "${QIU_MARKET_ENV_FILE:?}"
 case "$endpoint" in
   /api/v1/trading/auth/capabilities)
+    if [ -n "${QIU_MARKET_FIXTURE_CAPABILITY_TRANSIENT_STATE:-}" ] &&
+      [ ! -e "$QIU_MARKET_FIXTURE_CAPABILITY_TRANSIENT_STATE" ]; then
+      : > "$QIU_MARKET_FIXTURE_CAPABILITY_TRANSIENT_STATE"
+      printf '{"code":"transient_fixture"}\n' > "$output_file"
+      printf 'HTTP/2 503\r\ncontent-type: application/json\r\n\r\n' > "$header_file"
+      printf '503'
+      exit 0
+    fi
     printf '{"github_oauth_enabled":true,"local_login_enabled":false}\n' > "$output_file"
     printf 'HTTP/2 200\r\ncontent-type: application/json\r\n\r\n' > "$header_file"
     printf '200'

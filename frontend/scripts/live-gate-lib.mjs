@@ -50,6 +50,35 @@ export function requestID(prefix) {
   return `${prefix}-${randomUUID()}`
 }
 
+export function loopbackHTTPProxy(environment = process.env) {
+  const candidate = environment.HTTPS_PROXY ??
+    environment.https_proxy ??
+    environment.HTTP_PROXY ??
+    environment.http_proxy ??
+    ''
+  if (!candidate) return undefined
+
+  let parsed
+  try {
+    parsed = new URL(candidate)
+  } catch {
+    return undefined
+  }
+  if (
+    parsed.protocol !== 'http:' ||
+    !['127.0.0.1', 'localhost'].includes(parsed.hostname) ||
+    !parsed.port ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== '/' ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    return undefined
+  }
+  return { server: parsed.origin }
+}
+
 export function validateWindowState(state, expected) {
   invariant(state?.schema_version === 1, 'managed OAuth window schema mismatch')
   invariant(state?.phase === 'open', 'managed OAuth window is not open')
@@ -62,6 +91,43 @@ export function validateWindowState(state, expected) {
     'window opened_at is missing',
   )
   return state
+}
+
+export function validateReleaseProvenance(observed, expected) {
+  invariant(observed?.status === 'VERIFIED', 'release provenance is not VERIFIED')
+  invariant(
+    observed?.deploymentID === expected.deploymentID,
+    'release provenance deployment ID mismatch',
+  )
+  invariant(
+    observed?.deploymentURL === expected.deploymentURL,
+    'release provenance deployment URL mismatch',
+  )
+  invariant(
+    observed?.releaseCommit === expected.releaseCommit,
+    'release provenance commit mismatch',
+  )
+  return observed
+}
+
+export function oauthCallbackError(bodyText) {
+  if (typeof bodyText !== 'string' || bodyText.length === 0) return undefined
+  try {
+    const payload = JSON.parse(bodyText)
+    if (
+      typeof payload?.code === 'string' &&
+      typeof payload?.message === 'string' &&
+      payload.code.includes('oauth')
+    ) {
+      return {
+        code: payload.code,
+        message: payload.message,
+      }
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }
 
 export async function requirePrivateRegularFile(file) {
