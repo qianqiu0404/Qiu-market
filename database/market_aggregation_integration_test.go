@@ -33,6 +33,10 @@ func TestIntegrationMarketPriceTicksKeepVenueIdentityAndFreshness(t *testing.T) 
 		AssetGuid: assetID, PriceUSD: textPointer("65001.25"),
 		Change24hPct: textPointer("1.25"), Turnover24hUSD: textPointer("9000000"),
 		ContributorCount: 2, Confidence: "medium", Available: true, ObservedAt: now,
+		Contributors: datatypes.JSON([]byte(`[
+			{"provider":"binance"},
+			{"provider":"coinbase"}
+		]`)),
 	}}))
 	require.NoError(t, store.UpsertAssetVenueSnapshots([]AssetVenueSnapshot{
 		{
@@ -58,6 +62,8 @@ func TestIntegrationMarketPriceTicksKeepVenueIdentityAndFreshness(t *testing.T) 
 	require.Len(t, binance, 1)
 	require.Equal(t, "binance", binance[0].Provider)
 	require.Equal(t, "venue_spot", binance[0].PriceKind)
+	require.Equal(t, "low", binance[0].Quality)
+	require.Equal(t, 1, binance[0].ContributorCount)
 	require.True(t, equalNumericString("65000.10", *binance[0].PriceUSD))
 	require.True(t, binance[0].Available)
 
@@ -75,6 +81,12 @@ func TestIntegrationMarketPriceTicksKeepVenueIdentityAndFreshness(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, composite, 1)
 	require.Equal(t, "composite_spot", composite[0].PriceKind)
+	require.Equal(t, "medium", composite[0].Quality)
+	require.Equal(t, 2, composite[0].ContributorCount)
+	require.JSONEq(t, `[
+		{"provider":"binance"},
+		{"provider":"coinbase"}
+	]`, string(composite[0].Contributors))
 	require.True(t, equalNumericString("65001.25", *composite[0].PriceUSD))
 
 	require.NoError(t, tx.Model(&AssetVenueSnapshot{}).

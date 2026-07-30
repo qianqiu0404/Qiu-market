@@ -112,8 +112,10 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
 	result := make([]model.AssetDashboardV2Item, 0, len(rows))
 	for _, row := range rows {
+		venuePrice, dexRoutePrice, displayPrice := dashboardPriceFacts(row, venue, now)
 		item := model.AssetDashboardV2Item{
 			Rank: row.Rank, AssetID: row.AssetID, AssetSymbol: row.AssetSymbol,
 			SelectionVersion: row.SelectionVersion, SelectionRank: row.SelectionRank,
@@ -127,6 +129,9 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 			DisplayChangeKind:       row.DisplayChangeKind,
 			DisplayAvailable:        row.DisplayAvailable,
 			DexRouteAvailable:       row.DexRouteAvailable,
+			VenuePrice:              venuePrice,
+			DexRoutePrice:           dexRoutePrice,
+			DisplayPrice:            displayPrice,
 			Change24hPct:            availableDecimal(row.Change24hPct),
 			MarketCapUSD:            availableDecimal(row.MarketCapUSD),
 			Turnover24hUSD:          availableDecimal(row.Turnover24hUSD),
@@ -190,6 +195,7 @@ func (h HandleSvc) GetMarketPriceTicks(request *model.MarketPriceTicksRequest) (
 	now := time.Now().UTC()
 	result := make([]model.MarketPriceTickItem, 0, len(rows))
 	for _, row := range rows {
+		priceFact := tickPriceFact(row, venue, now)
 		item := model.MarketPriceTickItem{
 			AssetID: row.AssetID, Provider: row.Provider, PriceKind: row.PriceKind,
 			PriceUSD:       availableDecimal(row.PriceUSD),
@@ -197,6 +203,14 @@ func (h HandleSvc) GetMarketPriceTicks(request *model.MarketPriceTicksRequest) (
 			Turnover24hUSD: availableDecimal(row.Turnover24hUSD),
 			Available:      row.Available,
 			Version:        row.Version,
+		}
+		switch {
+		case venue == "all":
+			item.DisplayPrice = priceFact
+		case venue == "uniswap" || venue == "pancakeswap":
+			item.DexRoutePrice = priceFact
+		default:
+			item.VenuePrice = priceFact
 		}
 		if row.SourceTime != nil {
 			item.SourceTime = row.SourceTime.UnixMilli()
@@ -246,6 +260,248 @@ func dashboardUniverse(venue string) string {
 	default:
 		return "provider_top50"
 	}
+}
+
+func dashboardPriceFacts(
+	row database.AssetIndexDashboardRow,
+	venue string,
+	now time.Time,
+) (model.MarketPriceFact, model.MarketPriceFact, model.MarketPriceFact) {
+	venuePrice := unavailablePriceFact()
+	dexRoutePrice := unavailablePriceFact()
+	displayPrice := unavailablePriceFact()
+
+	switch venue {
+	case "binance", "coinbase", "bybit", "okx", "hyperliquid":
+		venuePrice = newMarketPriceFact(
+			row.Price,
+			row.Change24hPct,
+			row.Turnover24hUSD,
+			row.PriceKind,
+			venue,
+			row.SourceTime,
+			row.ObservedAt,
+			row.LastSuccessAt,
+			now,
+			30*time.Second,
+			5*time.Minute,
+			firstNonEmpty(row.Quality, row.Confidence),
+			row.ContributorCount,
+			[]string{venue},
+			row.VenuePriceVersion,
+		)
+	case "uniswap", "pancakeswap":
+		if row.DexRouteAvailable {
+			dexRoutePrice = newMarketPriceFact(
+				row.Price,
+				row.Change24hPct,
+				row.Turnover24hUSD,
+				"dex_route",
+				venue,
+				row.SourceTime,
+				row.ObservedAt,
+				row.LastSuccessAt,
+				now,
+				30*time.Second,
+				time.Minute,
+				firstNonEmpty(row.Quality, row.Confidence),
+				row.ContributorCount,
+				[]string{venue},
+				row.VenuePriceVersion,
+			)
+		}
+	}
+
+	if row.CompositePrice != nil && row.CompositeObservedAt != nil {
+		displayPrice = newMarketPriceFact(
+			row.CompositePrice,
+			row.CompositeChange24h,
+			row.CompositeTurnover24h,
+			"composite_reference",
+			"cex_composite",
+			nil,
+			row.CompositeObservedAt,
+			row.CompositeObservedAt,
+			now,
+			30*time.Second,
+			30*time.Second,
+			row.CompositeConfidence,
+			row.CompositeCount,
+			compositeContributorProviders(row.CompositeContributors),
+			row.CompositeVersion,
+		)
+	} else if (venue == "uniswap" || venue == "pancakeswap") &&
+		row.MarketReferencePrice != nil && row.ReferenceObservedAt != nil {
+		displayPrice = newMarketPriceFact(
+			row.MarketReferencePrice,
+			nil,
+			nil,
+			"market_reference",
+			"coingecko",
+			row.ReferenceSourceTime,
+			row.ReferenceObservedAt,
+			row.ReferenceObservedAt,
+			now,
+			5*time.Minute,
+			15*time.Minute,
+			"reference",
+			1,
+			[]string{"coingecko"},
+			0,
+		)
+	}
+
+	return venuePrice, dexRoutePrice, displayPrice
+}
+
+func tickPriceFact(
+	row database.MarketPriceTickRow,
+	venue string,
+	now time.Time,
+) model.MarketPriceFact {
+	if !row.Available {
+		return unavailablePriceFact()
+	}
+	kind := row.PriceKind
+	source := row.Provider
+	freshFor := 30 * time.Second
+	contributors := []string{row.Provider}
+	sourceTime := row.SourceTime
+	if venue == "all" {
+		kind = "composite_reference"
+		source = "cex_composite"
+		sourceTime = nil
+		contributors = compositeContributorProviders(row.Contributors)
+	} else if venue == "uniswap" || venue == "pancakeswap" {
+		freshFor = time.Minute
+	}
+	return newMarketPriceFact(
+		row.PriceUSD,
+		row.Change24hPct,
+		row.Turnover24hUSD,
+		kind,
+		source,
+		sourceTime,
+		row.ObservedAt,
+		row.LastSuccessAt,
+		now,
+		freshFor,
+		freshFor,
+		firstNonEmpty(row.Quality, row.Confidence),
+		row.ContributorCount,
+		contributors,
+		row.Version,
+	)
+}
+
+func newMarketPriceFact(
+	price, change, turnover *string,
+	kind, source string,
+	sourceTime, observedAt, lastSuccessAt *time.Time,
+	now time.Time,
+	freshFor, readableFor time.Duration,
+	quality string,
+	contributorCount int,
+	contributors []string,
+	version int64,
+) model.MarketPriceFact {
+	if price == nil || observedAt == nil {
+		return unavailablePriceFact()
+	}
+	priceUSD := availableDecimal(price)
+	if !priceUSD.Available || observedAt.After(now.Add(5*time.Second)) {
+		return unavailablePriceFact()
+	}
+	age := now.Sub(observedAt.UTC())
+	if age < 0 {
+		age = 0
+	}
+	status := "unavailable"
+	switch {
+	case age <= freshFor:
+		status = "fresh"
+	case age <= readableFor:
+		status = "stale"
+	default:
+		return unavailablePriceFact()
+	}
+	normalizedContributors := uniqueNonEmpty(contributors)
+	if contributorCount < len(normalizedContributors) {
+		contributorCount = len(normalizedContributors)
+	}
+	fact := model.MarketPriceFact{
+		PriceUSD:            priceUSD,
+		Change24hPct:        availableDecimal(change),
+		Turnover24hUSD:      availableDecimal(turnover),
+		Available:           true,
+		Kind:                firstNonEmpty(kind, "unknown"),
+		Source:              strings.TrimSpace(source),
+		FreshnessStatus:     status,
+		FreshnessAgeSeconds: int64(age / time.Second),
+		Quality:             firstNonEmpty(quality, "unknown"),
+		ContributorCount:    contributorCount,
+		Contributors:        normalizedContributors,
+		Version:             version,
+	}
+	if sourceTime != nil {
+		fact.SourceTime = sourceTime.UnixMilli()
+	}
+	fact.ObservedAt = observedAt.UnixMilli()
+	if lastSuccessAt != nil {
+		fact.LastSuccessAt = lastSuccessAt.UnixMilli()
+	} else {
+		fact.LastSuccessAt = fact.ObservedAt
+	}
+	return fact
+}
+
+func unavailablePriceFact() model.MarketPriceFact {
+	return model.MarketPriceFact{
+		Kind:            "unavailable",
+		FreshnessStatus: "unavailable",
+		Quality:         "unavailable",
+		Contributors:    []string{},
+	}
+}
+
+func compositeContributorProviders(raw []byte) []string {
+	var contributors []struct {
+		Provider string `json:"provider"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &contributors) != nil {
+		return []string{}
+	}
+	providers := make([]string, 0, len(contributors))
+	for _, contributor := range contributors {
+		providers = append(providers, contributor.Provider)
+	}
+	return uniqueNonEmpty(providers)
+}
+
+func uniqueNonEmpty(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if normalized := strings.TrimSpace(value); normalized != "" {
+			return normalized
+		}
+	}
+	return ""
 }
 
 func (h HandleSvc) GetAssetMarkets(request *model.AssetMarketsRequest) (*model.AssetMarketsResponse, error) {

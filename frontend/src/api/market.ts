@@ -108,6 +108,24 @@ export interface AvailableDecimal {
   available: boolean
 }
 
+export interface MarketPriceFact {
+  price_usd: AvailableDecimal
+  change_24h_pct: AvailableDecimal
+  turnover_24h_usd: AvailableDecimal
+  available: boolean
+  kind: string
+  source: string
+  source_time: number
+  observed_at: number
+  last_success_at: number
+  freshness_status: string
+  freshness_age_seconds: number
+  quality: string
+  contributor_count: number
+  contributors: string[]
+  version: number
+}
+
 export interface MarketOverviewV2 {
   global_market_cap_usd: AvailableDecimal
   covered_spot_volume_24h_usd: AvailableDecimal
@@ -172,6 +190,9 @@ export interface AssetDashboardV2Item {
   display_available: boolean
   display_observed_at: number
   dex_route_available: boolean
+  venue_price: MarketPriceFact
+  dex_route_price: MarketPriceFact
+  display_price: MarketPriceFact
   change_24h_pct: AvailableDecimal
   market_cap_usd: AvailableDecimal
   covered_turnover_24h_usd: AvailableDecimal
@@ -207,6 +228,9 @@ export interface MarketPriceTick {
   price_usd: AvailableDecimal
   change_24h_pct: AvailableDecimal
   turnover_24h_usd: AvailableDecimal
+  venue_price: MarketPriceFact
+  dex_route_price: MarketPriceFact
+  display_price: MarketPriceFact
   available: boolean
   freshness_status: string
   freshness_age_seconds: number
@@ -506,6 +530,56 @@ function toAvailableDecimal(value: unknown): AvailableDecimal {
     : { value: null, available: false }
 }
 
+function toMarketPriceFact(value: unknown): MarketPriceFact {
+  if (value == null || typeof value !== 'object') {
+    return {
+      price_usd: { value: null, available: false },
+      change_24h_pct: { value: null, available: false },
+      turnover_24h_usd: { value: null, available: false },
+      available: false,
+      kind: 'unavailable',
+      source: '',
+      source_time: 0,
+      observed_at: 0,
+      last_success_at: 0,
+      freshness_status: 'unavailable',
+      freshness_age_seconds: 0,
+      quality: 'unavailable',
+      contributor_count: 0,
+      contributors: [],
+      version: 0,
+    }
+  }
+  const raw = value as Record<string, unknown>
+  const price = toAvailableDecimal(raw.price_usd)
+  const available = Boolean(raw.available) && price.available
+  return {
+    price_usd: available ? price : { value: null, available: false },
+    change_24h_pct: available
+      ? toAvailableDecimal(raw.change_24h_pct)
+      : { value: null, available: false },
+    turnover_24h_usd: available
+      ? toAvailableDecimal(raw.turnover_24h_usd)
+      : { value: null, available: false },
+    available,
+    kind: available ? (toStr(raw.kind) || 'unknown') : 'unavailable',
+    source: available ? toStr(raw.source) : '',
+    source_time: available ? toNum(raw.source_time) : 0,
+    observed_at: available ? toNum(raw.observed_at) : 0,
+    last_success_at: available ? toNum(raw.last_success_at) : 0,
+    freshness_status: available
+      ? (toStr(raw.freshness_status) || 'unknown')
+      : 'unavailable',
+    freshness_age_seconds: available ? toNum(raw.freshness_age_seconds) : 0,
+    quality: available ? (toStr(raw.quality) || 'unknown') : 'unavailable',
+    contributor_count: available ? toNum(raw.contributor_count) : 0,
+    contributors: available
+      ? toArray(raw.contributors).map(toStr).filter(Boolean)
+      : [],
+    version: available ? toNum(raw.version) : 0,
+  }
+}
+
 /* ===== Endpoints ===== */
 
 export async function getSystemOverview(): Promise<SystemOverview> {
@@ -737,6 +811,9 @@ export async function getAssetDashboardV2(
         : Boolean(item.display_available),
       display_observed_at: toNum(item.display_observed_at),
       dex_route_available: Boolean(item.dex_route_available),
+      venue_price: toMarketPriceFact(item.venue_price),
+      dex_route_price: toMarketPriceFact(item.dex_route_price),
+      display_price: toMarketPriceFact(item.display_price),
       change_24h_pct: toAvailableDecimal(item.change_24h_pct),
       market_cap_usd: toAvailableDecimal(item.market_cap_usd),
       covered_turnover_24h_usd: toAvailableDecimal(item.covered_turnover_24h_usd),
@@ -792,6 +869,9 @@ export async function getMarketPriceTicks(
         price_usd: toAvailableDecimal(item.price_usd),
         change_24h_pct: toAvailableDecimal(item.change_24h_pct),
         turnover_24h_usd: toAvailableDecimal(item.turnover_24h_usd),
+        venue_price: toMarketPriceFact(item.venue_price),
+        dex_route_price: toMarketPriceFact(item.dex_route_price),
+        display_price: toMarketPriceFact(item.display_price),
         available: Boolean(item.available),
         freshness_status: toStr(item.freshness_status),
         freshness_age_seconds: toNum(item.freshness_age_seconds),

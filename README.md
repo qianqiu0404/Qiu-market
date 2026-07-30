@@ -109,6 +109,14 @@ K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 s
 
 行情快照保存 `observed_at` 与可空 `source_time/source_time_kind`。接口返回 `provider_updated_at` 和 `freshness_status`；System 把“进程活着”和“上游数据源健康”分开，不能再用心跳冒充 Binance 可用。页面顶部只写 `Page refreshed`，表示页面何时请求成功，不代表数据源健康。K 线新鲜度按周期归一判定，进行中的蜡烛用虚线 + `LIVE` 价签与已闭合蜡烛区分；这里的 LIVE 也不代表 WebSocket。
 
+V2 资产首页与 3 秒轻量 tick 还返回结构化的 `venue_price`、
+`dex_route_price`、`display_price`。每个价格事实把 value/change、`source`、
+`source_time`、`observed_at`、freshness、quality、contributors 和 version
+绑在一起；调用方不再从一个裸数值猜来源。`display_price` 是 CEX
+composite 或明确的 market reference 分栏，DEX route 只进入
+`dex_route_price`。原平铺字段暂时保留为兼容层；当前 HTTP/TypeScript
+契约已固化，Markets 的 tick/DEX 展示会在后续切片逐步只消费价格事实。
+
 ### 前端工程
 
 - **设计令牌**：色彩 / 圆角 / 字体 / 间距全部集中在 `src/style.css` 的 CSS 变量，组件不硬编码颜色；Apple 风格蓝白金融产品主题，数字统一 tabular-nums。
@@ -368,7 +376,7 @@ README 全局架构
 | 文档 | 内容 |
 |---|---|
 | [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
-| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、数据契约、交互和响应式验收 |
+| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实契约、交互和响应式验收 |
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、事件恢复、接口鉴权、demo-maker 和验收边界 |
 | [docs/klines-pipeline.md](docs/klines-pipeline.md) | K 线 market identity、显式时间、业务唯一键、分周期续传与刷新 |
 | [docs/redis-top-movers.md](docs/redis-top-movers.md) | Redis ZSET 涨跌榜、TTL 抖动防雪崩、SQL 回退 |
@@ -376,7 +384,7 @@ README 全局架构
 | [docs/dex-hyperliquid.md](docs/dex-hyperliquid.md) | Hyperliquid Perp、Uniswap/Pancake V2+V3 mixed route、链上校验与综合价排除 |
 | [docs/grpc-service.md](docs/grpc-service.md) | gRPC MarketService、与 HTTP 共用业务层、proto 重新生成 |
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、覆盖率与故障隔离 |
-| [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、All canonical 并集、CEX-only 综合现货价、rollout 与独立交易域边界 |
+| [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、All canonical 并集、CEX-only 综合现货价、rollout 与交易域边界 |
 | [docs/market-data-quality.md](docs/market-data-quality.md) | provider 隔离、综合价排除/降级、身份异常与修复 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |
 | [docs/project-go-interview-bagua.md](docs/project-go-interview-bagua.md) | Go 工程知识与当前项目代码映射 |

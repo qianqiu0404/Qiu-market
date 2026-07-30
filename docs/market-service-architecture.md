@@ -101,6 +101,32 @@ Provider selection 与 K 线 market selection 是两层边界：前者冻结“�
 
 任何来源没有明确时间时保持 NULL；`observed_at` 始终表示本服务成功解析的时间。
 
+## 读接口的三类价格事实
+
+V2 dashboard 与轻量 tick 不再要求浏览器把 `price_usd`、`price_source` 和
+若干时间字段自行拼成来源结论。它们返回同形的 `MarketPriceFact`：
+
+| 字段 | 唯一语义 | 当前来源 |
+|---|---|---|
+| `venue_price` | 所选 CEX Spot 或 Hyperliquid mark 自己的价格；绝不拿综合价补位 | `binance` / `coinbase` / `bybit` / `okx` / `hyperliquid` |
+| `dex_route_price` | 仍在 60 秒 route 窗口内的链上指示性价格 | `uniswap` / `pancakeswap` |
+| `display_price` | 与 route 分开的参考栏；优先 Fresh CEX composite，DEX 无 composite 时才可显示明确标注的 CoinGecko market reference | `cex_composite` / `coingecko` |
+
+每个事实都同时携带
+`price_usd/change_24h_pct/turnover_24h_usd`、`available`、`kind`、
+`source`、`source_time`、`observed_at`、`last_success_at`、
+`freshness_status/freshness_age_seconds`、`quality`、
+`contributor_count/contributors` 和 `version`。Unavailable 使用空价格、空
+source、空 contributors 和明确的 `unavailable` 状态，不能把旧来源标签留给
+另一个值。Composite 没有单一上游 source time，因此它只声明本服务的
+`observed_at`；CoinGecko reference 的 provider time 与本服务观察时间分开。
+
+被拒绝的是继续提供一个“当前最方便展示的数字”并让客户端根据 tab 猜它究竟是
+venue、route 还是 reference。那样字段少，但缓存、延迟或局部故障时会静默换
+口径。当前方案多传三个小对象，并暂时保留旧平铺字段作为兼容层；新代码只消费
+价格事实是后续页面切换的目标，本切片先完成 HTTP 与 TypeScript 类型边界。这个
+契约不改变综合价贡献规则，也不把 CoinGecko reference 变成 All 指数。
+
 ## 综合现货价规则
 
 每个资产每 5 秒执行一次：
@@ -123,6 +149,7 @@ Provider selection 与 K 线 market selection 是两层边界：前者冻结“�
 5. **AMM 使用独立身份模型。** Uniswap/Pancake 的 chain、token contract、V2/V3 pool 和 route 不塞进 CEX `exchange_symbol`。正式环境使用私有 Subgraph/RPC；本地可用 DEX Screener 发现候选和公共只读 RPC，但仍必须链上复核对应 Factory。路线允许直连或最多两跳混合协议，每一跳分别通过 V2 Router 或 V3 QuoterV2 询价。代价是覆盖更少、请求更慢和更严格的故障边界。
 6. **DEX 进入 All 的资产成员并集，但不进入 All 综合价。** `$10K → $1K → $100` 双向 QuoterV2 只是带明确名义金额的指示性路线价格，不是订单或可执行套利价。All 可以因此出现 DEX 独有资产，但其 Price 仍是 Unknown，除非有新鲜 CEX Spot contributor；至少共同稳定 72 小时并另行批准后，才讨论是否改变价格贡献规则。
 7. **选币与行情状态分离。** 被拒绝的是“当前有价格才出现在列表”：它会让 API 抖动改变产品成员。代价是必须持久化 selection version，但页面、审计和恢复都稳定。
+8. **价格、来源、时间和质量作为一个事实传输。** 被拒绝的是客户端把多个平铺字段重新拼装；代价是响应稍大，但 route/reference、last-good 和缓存乱序都能按同一边界校验。
 
 ## 关键代码入口与顺序
 
@@ -130,7 +157,7 @@ Provider selection 与 K 线 market selection 是两层边界：前者冻结“�
 2. `database/venue_aggregation.go`：确保七源独立 50 资产 selection、原子版本切换并保留最后成功快照；All 合并七家 canonical identity。
 3. `crawler/catalog_supervisor.go` + `crawler/spot_ticker_supervisor.go` + `crawler/spot_ticker_streams.go`：刷新目录、确保选择，并隔离四家 WS primary / REST reconcile。
 4. `marketdata/snapshot_writer.go` + `marketdata/composite.go`：PG-first 快照、30 秒 Fresh 参与者、异常值和 water-filling 限权。
-5. `database/market_aggregation.go` + `services/http/service/market_index.go`：`provider_top50/provider_union` 读模型；HTTP/gRPC 同契约。
+5. `database/market_aggregation.go` + `services/http/service/market_index.go`：查询三类来源列并组装 `MarketPriceFact`；HTTP dashboard/tick 共享同一事实契约。
 
 K 线与 DEX 的后续入口是：
 
@@ -152,6 +179,7 @@ K 线与 DEX 的后续入口是：
 | Provider selection | 某 provider 当前稳定展示的版本化 50 资产集合 | 每家店自己的带版本菜单 | `provider_asset_selection*` |
 | Asset representation | 资产在某条链上的审核合约身份 | 同一身份证在不同链上的合法分身 | `asset_representation` |
 | Indicative route quote | 按 $10K/$1K/$100 分级双向询价形成的只读参考 | 先问大额，不行再问小额，不真正下单 | `dex_route_current` |
+| Price fact | 数值、来源、时间、新鲜度、质量和贡献者不可拆分的 API 对象 | 每张价签连同店名、打印时间和质检章一起交付 | `model.MarketPriceFact` |
 | Coalesced writer | 高频流只保留每个 symbol 最新事件，再按固定节奏提交 | 快递不断到，收货台每 5 秒合并签一次 | `spot_ticker_streams.go` |
 | Provider K-line selection | 一个 provider selection version 对应的具体历史 market | 每道菜固定去哪个柜台查旧账 | `provider_kline_selection` |
 
@@ -175,6 +203,7 @@ K 线与 DEX 的后续入口是：
 | DW 对账中断 | `dw_acceptance_state` 重置连续成功起点 | 恢复后重新累计 72 小时，绝不沿用失败前时长 |
 | 合约 decimals / pool factory 不符 | 停止该 DEX 的路线发布，不用错误精度计算 | 修正审核清单后重新发现 |
 | 当前 DEX cycle 的旧路线消失或失败 | 技术审计行保留，但公开 venue snapshot 权威置为 unavailable | 下一轮同一 selection 出现合格路线后恢复 |
+| route 事实不可用但 reference 仍可用 | `dex_route_price` 为空；`display_price` 保持 `cex_composite` 或 `coingecko` 来源，不继承链上 change/quality | 新 route 到达后只恢复 route 分栏 |
 | 单家 CEX K 线 API 失败 | 只降级该 provider 的 `klines` capability；ticker/其他 provider 继续 | 独立退避、下一轮重叠续传和 repair |
 | 快照超过 30 秒但不超过 5 分钟 | 保留最后成功价格并标 Stale，不进综合价、涨跌榜或按价格排序 | 新快照写入后自动 Fresh |
 | 快照超过 5 分钟 | 行仍属于 selection，但价格为 Unavailable；保留 last attempt/success 审计 | 新成功值原地恢复 |
@@ -189,7 +218,7 @@ K 线与 DEX 的后续入口是：
 
 ## Owner 60 秒解释
 
-> CoinGecko Top 200 是候选池。七个 provider 各自冻结 50 个身份确认的资产，All 按 canonical asset 合并，所以 BTC 只出现一次。四家 CEX 用 WebSocket 收实时 ticker，REST 对账漏项，5 秒合并写 PG；只有 Fresh Spot 进综合价。K 线另有版本化 market selection，只采原生 1m 再确定性汇总。Perp/AMM 只扩展成员；AMM 可走 V2/V3 最多两跳，当前 cycle 失败就撤回公开可用态。一次故障只降级所属 capability，不换成员、不拖停其他来源。
+> CoinGecko Top 200 是候选池。七个 provider 各自冻结 50 个身份确认的资产，All 按 canonical asset 合并，所以 BTC 只出现一次。四家 CEX 用 WebSocket 收实时 ticker，REST 对账漏项，5 秒合并写 PG；只有 Fresh Spot 进综合价。API 把 venue、DEX route、composite/reference 分成三个 price fact，每个事实自带来源、时间、新鲜度、质量和贡献者。K 线另有版本化 market selection，只采原生 1m 再确定性汇总。Perp/AMM 只扩展成员；一次故障只降级所属 capability。
 
 ## 闭卷自检
 
@@ -211,3 +240,4 @@ K 线与 DEX 的后续入口是：
 16. Binance WebSocket 为什么必须同时声明小写 `o` 和大写 `O`？
 17. 为什么 WebSocket 高频事件不逐条写 PostgreSQL，而是 5 秒合并？
 18. 为什么四家 K 线只共享汇总代码，不能互相补市场缺口？
+19. 为什么 `display_price` 可继续显示 reference，却不能因此把 `dex_route_price` 标成可用？

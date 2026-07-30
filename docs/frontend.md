@@ -41,6 +41,19 @@ v2 接口：
 
 请求显式携带 `universe=provider_top50|provider_union`；All 接受七源 selection union，单 provider 读取自己的稳定 selection，不能静默回退。响应携带 `selection_version/selection_rank/freshness_status/freshness_age_seconds/last_attempt_at/last_success_at/last_error_class`。数值仍以十进制字符串跨网络，Unknown 使用 `{value:null, available:false}`，不得把缺值变成 `0`。
 
+价格不再靠这些平铺字段临时拼装。Dashboard 与 3 秒 tick 都提供三个同形事实：
+
+- `venue_price`：所选 Binance/Coinbase/Bybit/OKX Spot 或 Hyperliquid mark；
+- `dex_route_price`：60 秒内仍成立的 Uniswap/PancakeSwap route；
+- `display_price`：独立的 CEX composite / CoinGecko reference 栏。
+
+三者均携带 `source`、source/observed/last-success time、freshness、quality、
+contributor count/list 和 version。DEX 页面可以同时展示 route 与 reference，但
+不能把 reference 写回 route，也不能让过期 route 的 change/source 标签附着到
+reference。旧 `price_usd/display_price_usd` 暂时只为旧调用方保留；新前端状态以
+price fact 为准。当前切片先完成 API 类型化与解析；Markets 的 tick 代次和 DEX
+双栏消费在随后两个独立提交完成。
+
 ### 虚拟交易页契约
 
 `Trade.vue` 同时读取两个边界：
@@ -96,11 +109,12 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 4. **Top KPI 只放四项。** Insights 仍负责更深的市场宽度、跨 venue 和动量；首页不复制分析页面。
 5. **页面成员来自 selection，不来自当前报价。** 被拒绝的是从 `available=true` 起查，那会让临时断线造成资产突然消失。Fresh/Stale/Unavailable 只改变值和参与资格，不改变成员。
 6. **DEX selection 固定 50，但不伪造 50 条报价。** listed membership 来自 reviewed chain contract 和链上 V2/V3 pool identity；询价按 `$10K → $1K → $100` 逐级尝试，路线最多两跳且可混合协议，仍使用 TVL、成交量、新鲜度、冲击和 spread 门槛。小金额成功必须显示实际金额并降为 Low。代价是 DEX 页仍会同时出现可询价行和 `Not covered` 行，但产品覆盖与价格质量不再互相污染。
+7. **价格事实不在组件内重新拼装。** 被拒绝的是让 `Markets.vue` 从 price/source/time 多个字段猜当前语义；响应稍大，但旧缓存、乱序响应和 route/reference 切换都有同一校验单位。
 
 ## 关键代码入口与顺序
 
 1. `frontend/src/router.ts`：资产首页、market 详情、旧地址兼容和 System Catalog。
-2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal 与类型归一。
+2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal、三类 `MarketPriceFact` 与类型归一。
 3. `frontend/src/views/Markets.vue`：概览条、全局资产表、URL 抽屉和 venue K 线入口。
 4. `frontend/src/api/trading.ts`：十进制字符串 REST、CSRF 和 WebSocket cursor。
 5. `frontend/src/views/Trade.vue`：参考/K 线、订单簿、下单、余额、订单与成交。
@@ -114,6 +128,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | Asset row | 一个 canonical 资产的综合读模型 | 首页的一枚币 | v2 asset dashboard |
 | Venue market | 某 CEX 的一条可报价交易对 | 某家店的具体报价牌 | CEX drawer |
 | DEX route | 某链上池组合、带实际名义金额的指示性询价 | 先问 $10K，不行再问 $1K/$100 | DEX drawer |
+| Price fact | 把价格、来源、时间、新鲜度和质量绑在一起的状态对象 | 一张不能撕掉店名和打印时间的价签 | dashboard/tick |
 | Protocol path | route 每一跳使用的 AMM 版本 | 这条路线先走 V2 还是 V3 | 抽屉 `V2 → V3` |
 | Composite price | 合格 Spot venue 的加权美元参考价 | 多家现货一起支撑的参考价 | main table |
 | Confidence | 当前贡献 venue 数形成的覆盖等级 | 这个价有几家店背书 | low/medium/high |
@@ -131,6 +146,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | 24h open 和 provider 百分比都缺失 | 价格可显示，24h 为 `—`，reason=`missing_24h_reference` | adapter 提供任一可信参考后恢复 |
 | 单 market 无稳定币率 | 仍显示原始 quote 价，relative deviation 为 `—` | 参考率刷新 |
 | market 过期 | freshness 显示 Stale/Unavailable，不作为 contributor | 新快照到达 |
+| DEX route 过期、reference 仍新鲜 | route 分栏显示 Unavailable；reference 分栏保持自身来源，不显示链上 change/quality | 新 route 到达后独立恢复 |
 | Catalog ambiguous | 只在 Audit 展示原因，不进入首页 | 审核 alias 后刷新 |
 | Doris 不可达 | Insights 历史模块报错；Markets 不受影响 | Doris 模块独立重试 |
 | API 整体失败 | 对应模块 ErrorState + retry，不显示 mock | 服务恢复后轮询/手动重试 |
@@ -158,7 +174,7 @@ Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not cov
 
 ## Owner 60 秒解释
 
-> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Trade 是独立的虚拟 BTC/USDT 纵切片：共享真实 BTC 参考和 venue K 线，但订单、余额和成交来自交易服务；所有精确数字保持字符串，登录能力由后端声明，WebSocket 用一次性 ticket 和 cursor 恢复。任一真实数据缺失都显示 unavailable，不使用 mock。
+> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact，每个事实自带来源、时间、新鲜度和质量，因此降级不会静默换口径。Trade 是独立的虚拟 BTC/USDT 纵切片；所有精确数字保持字符串，登录能力由后端声明，WebSocket 用一次性 ticket 和 cursor 恢复。任一真实数据缺失都显示 unavailable，不使用 mock。
 
 ## 闭卷自检
 
@@ -180,3 +196,4 @@ Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not cov
 16. 为什么本地登录按钮必须由 `/auth/capabilities` 决定是否显示？
 17. 为什么 trading WebSocket 重连必须携带 cursor？
 18. 为什么行情参考不可用时不能影响用户撤单和撮合恢复？
+19. 为什么旧缓存里的 `display_price_usd` 不能覆盖一个更新的 `dex_route_price.version`？

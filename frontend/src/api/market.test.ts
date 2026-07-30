@@ -8,6 +8,28 @@ import {
 } from './market'
 
 const available = (value: string) => ({ value, available: true })
+const priceFact = (
+  value: string,
+  kind: string,
+  source: string,
+  contributors: string[],
+) => ({
+  price_usd: available(value),
+  change_24h_pct: available('1.25'),
+  turnover_24h_usd: available('900000000'),
+  available: true,
+  kind,
+  source,
+  source_time: 1785400001000,
+  observed_at: 1785400002000,
+  last_success_at: 1785400002000,
+  freshness_status: 'fresh',
+  freshness_age_seconds: 1,
+  quality: contributors.length >= 3 ? 'high' : 'low',
+  contributor_count: contributors.length,
+  contributors,
+  version: 101,
+})
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -116,6 +138,53 @@ describe('getAssetDashboardV2', () => {
     expect(row?.display_change_kind).toBe('unavailable')
     expect(row?.display_available).toBe(false)
   })
+
+  it('maps venue, DEX route, and display reference facts without merging provenance', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({
+        code: 2000,
+        result: [{
+          asset_id: 'asset-btc',
+          asset_symbol: 'BTC',
+          venue_price: priceFact('64213.56', 'venue_spot', 'binance', ['binance']),
+          dex_route_price: priceFact('64211.10', 'dex_route', 'uniswap', ['uniswap']),
+          display_price: priceFact(
+            '64203.13',
+            'composite_reference',
+            'cex_composite',
+            ['binance', 'coinbase', 'bybit', 'okx'],
+          ),
+        }],
+        total: 1,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })))
+
+    const result = await getAssetDashboardV2(1, 50, {
+      venue: 'uniswap',
+      universe: 'provider_top50',
+    })
+    const row = result.items[0]
+
+    expect(row?.venue_price).toMatchObject({
+      source: 'binance',
+      kind: 'venue_spot',
+      contributors: ['binance'],
+    })
+    expect(row?.dex_route_price).toMatchObject({
+      source: 'uniswap',
+      kind: 'dex_route',
+      price_usd: { value: 64211.1, available: true },
+    })
+    expect(row?.display_price).toMatchObject({
+      source: 'cex_composite',
+      kind: 'composite_reference',
+      contributor_count: 4,
+      contributors: ['binance', 'coinbase', 'bybit', 'okx'],
+    })
+    expect(row?.display_price.price_usd).not.toEqual(row?.dex_route_price.price_usd)
+  })
 })
 
 describe('getMarketPriceTicks', () => {
@@ -143,6 +212,12 @@ describe('getMarketPriceTicks', () => {
           observed_at: 1785400002000,
           last_success_at: 1785400002000,
           version: 101,
+          venue_price: priceFact(
+            '64224.23',
+            'venue_spot',
+            'coinbase',
+            ['coinbase'],
+          ),
         }],
       }), {
         status: 200,
@@ -162,6 +237,11 @@ describe('getMarketPriceTicks', () => {
       provider: 'coinbase',
       price_kind: 'venue_spot',
       price_usd: { value: 64224.23, available: true },
+      venue_price: expect.objectContaining({
+        source: 'coinbase',
+        kind: 'venue_spot',
+        contributors: ['coinbase'],
+      }),
       version: 101,
     })])
   })

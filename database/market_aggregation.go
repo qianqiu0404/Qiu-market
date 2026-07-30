@@ -125,49 +125,59 @@ type AssetIndexDashboardQuery struct {
 }
 
 type AssetIndexDashboardRow struct {
-	AssetID              string     `gorm:"column:asset_id"`
-	AssetSymbol          string     `gorm:"column:asset_symbol"`
-	AssetName            string     `gorm:"column:asset_name"`
-	Logo                 string     `gorm:"column:logo"`
-	Rank                 *int       `gorm:"column:rank"`
-	SelectionVersion     int64      `gorm:"column:selection_version"`
-	SelectionRank        int        `gorm:"column:selection_rank"`
-	Price                *string    `gorm:"column:price"`
-	CompositePrice       *string    `gorm:"column:composite_price"`
-	MarketReferencePrice *string    `gorm:"column:market_reference_price"`
-	DisplayPrice         *string    `gorm:"column:display_price"`
-	DisplayPriceKind     string     `gorm:"column:display_price_kind"`
-	DisplayChange24hPct  *string    `gorm:"column:display_change_24h_pct"`
-	DisplayChangeKind    string     `gorm:"column:display_change_kind"`
-	DisplayAvailable     bool       `gorm:"column:display_available"`
-	DisplayObservedAt    *time.Time `gorm:"column:display_observed_at"`
-	DexRouteAvailable    bool       `gorm:"column:dex_route_available"`
-	Change24hPct         *string    `gorm:"column:change_24h_pct"`
-	MarketCapUSD         *string    `gorm:"column:market_cap_usd"`
-	Turnover24hUSD       *string    `gorm:"column:turnover_24h_usd"`
-	CirculatingSupply    *string    `gorm:"column:circulating_supply"`
-	SpotMarketCount      int64      `gorm:"column:spot_market_count"`
-	PerpMarketCount      int64      `gorm:"column:perp_market_count"`
-	DexRouteCount        int64      `gorm:"column:dex_route_count"`
-	ContributorCount     int        `gorm:"column:contributor_count"`
-	PricedVenueCount     int        `gorm:"column:priced_venue_count"`
-	Confidence           string     `gorm:"column:confidence"`
-	Quality              string     `gorm:"column:quality"`
-	PriceKind            string     `gorm:"column:price_kind"`
-	PriceSource          string     `gorm:"column:price_source"`
-	CoverageStatus       string     `gorm:"column:coverage_status"`
-	CoverageReason       string     `gorm:"column:coverage_reason"`
-	FreshnessStatus      string     `gorm:"column:freshness_status"`
-	FreshnessAgeSeconds  *int64     `gorm:"column:freshness_age_seconds"`
-	Available            bool       `gorm:"column:available"`
-	SourceTime           *time.Time `gorm:"column:source_time"`
-	ObservedAt           *time.Time `gorm:"column:observed_at"`
-	ProviderUpdatedAt    *time.Time `gorm:"column:provider_updated_at"`
-	LatestAvailable      bool       `gorm:"column:latest_available"`
-	LatestObservedAt     *time.Time `gorm:"column:latest_observed_at"`
-	LastAttemptAt        *time.Time `gorm:"column:last_attempt_at"`
-	LastSuccessAt        *time.Time `gorm:"column:last_success_at"`
-	LastErrorClass       *string    `gorm:"column:last_error_class"`
+	AssetID               string         `gorm:"column:asset_id"`
+	AssetSymbol           string         `gorm:"column:asset_symbol"`
+	AssetName             string         `gorm:"column:asset_name"`
+	Logo                  string         `gorm:"column:logo"`
+	Rank                  *int           `gorm:"column:rank"`
+	SelectionVersion      int64          `gorm:"column:selection_version"`
+	SelectionRank         int            `gorm:"column:selection_rank"`
+	Price                 *string        `gorm:"column:price"`
+	CompositePrice        *string        `gorm:"column:composite_price"`
+	MarketReferencePrice  *string        `gorm:"column:market_reference_price"`
+	DisplayPrice          *string        `gorm:"column:display_price"`
+	DisplayPriceKind      string         `gorm:"column:display_price_kind"`
+	DisplayChange24hPct   *string        `gorm:"column:display_change_24h_pct"`
+	DisplayChangeKind     string         `gorm:"column:display_change_kind"`
+	DisplayAvailable      bool           `gorm:"column:display_available"`
+	DisplayObservedAt     *time.Time     `gorm:"column:display_observed_at"`
+	DexRouteAvailable     bool           `gorm:"column:dex_route_available"`
+	Change24hPct          *string        `gorm:"column:change_24h_pct"`
+	VenuePriceVersion     int64          `gorm:"column:venue_price_version"`
+	CompositeChange24h    *string        `gorm:"column:composite_change_24h_pct"`
+	CompositeTurnover24h  *string        `gorm:"column:composite_turnover_24h_usd"`
+	CompositeCount        int            `gorm:"column:composite_contributor_count"`
+	CompositeConfidence   string         `gorm:"column:composite_confidence"`
+	CompositeContributors datatypes.JSON `gorm:"column:composite_contributors"`
+	CompositeObservedAt   *time.Time     `gorm:"column:composite_observed_at"`
+	CompositeVersion      int64          `gorm:"column:composite_version"`
+	ReferenceObservedAt   *time.Time     `gorm:"column:reference_observed_at"`
+	ReferenceSourceTime   *time.Time     `gorm:"column:reference_source_time"`
+	MarketCapUSD          *string        `gorm:"column:market_cap_usd"`
+	Turnover24hUSD        *string        `gorm:"column:turnover_24h_usd"`
+	CirculatingSupply     *string        `gorm:"column:circulating_supply"`
+	SpotMarketCount       int64          `gorm:"column:spot_market_count"`
+	PerpMarketCount       int64          `gorm:"column:perp_market_count"`
+	DexRouteCount         int64          `gorm:"column:dex_route_count"`
+	ContributorCount      int            `gorm:"column:contributor_count"`
+	PricedVenueCount      int            `gorm:"column:priced_venue_count"`
+	Confidence            string         `gorm:"column:confidence"`
+	Quality               string         `gorm:"column:quality"`
+	PriceKind             string         `gorm:"column:price_kind"`
+	PriceSource           string         `gorm:"column:price_source"`
+	CoverageStatus        string         `gorm:"column:coverage_status"`
+	CoverageReason        string         `gorm:"column:coverage_reason"`
+	FreshnessStatus       string         `gorm:"column:freshness_status"`
+	FreshnessAgeSeconds   *int64         `gorm:"column:freshness_age_seconds"`
+	Available             bool           `gorm:"column:available"`
+	SourceTime            *time.Time     `gorm:"column:source_time"`
+	ObservedAt            *time.Time     `gorm:"column:observed_at"`
+	ProviderUpdatedAt     *time.Time     `gorm:"column:provider_updated_at"`
+	LatestAvailable       bool           `gorm:"column:latest_available"`
+	LatestObservedAt      *time.Time     `gorm:"column:latest_observed_at"`
+	LastAttemptAt         *time.Time     `gorm:"column:last_attempt_at"`
+	LastSuccessAt         *time.Time     `gorm:"column:last_success_at"`
+	LastErrorClass        *string        `gorm:"column:last_error_class"`
 }
 
 type MarketPriceTickQuery struct {
@@ -176,17 +186,21 @@ type MarketPriceTickQuery struct {
 }
 
 type MarketPriceTickRow struct {
-	AssetID        string     `gorm:"column:asset_id"`
-	Provider       string     `gorm:"column:provider"`
-	PriceKind      string     `gorm:"column:price_kind"`
-	PriceUSD       *string    `gorm:"column:price_usd"`
-	Change24hPct   *string    `gorm:"column:change_24h_pct"`
-	Turnover24hUSD *string    `gorm:"column:turnover_24h_usd"`
-	Available      bool       `gorm:"column:available"`
-	SourceTime     *time.Time `gorm:"column:source_time"`
-	ObservedAt     *time.Time `gorm:"column:observed_at"`
-	LastSuccessAt  *time.Time `gorm:"column:last_success_at"`
-	Version        int64      `gorm:"column:version"`
+	AssetID          string         `gorm:"column:asset_id"`
+	Provider         string         `gorm:"column:provider"`
+	PriceKind        string         `gorm:"column:price_kind"`
+	PriceUSD         *string        `gorm:"column:price_usd"`
+	Change24hPct     *string        `gorm:"column:change_24h_pct"`
+	Turnover24hUSD   *string        `gorm:"column:turnover_24h_usd"`
+	ContributorCount int            `gorm:"column:contributor_count"`
+	Confidence       string         `gorm:"column:confidence"`
+	Quality          string         `gorm:"column:quality"`
+	Contributors     datatypes.JSON `gorm:"column:contributors"`
+	Available        bool           `gorm:"column:available"`
+	SourceTime       *time.Time     `gorm:"column:source_time"`
+	ObservedAt       *time.Time     `gorm:"column:observed_at"`
+	LastSuccessAt    *time.Time     `gorm:"column:last_success_at"`
+	Version          int64          `gorm:"column:version"`
 }
 
 type AssetMarketReadRow struct {
@@ -858,6 +872,24 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'
 				THEN venue_snapshot.change_24h_pct
 			END AS change_24h_pct,
+			COALESCE(venue_snapshot.version, 0) AS venue_price_version,
+			composite.change_24h_pct AS composite_change_24h_pct,
+			composite.turnover_24h_usd AS composite_turnover_24h_usd,
+			COALESCE(composite.contributor_count, 0) AS composite_contributor_count,
+			COALESCE(composite.confidence, 'unknown') AS composite_confidence,
+			COALESCE(composite.contributors, '[]'::jsonb) AS composite_contributors,
+			composite.observed_at AS composite_observed_at,
+			COALESCE(composite.version, 0) AS composite_version,
+			CASE
+				WHEN am.reference_price_usd IS NOT NULL
+				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
+				THEN am.observed_at
+			END AS reference_observed_at,
+			CASE
+				WHEN am.reference_price_usd IS NOT NULL
+				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
+				THEN am.provider_updated_at
+			END AS reference_source_time,
 			am.market_cap_usd,
 			CASE
 				WHEN ` + venueStatisticFresh + `
@@ -1046,6 +1078,10 @@ func (m *marketAggregationDB) QueryMarketPriceTicks(query MarketPriceTickQuery) 
 				price.price_usd,
 				price.change_24h_pct,
 				price.turnover_24h_usd,
+				price.contributor_count,
+				price.confidence,
+				price.confidence AS quality,
+				COALESCE(price.contributors, '[]'::jsonb) AS contributors,
 				(
 					price.available = TRUE
 					AND price.price_usd IS NOT NULL
@@ -1072,6 +1108,10 @@ func (m *marketAggregationDB) QueryMarketPriceTicks(query MarketPriceTickQuery) 
 			snapshot.price_usd,
 			snapshot.change_24h_pct,
 			snapshot.turnover_24h_usd,
+			snapshot.contributor_count,
+			snapshot.confidence,
+			snapshot.quality,
+			'[]'::jsonb AS contributors,
 			(
 				snapshot.available = TRUE
 				AND snapshot.price_usd IS NOT NULL

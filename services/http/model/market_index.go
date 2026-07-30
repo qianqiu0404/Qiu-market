@@ -11,6 +11,27 @@ type AvailableDecimal struct {
 	Available bool    `json:"available"`
 }
 
+// MarketPriceFact is the auditable price boundary shared by the dashboard and
+// lightweight tick endpoint. Value availability, provenance, time, freshness,
+// and quality travel together so clients never have to infer one from another.
+type MarketPriceFact struct {
+	PriceUSD            AvailableDecimal `json:"price_usd"`
+	Change24hPct        AvailableDecimal `json:"change_24h_pct"`
+	Turnover24hUSD      AvailableDecimal `json:"turnover_24h_usd"`
+	Available           bool             `json:"available"`
+	Kind                string           `json:"kind"`
+	Source              string           `json:"source"`
+	SourceTime          int64            `json:"source_time"`
+	ObservedAt          int64            `json:"observed_at"`
+	LastSuccessAt       int64            `json:"last_success_at"`
+	FreshnessStatus     string           `json:"freshness_status"`
+	FreshnessAgeSeconds int64            `json:"freshness_age_seconds"`
+	Quality             string           `json:"quality"`
+	ContributorCount    int              `json:"contributor_count"`
+	Contributors        []string         `json:"contributors"`
+	Version             int64            `json:"version"`
+}
+
 type MarketOverviewResult struct {
 	GlobalMarketCapUSD          AvailableDecimal `json:"global_market_cap_usd"`
 	CoveredSpotVolume           AvailableDecimal `json:"covered_spot_volume_24h_usd"`
@@ -83,6 +104,9 @@ type AssetDashboardV2Item struct {
 	DisplayAvailable        bool             `json:"display_available"`
 	DisplayObservedAt       int64            `json:"display_observed_at"`
 	DexRouteAvailable       bool             `json:"dex_route_available"`
+	VenuePrice              MarketPriceFact  `json:"venue_price"`
+	DexRoutePrice           MarketPriceFact  `json:"dex_route_price"`
+	DisplayPrice            MarketPriceFact  `json:"display_price"`
 	Change24hPct            AvailableDecimal `json:"change_24h_pct"`
 	MarketCapUSD            AvailableDecimal `json:"market_cap_usd"`
 	Turnover24hUSD          AvailableDecimal `json:"covered_turnover_24h_usd"`
@@ -132,6 +156,9 @@ type MarketPriceTickItem struct {
 	PriceUSD            AvailableDecimal `json:"price_usd"`
 	Change24hPct        AvailableDecimal `json:"change_24h_pct"`
 	Turnover24hUSD      AvailableDecimal `json:"turnover_24h_usd"`
+	VenuePrice          MarketPriceFact  `json:"venue_price"`
+	DexRoutePrice       MarketPriceFact  `json:"dex_route_price"`
+	DisplayPrice        MarketPriceFact  `json:"display_price"`
 	Available           bool             `json:"available"`
 	FreshnessStatus     string           `json:"freshness_status"`
 	FreshnessAgeSeconds int64            `json:"freshness_age_seconds"`
