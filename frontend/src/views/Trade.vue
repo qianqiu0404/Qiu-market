@@ -31,9 +31,12 @@ import {
 } from '../api/trading'
 import PageHeader from '../components/PageHeader.vue'
 import {
+  LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY,
   PENDING_TRADING_WRITE_STORAGE_KEY,
   parsePendingTradingWrite,
   pendingTradingWriteResolvedByOrders,
+  updatePendingTradingWriteState,
+  type PendingTradingOperation,
   type PendingTradingWrite,
 } from '../trading/pending-write'
 import {
@@ -175,7 +178,7 @@ const pendingWriteLabel = computed(() => {
     cancel: '撤单',
     fund: '虚拟入金',
   }[pendingWrite.value.operation]
-  return `${operation} ${pendingWrite.value.request_id}`
+  return `${operation} · operation_id=${shortID(pendingWrite.value.operation_id)} · request_id=${pendingWrite.value.request_id}`
 })
 const writesEnabled = computed(() => {
   return !busy.value && terminalHealth.value.writesAllowed
@@ -223,33 +226,91 @@ function panelStateClass(name: PanelName): string {
   return `panel-state--${panelReadAvailability(panels[name])}`
 }
 
-function storePendingWrite(next: PendingTradingWrite | null): void {
-  pendingWrite.value = next
+function persistPendingWrite(next: PendingTradingWrite | null): boolean {
   try {
     if (next) {
-      window.sessionStorage.setItem(
+      window.localStorage.setItem(
         PENDING_TRADING_WRITE_STORAGE_KEY,
         JSON.stringify(next),
       )
     } else {
-      window.sessionStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
+      window.localStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
     }
+    window.sessionStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
+    window.sessionStorage.removeItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY)
+    window.localStorage.removeItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY)
+    return true
   } catch {
-    // The in-memory guard still prevents a blind retry when storage is denied.
+    return false
   }
+}
+
+function storePendingWrite(next: PendingTradingWrite | null): boolean {
+  if (!persistPendingWrite(next)) return false
+  pendingWrite.value = next
+  return true
+}
+
+function preparePendingWrite(
+  operation: PendingTradingOperation,
+  requestID: string,
+  payload: Record<string, string | boolean>,
+  orderID?: string,
+): PendingTradingWrite | null {
+  if (!principal.value) {
+    showError('A bound trading account is required before preparing a write')
+    return null
+  }
+  const at = Date.now()
+  const prepared: PendingTradingWrite = {
+    operation_id: randomID('operation'),
+    operation,
+    account_id: principal.value.account_id,
+    request_id: requestID,
+    state: 'submitted',
+    created_at: at,
+    updated_at: at,
+    order_id: orderID,
+    payload,
+  }
+  if (!storePendingWrite(prepared)) {
+    showError('Unable to persist operation/request ID; no write was submitted')
+    return null
+  }
+  return prepared
+}
+
+function transitionPendingWrite(
+  pending: PendingTradingWrite,
+  state: PendingTradingWrite['state'],
+): boolean {
+  return storePendingWrite(updatePendingTradingWriteState(
+    pending,
+    state,
+    Date.now(),
+  ))
 }
 
 function restorePendingWrite(): void {
   try {
-    const restored = parsePendingTradingWrite(
+    const candidates = [
+      window.localStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY),
       window.sessionStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY),
-    )
+      window.localStorage.getItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY),
+      window.sessionStorage.getItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY),
+    ]
+    const restored = candidates
+      .map((raw) => parsePendingTradingWrite(raw))
+      .find((candidate) => candidate !== null) ?? null
     if (!restored) {
+      window.localStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
       window.sessionStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
       return
     }
     restored.state = 'unknown'
+    restored.updated_at = Date.now()
     pendingWrite.value = restored
+    persistPendingWrite(restored)
   } catch {
     pendingWrite.value = null
   }
@@ -375,9 +436,12 @@ async function loadPrivate(): Promise<void> {
       activeWrite.account_id === principal.value.account_id &&
       pendingTradingWriteResolvedByOrders(activeWrite, orders.value)
     ) {
-      notice.value = `请求 ${activeWrite.request_id} 已从权威订单视图确认`
-      storePendingWrite(null)
-      form.clientOrderID = crypto.randomUUID()
+      if (storePendingWrite(null)) {
+        notice.value = `请求 ${activeWrite.request_id} 已从权威订单视图确认`
+        form.clientOrderID = crypto.randomUUID()
+      } else {
+        notice.value = `请求 ${activeWrite.request_id} 已确认，但本地 operation journal 未能清除`
+      }
     }
   }
 }
@@ -433,7 +497,6 @@ async function logout(): Promise<void> {
 }
 
 async function submitOrder(): Promise<void> {
-  busy.value = true
   notice.value = ''
   const submittedID = form.clientOrderID
   const payload: Record<string, string | boolean> = {
@@ -446,24 +509,25 @@ async function submitOrder(): Promise<void> {
     quantity: marketBuy.value ? '' : form.quantity,
     quote_budget: marketBuy.value ? form.quoteBudget : '',
   }
+  const operation = preparePendingWrite('submit', submittedID, payload)
+  if (!operation) return
+  busy.value = true
   try {
     await tradingAPI.submit(payload)
+    if (!storePendingWrite(null)) {
+      notice.value = `请求 ${submittedID} 已响应，但本地 operation journal 未能清除；写操作保持锁定`
+      return
+    }
     notice.value = `请求 ${submittedID} 已处理`
     form.clientOrderID = crypto.randomUUID()
     await refreshAll()
   } catch (error) {
     if (error instanceof TradingRequestError && error.uncertain) {
-      storePendingWrite({
-        operation: 'submit',
-        account_id: principal.value?.account_id ?? '',
-        request_id: submittedID,
-        state: 'unknown',
-        created_at: Date.now(),
-        payload,
-      })
+      transitionPendingWrite(operation, 'unknown')
       notice.value = `请求 ${submittedID} 为 submitted/unknown；不会自动重下，正在查询权威订单事实`
       window.setTimeout(() => void loadPrivate(), 1500)
     } else {
+      storePendingWrite(null)
       showError(error)
     }
   } finally {
@@ -472,25 +536,24 @@ async function submitOrder(): Promise<void> {
 }
 
 async function cancelOrder(order: Order): Promise<void> {
-  busy.value = true
   const requestID = randomID('cancel')
+  const operation = preparePendingWrite('cancel', requestID, {}, order.id)
+  if (!operation) return
+  busy.value = true
   try {
     await tradingAPI.cancel(order.id, requestID)
+    if (!storePendingWrite(null)) {
+      notice.value = `撤单 ${requestID} 已响应，但本地 operation journal 未能清除；写操作保持锁定`
+      return
+    }
     await refreshAll()
   } catch (error) {
     if (error instanceof TradingRequestError && error.uncertain) {
-      storePendingWrite({
-        operation: 'cancel',
-        account_id: principal.value?.account_id ?? '',
-        request_id: requestID,
-        state: 'unknown',
-        created_at: Date.now(),
-        order_id: order.id,
-        payload: {},
-      })
+      transitionPendingWrite(operation, 'unknown')
       notice.value = `撤单 ${requestID} 结果未知；不会生成新 ID，正在核对订单状态`
       window.setTimeout(() => void loadPrivate(), 1500)
     } else {
+      storePendingWrite(null)
       showError(error)
     }
   } finally {
@@ -499,13 +562,15 @@ async function cancelOrder(order: Order): Promise<void> {
 }
 
 async function fundVirtual(): Promise<void> {
-  busy.value = true
   const requestID = randomID('fund')
   const payload = {
     asset: funding.asset,
     amount: funding.amount,
     account_id: funding.accountID,
   }
+  const operation = preparePendingWrite('fund', requestID, payload)
+  if (!operation) return
+  busy.value = true
   try {
     await tradingAPI.fund(
       requestID,
@@ -513,20 +578,18 @@ async function fundVirtual(): Promise<void> {
       payload.amount,
       payload.account_id,
     )
+    if (!storePendingWrite(null)) {
+      notice.value = `虚拟入金 ${requestID} 已响应，但本地 operation journal 未能清除；写操作保持锁定`
+      return
+    }
     notice.value = `已发放 ${funding.amount} ${funding.asset} 虚拟资金`
     await loadPrivate()
   } catch (error) {
     if (error instanceof TradingRequestError && error.uncertain) {
-      storePendingWrite({
-        operation: 'fund',
-        account_id: principal.value?.account_id ?? '',
-        request_id: requestID,
-        state: 'unknown',
-        created_at: Date.now(),
-        payload,
-      })
+      transitionPendingWrite(operation, 'unknown')
       notice.value = `虚拟入金 ${requestID} 结果未知；只允许使用同一 ID 核对`
     } else {
+      storePendingWrite(null)
       showError(error)
     }
   } finally {
@@ -543,10 +606,18 @@ async function reconcilePendingWrite(): Promise<void> {
     )
     return
   }
-  storePendingWrite({ ...current, state: 'reconciling' })
+  if (!transitionPendingWrite(current, 'reconciling')) {
+    showError('Unable to persist reconcile state; no request was replayed')
+    return
+  }
   try {
     if (current.operation === 'submit') {
-      await tradingAPI.submit(current.payload)
+      const authoritative = await tradingAPI.orders(false)
+      orders.value = authoritative.orders ?? []
+      completePanel('orders')
+      if (!pendingTradingWriteResolvedByOrders(current, orders.value)) {
+        await tradingAPI.submit(current.payload)
+      }
     } else if (current.operation === 'cancel') {
       const orderID = current.order_id ?? ''
       const authoritative = await tradingAPI.order(orderID)
@@ -561,12 +632,15 @@ async function reconcilePendingWrite(): Promise<void> {
         String(current.payload.account_id ?? ''),
       )
     }
-    storePendingWrite(null)
+    if (!storePendingWrite(null)) {
+      notice.value = `请求 ${current.request_id} 已核对，但本地 operation journal 未能清除；写操作保持锁定`
+      return
+    }
     form.clientOrderID = crypto.randomUUID()
     notice.value = `请求 ${current.request_id} 已使用原 ID 完成权威核对`
     await refreshAll()
   } catch (error) {
-    storePendingWrite({ ...current, state: 'unknown' })
+    transitionPendingWrite(current, 'unknown')
     if (error instanceof TradingRequestError && error.uncertain) {
       notice.value = `请求 ${current.request_id} 仍为 unknown；未生成新 ID`
     } else {
@@ -848,10 +922,10 @@ onBeforeUnmount(() => {
       </span>
       <button
         class="btn"
-        :disabled="pendingWrite.state === 'reconciling'"
+        :disabled="pendingWrite.state !== 'unknown' || busy"
         @click="reconcilePendingWrite"
       >
-        使用原 ID 核对
+        {{ pendingWrite.state === 'submitted' ? '请求已提交' : '使用原 ID 核对' }}
       </button>
     </div>
 

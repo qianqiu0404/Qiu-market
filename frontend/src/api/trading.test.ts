@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   eventSocketURL,
+  TRADING_WRITE_TIMEOUT_MS,
   tradingAPI,
   tradingEventMode,
 } from './trading'
@@ -9,6 +10,7 @@ describe('trading API', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
+    vi.useRealTimers()
   })
 
   it('preserves stable empty order-book arrays', async () => {
@@ -68,6 +70,37 @@ describe('trading API', () => {
       uncertain: true,
     })
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('times out a write once and exposes an unknown outcome for same-ID reconcile', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        }, { once: true })
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const request = tradingAPI.fund(
+      'fund-stable-id',
+      'USDT',
+      '100',
+      'github:beneficiary',
+    )
+    const rejection = expect(request).rejects.toMatchObject({
+      code: 'request_timeout',
+      status: 0,
+      uncertain: true,
+    })
+    await vi.advanceTimersByTimeAsync(TRADING_WRITE_TIMEOUT_MS)
+    await rejection
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      request_id: 'fund-stable-id',
+      account_id: 'github:beneficiary',
+    })
   })
 
   it('supports explicit same-origin polling fallback', () => {

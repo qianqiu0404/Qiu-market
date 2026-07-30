@@ -81,6 +81,8 @@ interface HarnessOptions {
   realKlines?: boolean
   authDisabled?: boolean
   publicReadDelayMs?: number
+  submitCommittedButResponseLostOnce?: boolean
+  submitResponseLostBeforeCommitOnce?: boolean
   cancelCommittedButResponseLostOnce?: boolean
   cancelResponseLostBeforeCommitOnce?: boolean
   fundCommittedButResponseLostOnce?: boolean
@@ -98,15 +100,20 @@ type HarnessPanel =
 async function installHarness(page: Page, options: HarnessOptions = {}) {
   let loggedIn = false
   let sequence = 10
+  let submitAttempts = 0
   let cancelAttempts = 0
   let fundAttempts = 0
   let activePublicReads = 0
   let maximumConcurrentPublicReads = 0
+  let loseSubmitBeforeCommit = options.submitResponseLostBeforeCommitOnce === true
+  let loseSubmitAfterCommit = options.submitCommittedButResponseLostOnce === true
   let loseCancelBeforeCommit = options.cancelResponseLostBeforeCommitOnce === true
   let balances: Array<{ asset: string; available: string; held: string }> = []
   let orders: Array<Record<string, unknown>> = []
   let trades: Array<Record<string, unknown>> = []
   const cancelRequestIDs: string[] = []
+  const submitRequestIDs: string[] = []
+  const operationTrace: string[] = []
   const fundRequests: Array<{
     request_id: string
     account_id: string
@@ -256,6 +263,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     }
     if (path === '/api/v1/trading/orders' && request.method() === 'GET') {
       if (await failRead('orders')) return
+      operationTrace.push('query:orders')
       await json(200, { orders })
       return
     }
@@ -302,6 +310,29 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     if (path === '/api/v1/trading/orders' && request.method() === 'POST') {
       const body = request.postDataJSON() as Record<string, unknown>
       expect(body.account_id).toBeUndefined()
+      const requestID = String(body.client_order_id ?? '')
+      submitAttempts += 1
+      submitRequestIDs.push(requestID)
+      operationTrace.push(`submit:${requestID}`)
+      if (loseSubmitBeforeCommit) {
+        loseSubmitBeforeCommit = false
+        await json(504, {
+          code: 'backend_timeout',
+          message: 'request outcome is not yet visible',
+        })
+        return
+      }
+      const existingOrder = orders.find(
+        (candidate) => candidate.client_order_id === requestID,
+      )
+      if (existingOrder) {
+        await json(200, {
+          sequence: existingOrder.accepted_sequence,
+          status: 'accepted',
+          order_id: existingOrder.id,
+        })
+        return
+      }
       sequence += 1
       const id = `order-${orders.length + 1}`
       const marketOrder = body.type === 'market'
@@ -357,6 +388,14 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
             role: 'maker',
           },
         }]
+      }
+      if (loseSubmitAfterCommit) {
+        loseSubmitAfterCommit = false
+        await json(504, {
+          code: 'backend_timeout',
+          message: 'committed response was lost',
+        })
+        return
       }
       await json(200, { sequence: String(sequence), status: 'accepted', order_id: id })
       return
@@ -417,6 +456,9 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     get orders() { return orders },
     get trades() { return trades },
     get sequence() { return sequence },
+    get submitAttempts() { return submitAttempts },
+    get submitRequestIDs() { return [...submitRequestIDs] },
+    get operationTrace() { return [...operationTrace] },
     get cancelAttempts() { return cancelAttempts },
     get cancelRequestIDs() { return [...cancelRequestIDs] },
     get fundAttempts() { return fundAttempts },
@@ -568,6 +610,56 @@ test('admin can fund, place, cancel and fill virtual orders with fee evidence', 
   expect(harness.trades).toHaveLength(1)
 })
 
+test('submit unknown persists operation identity and queries before same-ID replay', async ({ page }) => {
+  const harness = await installHarness(page, {
+    submitResponseLostBeforeCommitOnce: true,
+  })
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  const requestID = await page.getByLabel('Client Order ID').inputValue()
+  await page.getByLabel('价格 · USDT').fill('64900')
+  await page.getByLabel('数量 · BTC').fill('0.001')
+  await page.getByRole('button', { name: '买入 BTC' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
+
+  const stored = await page.evaluate(() => JSON.parse(
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2') ?? '{}',
+  ) as {
+    operation_id?: string
+    operation?: string
+    account_id?: string
+    request_id?: string
+    state?: string
+    payload?: { client_order_id?: string }
+  })
+  expect(stored.operation_id).toMatch(/^operation-/)
+  expect(stored.operation).toBe('submit')
+  expect(stored.account_id).toBe(principal.account_id)
+  expect(stored.request_id).toBe(requestID)
+  expect(stored.state).toBe('unknown')
+  expect(stored.payload?.client_order_id).toBe(requestID)
+  expect(await page.evaluate(() =>
+    window.sessionStorage.getItem('qiu-market.pending-trading-write.v1'),
+  )).toBeNull()
+
+  const traceStart = harness.operationTrace.length
+  await page.getByRole('button', { name: '使用原 ID 核对' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0)
+
+  expect(harness.submitAttempts).toBe(2)
+  expect(harness.submitRequestIDs).toEqual([requestID, requestID])
+  expect(harness.operationTrace.slice(traceStart)).toEqual([
+    'query:orders',
+    `submit:${requestID}`,
+    'query:orders',
+  ])
+  expect(harness.orders).toHaveLength(1)
+  expect(await page.evaluate(() =>
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2'),
+  )).toBeNull()
+})
+
 test('terminal cancel fact clears unknown without issuing a second cancel', async ({ page }) => {
   const harness = await installHarness(page, {
     cancelCommittedButResponseLostOnce: true,
@@ -610,6 +702,18 @@ test('open cancel unknown replays the original request ID exactly once', async (
     'write_gate=reconcile_pending',
   )
   await expect(page.getByRole('button', { name: '买入 BTC' })).toBeDisabled()
+  const stored = await page.evaluate(() => JSON.parse(
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2') ?? '{}',
+  ) as {
+    operation_id?: string
+    operation?: string
+    request_id?: string
+    order_id?: string
+  })
+  expect(stored.operation_id).toMatch(/^operation-/)
+  expect(stored.operation).toBe('cancel')
+  expect(stored.request_id).toBe(harness.cancelRequestIDs[0])
+  expect(stored.order_id).toBe(harness.orders[0]?.id)
   expect(harness.orders[0]?.status).toBe('open')
 
   await page.getByRole('button', { name: '使用原 ID 核对' }).click()
@@ -636,8 +740,9 @@ test('fund unknown survives reload and replays the same actor-bound request', as
   await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
 
   const stored = await page.evaluate(() => JSON.parse(
-    window.sessionStorage.getItem('qiu-market.pending-trading-write.v1') ?? '{}',
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2') ?? '{}',
   ) as {
+    operation_id?: string
     operation?: string
     account_id?: string
     request_id?: string
@@ -647,6 +752,7 @@ test('fund unknown survives reload and replays the same actor-bound request', as
       amount?: string
     }
   })
+  expect(stored.operation_id).toMatch(/^operation-/)
   expect(stored.operation).toBe('fund')
   expect(stored.account_id).toBe(principal.account_id)
   expect(stored.payload?.account_id).toBe(targetAccount)
@@ -670,7 +776,7 @@ test('fund unknown survives reload and replays the same actor-bound request', as
   ])
   expect(harness.sequence).toBe(11)
   expect(await page.evaluate(() =>
-    window.sessionStorage.getItem('qiu-market.pending-trading-write.v1'),
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2'),
   )).toBeNull()
 })
 

@@ -124,6 +124,7 @@ export class TradingRequestError extends Error {
 }
 
 const base = '/api/v1/trading'
+export const TRADING_WRITE_TIMEOUT_MS = 10_000
 
 function cookie(name: string): string {
   const prefix = `${encodeURIComponent(name)}=`
@@ -144,20 +145,45 @@ async function request<T>(
   const headers = new Headers(options.headers)
   if (options.body) headers.set('Content-Type', 'application/json')
   if (write) headers.set('X-CSRF-Token', cookie('s78_trading_csrf'))
+  let timedOut = false
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let detachAbort: (() => void) | undefined
+  let signal = options.signal
+  if (write) {
+    const controller = new AbortController()
+    const abortFromCaller = () => controller.abort(options.signal?.reason)
+    if (options.signal?.aborted) {
+      abortFromCaller()
+    } else if (options.signal) {
+      options.signal.addEventListener('abort', abortFromCaller, { once: true })
+      detachAbort = () => options.signal?.removeEventListener('abort', abortFromCaller)
+    }
+    timeout = globalThis.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, TRADING_WRITE_TIMEOUT_MS)
+    signal = controller.signal
+  }
   let response: Response
   try {
     response = await fetch(`${base}${path}`, {
       ...options,
       headers,
       credentials: 'same-origin',
+      signal,
     })
   } catch (error) {
     throw new TradingRequestError(
-      error instanceof Error ? error.message : 'Network request failed',
-      'network_error',
+      timedOut
+        ? 'Trading write timed out; request outcome is unknown'
+        : (error instanceof Error ? error.message : 'Network request failed'),
+      timedOut ? 'request_timeout' : 'network_error',
       0,
       write,
     )
+  } finally {
+    if (timeout !== undefined) globalThis.clearTimeout(timeout)
+    detachAbort?.()
   }
   if (!response.ok) {
     let failure: APIError = {

@@ -1,12 +1,14 @@
 export type PendingTradingOperation = 'submit' | 'cancel' | 'fund'
-export type PendingTradingState = 'unknown' | 'reconciling'
+export type PendingTradingState = 'submitted' | 'unknown' | 'reconciling'
 
 export interface PendingTradingWrite {
+  operation_id: string
   operation: PendingTradingOperation
   account_id: string
   request_id: string
   state: PendingTradingState
   created_at: number
+  updated_at: number
   order_id?: string
   payload: Record<string, string | boolean>
 }
@@ -18,6 +20,8 @@ export interface PendingOrderFact {
 }
 
 export const PENDING_TRADING_WRITE_STORAGE_KEY =
+  'qiu-market.pending-trading-write.v2'
+export const LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY =
   'qiu-market.pending-trading-write.v1'
 
 const terminalOrderStatuses = new Set([
@@ -35,13 +39,17 @@ export function parsePendingTradingWrite(
     const value = JSON.parse(raw) as Partial<PendingTradingWrite>
     if (
       !['submit', 'cancel', 'fund'].includes(value.operation ?? '') ||
-      !['unknown', 'reconciling'].includes(value.state ?? '') ||
+      !['submitted', 'unknown', 'reconciling'].includes(value.state ?? '') ||
       typeof value.account_id !== 'string' ||
       value.account_id.length === 0 ||
       typeof value.request_id !== 'string' ||
       value.request_id.length === 0 ||
       typeof value.created_at !== 'number' ||
       !Number.isFinite(value.created_at) ||
+      (
+        value.updated_at !== undefined &&
+        (typeof value.updated_at !== 'number' || !Number.isFinite(value.updated_at))
+      ) ||
       value.payload === null ||
       typeof value.payload !== 'object' ||
       Array.isArray(value.payload)
@@ -55,16 +63,33 @@ export function parsePendingTradingWrite(
       return null
     }
     return {
+      operation_id:
+        typeof value.operation_id === 'string' && value.operation_id.length > 0
+          ? value.operation_id
+          : `legacy-${value.request_id}`,
       operation: value.operation as PendingTradingOperation,
       account_id: value.account_id,
       request_id: value.request_id,
       state: value.state as PendingTradingState,
       created_at: value.created_at,
+      updated_at: value.updated_at ?? value.created_at,
       order_id: typeof value.order_id === 'string' ? value.order_id : undefined,
       payload: value.payload as Record<string, string | boolean>,
     }
   } catch {
     return null
+  }
+}
+
+export function updatePendingTradingWriteState(
+  pending: PendingTradingWrite,
+  state: PendingTradingState,
+  updatedAt: number,
+): PendingTradingWrite {
+  return {
+    ...pending,
+    state,
+    updated_at: updatedAt,
   }
 }
 
