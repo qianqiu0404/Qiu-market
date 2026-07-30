@@ -106,6 +106,7 @@ type HarnessPanel =
 async function installHarness(page: Page, options: HarnessOptions = {}) {
   let loggedIn = false
   let sequence = 10
+  let logoutAttempts = 0
   let submitAttempts = 0
   let cancelAttempts = 0
   let fundAttempts = 0
@@ -233,6 +234,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/auth/logout') {
+      logoutAttempts += 1
       loggedIn = false
       await route.fulfill({ status: 204 })
       return
@@ -277,12 +279,16 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     if (path === '/api/v1/trading/orders' && request.method() === 'GET') {
       if (await failRead('orders')) return
       operationTrace.push('query:orders')
-      await json(200, { orders })
+      await json(loggedIn ? 200 : 401, loggedIn
+        ? { orders }
+        : { code: 'invalid_session', message: 'session is invalid or expired' })
       return
     }
     if (path === '/api/v1/trading/trades') {
       if (await failRead('privateTrades')) return
-      await json(200, { trades })
+      await json(loggedIn ? 200 : 401, loggedIn
+        ? { trades }
+        : { code: 'invalid_session', message: 'session is invalid or expired' })
       return
     }
     if (path === '/api/v1/trading/ws-ticket') {
@@ -472,6 +478,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     get submitAttempts() { return submitAttempts },
     get submitRequestIDs() { return [...submitRequestIDs] },
     get operationTrace() { return [...operationTrace] },
+    get logoutAttempts() { return logoutAttempts },
     get cancelAttempts() { return cancelAttempts },
     get cancelRequestIDs() { return [...cancelRequestIDs] },
     get fundAttempts() { return fundAttempts },
@@ -504,6 +511,9 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     },
     setPublicReadDelay(delayMs: number) {
       publicReadDelayMs = delayMs
+    },
+    expireSession() {
+      loggedIn = false
     },
     setPanelFailure(panel: HarnessPanel, failed = true) {
       if (failed) failedPanels.add(panel)
@@ -697,6 +707,30 @@ test('admin can fund, place, cancel and fill virtual orders with fee evidence', 
   expect(harness.trades).toHaveLength(1)
 })
 
+test('committed submit response loss resolves from the order fact without replay', async ({ page }) => {
+  const harness = await installHarness(page, {
+    submitCommittedButResponseLostOnce: true,
+  })
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  const requestID = await page.getByLabel('Client Order ID').inputValue()
+  await page.getByLabel('价格 · USDT').fill('64900')
+  await page.getByLabel('数量 · BTC').fill('0.001')
+  await page.getByRole('button', { name: '买入 BTC' }).click()
+  await expect(page.getByText(/submitted\/unknown/)).toBeVisible()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0, {
+    timeout: 4_000,
+  })
+
+  expect(harness.submitAttempts).toBe(1)
+  expect(harness.submitRequestIDs).toEqual([requestID])
+  expect(harness.orders).toHaveLength(1)
+  expect(await page.evaluate(() =>
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2'),
+  )).toBeNull()
+})
+
 test('submit unknown persists operation identity and queries before same-ID replay', async ({ page }) => {
   const harness = await installHarness(page, {
     submitResponseLostBeforeCommitOnce: true,
@@ -732,6 +766,9 @@ test('submit unknown persists operation identity and queries before same-ID repl
 
   const traceStart = harness.operationTrace.length
   await page.getByRole('button', { name: '使用原 ID 核对' }).click()
+  await expect.poll(() => page.evaluate(() =>
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2'),
+  )).toBeNull()
   await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0)
 
   expect(harness.submitAttempts).toBe(2)
@@ -804,6 +841,9 @@ test('open cancel unknown replays the original request ID exactly once', async (
   expect(harness.orders[0]?.status).toBe('open')
 
   await page.getByRole('button', { name: '使用原 ID 核对' }).click()
+  await expect.poll(() => page.evaluate(() =>
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2'),
+  )).toBeNull()
   await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0)
 
   expect(harness.cancelAttempts).toBe(2)
@@ -847,9 +887,21 @@ test('fund unknown survives reload and replays the same actor-bound request', as
   expect(stored.payload?.amount).toBe('250')
   expect(stored.request_id).toBe(harness.fundRequests[0]?.request_id)
 
+  await page.getByRole('button', { name: /退出/ }).click()
+  await expect(page.getByRole('button', { name: '原账户登录后核对' })).toBeDisabled()
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=login_required',
+  )
+  expect(harness.fundAttempts).toBe(1)
+  await page.getByRole('button', { name: '本地登录' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeEnabled()
+
   await page.reload()
   await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
   await page.getByRole('button', { name: '使用原 ID 核对' }).click()
+  await expect.poll(() => page.evaluate(() =>
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2'),
+  )).toBeNull()
   await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toHaveCount(0)
 
   expect(harness.fundAttempts).toBe(2)
@@ -865,6 +917,53 @@ test('fund unknown survives reload and replays the same actor-bound request', as
   expect(await page.evaluate(() =>
     window.localStorage.getItem('qiu-market.pending-trading-write.v2'),
   )).toBeNull()
+})
+
+test('logout clears private last-good views, closes writes and does not reconnect', async ({ page }) => {
+  const harness = await installHarness(page)
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+  await page.getByLabel('数量', { exact: true }).last().fill('10000')
+  await page.getByRole('button', { name: '发放虚拟资金' }).click()
+  await expect(page.getByText('10000', { exact: true })).toBeVisible()
+  await expect.poll(() => harness.socketCount).toBe(1)
+
+  await page.getByRole('button', { name: /退出/ }).click()
+
+  expect(harness.logoutAttempts).toBe(1)
+  await expect(page.getByRole('button', { name: '本地登录' })).toBeVisible()
+  await expect(page.getByText('10000', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('登录后查看账户余额')).toBeVisible()
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=login_required',
+  )
+  await expect(page.getByRole('button', { name: '登录后下单' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '发放虚拟资金' })).toBeDisabled()
+  await expect(page.getByTestId('transport-state')).toHaveText('polling')
+  await page.waitForTimeout(1_500)
+  expect(harness.socketCount).toBe(1)
+})
+
+test('a server-expired session invalidates every private panel on the next read', async ({ page }) => {
+  const harness = await installHarness(page)
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+  await page.getByLabel('数量', { exact: true }).last().fill('500')
+  await page.getByRole('button', { name: '发放虚拟资金' }).click()
+  await expect(page.getByText('500', { exact: true })).toBeVisible()
+
+  harness.expireSession()
+  await page.getByRole('button', { name: '刷新' }).click()
+
+  await expect(page.getByText('会话已失效；私有视图和写入口已清除，请重新登录')).toBeVisible()
+  await expect(page.getByRole('button', { name: '本地登录' })).toBeVisible()
+  await expect(page.getByText('500', { exact: true })).toHaveCount(0)
+  await expect(page.getByTestId('panel-balances-state')).toContainText('LOADING')
+  await expect(page.getByTestId('panel-orders-state')).toContainText('LOADING')
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=login_required',
+  )
+  await expect(page.getByTestId('transport-state')).toHaveText('polling')
 })
 
 for (const viewport of [

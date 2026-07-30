@@ -196,11 +196,18 @@ const pendingWriteLabel = computed(() => {
   }[pendingWrite.value.operation]
   return `${operation} · operation_id=${shortID(pendingWrite.value.operation_id)} · request_id=${pendingWrite.value.request_id}`
 })
+const canReconcilePending = computed(() =>
+  pendingWrite.value?.state === 'unknown' &&
+  principal.value !== null &&
+  pendingWrite.value.account_id === principal.value.account_id &&
+  !busy.value,
+)
 const writesEnabled = computed(() => {
   return !busy.value && terminalHealth.value.writesAllowed
 })
 const writeGateReason = computed(() => {
   if (busy.value) return 'request_in_flight'
+  if (!principal.value) return 'login_required'
   if (pendingWrite.value) return 'reconcile_pending'
   if (eventReconcilePending.value) return 'transport_reconcile_pending'
   return terminalHealth.value.writeBlockReason || 'ready'
@@ -243,6 +250,25 @@ function panelStateLabel(name: PanelName): string {
 
 function panelStateClass(name: PanelName): string {
   return `panel-state--${panelReadAvailability(panels[name])}`
+}
+
+function invalidateTradingSession(message = ''): void {
+  principal.value = null
+  balances.value = []
+  orders.value = []
+  privateTrades.value = []
+  lastPrivateAt.value = 0
+  for (const name of ['balances', 'orders', 'privateTrades'] as const) {
+    panels[name] = createPanelReadState()
+  }
+  closeEvents()
+  if (message) notice.value = message
+}
+
+function invalidSessionFailure(error: unknown): boolean {
+  return error instanceof TradingRequestError &&
+    error.status === 401 &&
+    (error.code === 'invalid_session' || error.code === 'unauthorized')
 }
 
 function persistEventCursor(next: TradingEventCursor): void {
@@ -524,6 +550,14 @@ async function loadPrivate(): Promise<void> {
     tradingAPI.orders(false),
     tradingAPI.trades(),
   ])
+  if (results.some(
+    (result) =>
+      result.status === 'rejected' &&
+      invalidSessionFailure(result.reason),
+  )) {
+    invalidateTradingSession('会话已失效；私有视图和写入口已清除，请重新登录')
+    return
+  }
   if (results[0].status === 'fulfilled') {
     balances.value = results[0].value.balances ?? []
     completePanel('balances')
@@ -607,11 +641,7 @@ async function logout(): Promise<void> {
   } catch (error) {
     showError(error)
   }
-  principal.value = null
-  balances.value = []
-  orders.value = []
-  privateTrades.value = []
-  closeEvents()
+  invalidateTradingSession('已退出；本地私有视图和写入口已失效')
 }
 
 async function submitOrder(): Promise<void> {
@@ -1134,10 +1164,16 @@ onBeforeUnmount(() => {
       </span>
       <button
         class="btn"
-        :disabled="pendingWrite.state !== 'unknown' || busy"
+        :disabled="!canReconcilePending"
         @click="reconcilePendingWrite"
       >
-        {{ pendingWrite.state === 'submitted' ? '请求已提交' : '使用原 ID 核对' }}
+        {{ pendingWrite.state === 'submitted'
+          ? '请求已提交'
+          : pendingWrite.state === 'reconciling'
+            ? '核对中'
+            : canReconcilePending
+              ? '使用原 ID 核对'
+              : '原账户登录后核对' }}
       </button>
     </div>
 
