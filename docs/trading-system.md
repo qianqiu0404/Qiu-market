@@ -183,6 +183,37 @@ go test ./trading/runtime -run '^TestMarketRunnerRejectsWritesUntilReconcileComp
 go test ./trading/rpc/server -run '^TestTradingGRPCSubscribeEvents' -count=1
 ```
 
+### D. 双重记账与崩溃恢复
+
+`trading/reliability.AuditRecords` 只读完整 immutable event history，不保存订单、
+余额或撮合状态。它逐 sequence 检查：
+
+1. command/result sequence 与 event `(sequence,index)` 连续；
+2. transaction ID 在全历史唯一；
+3. 每个 transaction 的每个 asset 借贷和为零；
+4. 把全部 journal entry 再累加后，BTC、USDT 等每个 asset 的净变化仍为零；
+5. 每批 state hash 都是 32-byte SHA-256。
+
+`ProveRecovery` 先生成上述账本证明，再调用现有 `exchange.Restore`，要求恢复后的
+sequence/hash 与最后一个持久化 record 完全相同。它没有实现第二本账或第二套
+reducer；被拒绝的是只检查最终余额总数，因为那会漏掉某一笔内部不平的分录。
+代价是完整证明必须扫描 immutable journal，适合启动验收、恢复演练和离线审计，
+不放在每个低延迟请求的热路径上。
+
+故障注入覆盖“event append 已成功、内存 trial 尚未应用时进程崩溃”：旧进程内存
+仍为 sequence 0，而持久化已为 sequence 1；新进程从 event 恢复后，同一 request
+ID 只返回原结果且不会再记账。损坏 snapshot hash、损坏 event journal 都会
+fail closed。相同命令分别走 live、snapshot+tail、event-only 和独立重跑，最终
+hash 必须一致。
+
+2026-07-30 专项命令：
+
+```bash
+go test ./trading/reliability \
+  -run '^(TestLedgerAndRecoveryProof|TestCommitThenCrashBeforeApplyRecoversExactlyOnce|TestCorruptSnapshotAndEventAreRejected|TestFinalStateHashDeterministicAcrossRecoveryPaths)$' \
+  -count=1
+```
+
 ## PostgreSQL 真值与恢复
 
 核心交易表由 `migrations/2026082100023.sql` 创建，发布游标分离由
