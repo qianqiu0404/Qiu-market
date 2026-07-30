@@ -36,6 +36,15 @@ import {
   pendingTradingWriteResolvedByOrders,
   type PendingTradingWrite,
 } from '../trading/pending-write'
+import {
+  beginPanelRead,
+  completePanelRead,
+  createPanelReadState,
+  failPanelRead,
+  panelReadAgeSeconds,
+  panelReadAvailability,
+  type PanelReadState,
+} from '../trading/panel-state'
 
 echarts.use([
   CandlestickChart,
@@ -47,6 +56,17 @@ echarts.use([
 
 const MARKET_ID = 'BTC-USDT'
 const KLINE_INTERVALS: KlineInterval[] = ['1m', '15m', '1h', '1d']
+const PANEL_NAMES = [
+  'reference',
+  'kline',
+  'orderbook',
+  'publicTrades',
+  'status',
+  'balances',
+  'orders',
+  'privateTrades',
+] as const
+type PanelName = typeof PANEL_NAMES[number]
 
 const principal = ref<Principal | null>(null)
 const authCapabilities = ref<AuthCapabilities>({
@@ -73,8 +93,12 @@ const wsState = ref<'offline' | 'connecting' | 'live' | 'retrying' | 'polling'>(
 const cursor = ref<EventEnvelope>()
 const lastStatusAt = ref(0)
 const lastPrivateAt = ref(0)
-const publicPanelErrors = reactive({ orderbook: '', trades: '', status: '' })
 const pendingWrite = ref<PendingTradingWrite | null>(null)
+const nowMs = ref(Date.now())
+const panels = reactive<Record<PanelName, PanelReadState>>(
+  Object.fromEntries(PANEL_NAMES.map((name) => [name, createPanelReadState()])) as
+    Record<PanelName, PanelReadState>,
+)
 
 const referencePrice = ref<number | null>(null)
 const referenceFreshness = ref('unavailable')
@@ -134,7 +158,11 @@ const liquidityState = computed(() =>
   book.value.bids.length > 0 && book.value.asks.length > 0 ? 'active' : 'paused',
 )
 const transportState = computed(() => {
-  const failures = Object.values(publicPanelErrors).filter(Boolean).length
+  const failures = [
+    panels.orderbook.error,
+    panels.publicTrades.error,
+    panels.status.error,
+  ].filter(Boolean).length
   if (failures === 0 && statusAgeSeconds.value >= 0 && statusAgeSeconds.value <= 10) return 'live'
   if (lastStatusAt.value > 0) return 'degraded'
   return 'offline'
@@ -166,6 +194,41 @@ const writesEnabled = computed(() => {
 
 function randomID(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function beginPanel(name: PanelName): void {
+  const at = Date.now()
+  nowMs.value = at
+  panels[name] = beginPanelRead(panels[name], at)
+}
+
+function completePanel(name: PanelName): void {
+  const at = Date.now()
+  nowMs.value = at
+  panels[name] = completePanelRead(panels[name], at)
+}
+
+function failPanel(name: PanelName, error: unknown): void {
+  const at = Date.now()
+  nowMs.value = at
+  panels[name] = failPanelRead(panels[name], errorText(error), at)
+}
+
+function panelStateLabel(name: PanelName): string {
+  const availability = panelReadAvailability(panels[name])
+  const age = panelReadAgeSeconds(panels[name], nowMs.value)
+  if (availability === 'current') return `CURRENT · age ${age}s`
+  if (availability === 'last-good') return `LAST GOOD · age ${age}s`
+  if (availability === 'unavailable') return 'UNAVAILABLE'
+  return 'LOADING'
+}
+
+function panelStateClass(name: PanelName): string {
+  return `panel-state--${panelReadAvailability(panels[name])}`
 }
 
 function storePendingWrite(next: PendingTradingWrite | null): void {
@@ -241,6 +304,9 @@ function showError(error: unknown): void {
 }
 
 async function loadPublicOnce(): Promise<void> {
+  beginPanel('orderbook')
+  beginPanel('publicTrades')
+  beginPanel('status')
   const [bookResult, tradesResult, statusResult] = await Promise.allSettled([
     tradingAPI.orderBook(),
     tradingAPI.publicTrades(),
@@ -253,31 +319,22 @@ async function loadPublicOnce(): Promise<void> {
       bids: nextBook.bids ?? [],
       asks: nextBook.asks ?? [],
     }
-    publicPanelErrors.orderbook = ''
+    completePanel('orderbook')
   } else {
-    publicPanelErrors.orderbook = bookResult.reason instanceof Error
-      ? bookResult.reason.message
-      : String(bookResult.reason)
+    failPanel('orderbook', bookResult.reason)
   }
   if (tradesResult.status === 'fulfilled') {
     publicTrades.value = tradesResult.value.trades ?? []
-    publicPanelErrors.trades = ''
+    completePanel('publicTrades')
   } else {
-    publicPanelErrors.trades = tradesResult.reason instanceof Error
-      ? tradesResult.reason.message
-      : String(tradesResult.reason)
+    failPanel('publicTrades', tradesResult.reason)
   }
   if (statusResult.status === 'fulfilled') {
     status.value = statusResult.value
     lastStatusAt.value = Date.now()
-    publicPanelErrors.status = ''
+    completePanel('status')
   } else {
-    publicPanelErrors.status = statusResult.reason instanceof Error
-      ? statusResult.reason.message
-      : String(statusResult.reason)
-  }
-  if (Object.values(publicPanelErrors).every(Boolean)) {
-    showError('Qiu Market transport is offline; last known data remains visible.')
+    failPanel('status', statusResult.reason)
   }
 }
 
@@ -291,16 +348,36 @@ function loadPublic(): Promise<void> {
 
 async function loadPrivate(): Promise<void> {
   if (!principal.value) return
+  beginPanel('balances')
+  beginPanel('orders')
+  beginPanel('privateTrades')
   const results = await Promise.allSettled([
     tradingAPI.balances(),
     tradingAPI.orders(false),
     tradingAPI.trades(),
   ])
-  if (results[0].status === 'fulfilled') balances.value = results[0].value.balances ?? []
-  if (results[1].status === 'fulfilled') orders.value = results[1].value.orders ?? []
-  if (results[2].status === 'fulfilled') privateTrades.value = results[2].value.trades ?? []
+  if (results[0].status === 'fulfilled') {
+    balances.value = results[0].value.balances ?? []
+    completePanel('balances')
+  } else {
+    failPanel('balances', results[0].reason)
+  }
+  if (results[1].status === 'fulfilled') {
+    orders.value = results[1].value.orders ?? []
+    completePanel('orders')
+  } else {
+    failPanel('orders', results[1].reason)
+  }
+  if (results[2].status === 'fulfilled') {
+    privateTrades.value = results[2].value.trades ?? []
+    completePanel('privateTrades')
+  } else {
+    failPanel('privateTrades', results[2].reason)
+  }
   if (results.every((result) => result.status === 'fulfilled')) {
     lastPrivateAt.value = Date.now()
+  }
+  if (results[1].status === 'fulfilled') {
     const activeWrite = pendingWrite.value
     if (
       activeWrite &&
@@ -560,6 +637,7 @@ function closeEvents(): void {
 }
 
 async function loadReference(): Promise<void> {
+  beginPanel('reference')
   try {
     const dashboard = await getAssetDashboardV2(1, 10, {
       venue: 'all',
@@ -581,6 +659,7 @@ async function loadReference(): Promise<void> {
     referenceError.value = value == null
       ? (btc.coverage_reason || 'No fresh CEX Spot contributor')
       : ''
+    completePanel('reference')
 
     if (!klineMarketID.value) {
       const venues = await getAssetMarketsV2(btc.asset_id, 'all')
@@ -594,13 +673,19 @@ async function loadReference(): Promise<void> {
         klineProvider.value = source.provider
       } else {
         klineError.value = 'No reviewed BTC venue K-line is currently available'
+        failPanel('kline', klineError.value)
       }
     }
     await loadKline()
   } catch (error) {
-    referencePrice.value = null
-    referenceFreshness.value = 'unavailable'
-    referenceError.value = error instanceof Error ? error.message : String(error)
+    referenceError.value = errorText(error)
+    failPanel('reference', error)
+    if (klineMarketID.value) {
+      await loadKline()
+    } else {
+      klineError.value = referenceError.value
+      failPanel('kline', error)
+    }
   }
 }
 
@@ -615,16 +700,25 @@ async function refreshMarketData(): Promise<void> {
 }
 
 async function loadKline(): Promise<void> {
-  if (!klineMarketID.value) return
+  if (!klineMarketID.value) {
+    if (!panels.kline.error) {
+      klineError.value = 'No reviewed BTC venue K-line is currently available'
+      failPanel('kline', klineError.value)
+    }
+    return
+  }
+  beginPanel('kline')
   try {
     klines.value = await getKlines(klineMarketID.value, klineInterval.value, 160)
     klineError.value = klines.value.length === 0
       ? 'The selected venue returned no real candles'
       : ''
+    completePanel('kline')
     await nextTick()
     renderChart()
   } catch (error) {
-    klineError.value = error instanceof Error ? error.message : String(error)
+    klineError.value = errorText(error)
+    failPanel('kline', error)
     renderChart()
   }
 }
@@ -771,13 +865,16 @@ onBeforeUnmount(() => {
         <span>S78 综合参考价</span>
         <strong>{{ formatReference(referencePrice) }} <small>USDT</small></strong>
         <em :class="`freshness freshness--${referenceFreshness}`">
-          {{ referenceFreshness }} · {{ referenceConfidence }}
+          {{ referenceFreshness }} · {{ referenceConfidence }} · {{ panelStateLabel('reference') }}
         </em>
       </article>
       <article class="trade-metric card">
         <span>撮合运行时</span>
         <strong>{{ matchingState }}</strong>
-        <em>sequence {{ status.sequence }} · age {{ statusAgeSeconds < 0 ? '—' : `${statusAgeSeconds}s` }}</em>
+        <em>
+          sequence {{ status.sequence }} · {{ panelStateLabel('status') }}
+          <template v-if="panels.status.error"> · {{ panels.status.error }}</template>
+        </em>
       </article>
       <article class="trade-metric card">
         <span>恢复与事件</span>
@@ -798,17 +895,31 @@ onBeforeUnmount(() => {
             <span>真实 venue K 线 · {{ klineProvider || 'unresolved' }}</span>
             <h2>BTC 市场上下文</h2>
           </div>
-          <div class="intervals">
-            <button
-              v-for="value in KLINE_INTERVALS"
-              :key="value"
-              :class="{ active: klineInterval === value }"
-              @click="klineInterval = value"
-            >
-              {{ value }}
-            </button>
+          <div class="panel-head-actions">
+            <span
+              data-testid="panel-kline-state"
+              class="panel-state"
+              :class="panelStateClass('kline')"
+            >{{ panelStateLabel('kline') }}</span>
+            <div class="intervals">
+              <button
+                v-for="value in KLINE_INTERVALS"
+                :key="value"
+                :class="{ active: klineInterval === value }"
+                @click="klineInterval = value"
+              >
+                {{ value }}
+              </button>
+            </div>
           </div>
         </header>
+        <div
+          v-if="panels.kline.error && klines.length"
+          class="panel-read-warning"
+          data-testid="panel-kline-error"
+        >
+          K 线刷新失败：{{ panels.kline.error }}。继续显示 last-good。
+        </div>
         <div v-if="klines.length" ref="chartElement" class="trade-chart"></div>
         <div v-else class="truth-empty">
           <strong>没有可用的真实 K 线</strong>
@@ -824,8 +935,23 @@ onBeforeUnmount(() => {
       <article class="card orderbook-card">
         <header class="trade-card-head">
           <div><span>虚拟订单簿</span><h2>Depth · 20</h2></div>
-          <code>#{{ book.sequence }}</code>
+          <div class="panel-head-actions">
+            <span
+              data-testid="panel-orderbook-state"
+              class="panel-state"
+              :class="panelStateClass('orderbook')"
+            >{{ panelStateLabel('orderbook') }}</span>
+            <code>#{{ book.sequence }}</code>
+          </div>
         </header>
+        <div
+          v-if="panels.orderbook.error"
+          class="panel-read-warning"
+          data-testid="panel-orderbook-error"
+        >
+          订单簿刷新失败：{{ panels.orderbook.error }}。
+          <template v-if="panels.orderbook.lastSuccessAt">继续显示 last-good。</template>
+        </div>
         <div class="book-heading"><span>价格 USDT</span><span>数量 BTC</span><span>订单</span></div>
         <div class="book-side book-side--asks">
           <button
@@ -929,8 +1055,23 @@ onBeforeUnmount(() => {
       <article class="card balance-card">
         <header class="trade-card-head">
           <div><span>账户视图</span><h2>余额与虚拟入金</h2></div>
-          <span class="badge badge--delayed">ADMIN · VIRTUAL</span>
+          <div class="panel-head-actions">
+            <span
+              data-testid="panel-balances-state"
+              class="panel-state"
+              :class="panelStateClass('balances')"
+            >{{ panelStateLabel('balances') }}</span>
+            <span class="badge badge--delayed">ADMIN · VIRTUAL</span>
+          </div>
         </header>
+        <div
+          v-if="panels.balances.error"
+          class="panel-read-warning"
+          data-testid="panel-balances-error"
+        >
+          余额刷新失败：{{ panels.balances.error }}。
+          <template v-if="panels.balances.lastSuccessAt">继续显示 last-good。</template>
+        </div>
         <div class="balance-body">
           <div class="balances">
             <div v-for="balance in balances" :key="balance.asset" class="asset-balance">
@@ -967,8 +1108,23 @@ onBeforeUnmount(() => {
       <article class="card recent-card">
         <header class="trade-card-head">
           <div><span>公开市场</span><h2>最近成交</h2></div>
-          <span class="badge" :class="wsState === 'live' ? 'badge--live' : 'badge--delayed'">{{ wsState }}</span>
+          <div class="panel-head-actions">
+            <span
+              data-testid="panel-public-trades-state"
+              class="panel-state"
+              :class="panelStateClass('publicTrades')"
+            >{{ panelStateLabel('publicTrades') }}</span>
+            <span class="badge" :class="wsState === 'live' ? 'badge--live' : 'badge--delayed'">{{ wsState }}</span>
+          </div>
         </header>
+        <div
+          v-if="panels.publicTrades.error"
+          class="panel-read-warning"
+          data-testid="panel-public-trades-error"
+        >
+          公开成交刷新失败：{{ panels.publicTrades.error }}。
+          <template v-if="panels.publicTrades.lastSuccessAt">继续显示 last-good。</template>
+        </div>
         <div class="recent-list">
           <div v-for="trade in publicTrades" :key="trade.id" class="recent-row">
             <div><strong>{{ trade.price }}</strong><small>USDT</small></div>
@@ -983,8 +1139,36 @@ onBeforeUnmount(() => {
     <section class="card records-card">
       <header class="trade-card-head">
         <div><span>订单与成交</span><h2>我的交易记录</h2></div>
-        <button class="btn" :disabled="!loggedIn" @click="refreshAll">刷新</button>
+        <div class="panel-head-actions">
+          <span
+            data-testid="panel-orders-state"
+            class="panel-state"
+            :class="panelStateClass('orders')"
+          >订单 {{ panelStateLabel('orders') }}</span>
+          <span
+            data-testid="panel-private-trades-state"
+            class="panel-state"
+            :class="panelStateClass('privateTrades')"
+          >成交 {{ panelStateLabel('privateTrades') }}</span>
+          <button class="btn" :disabled="!loggedIn" @click="refreshAll">刷新</button>
+        </div>
       </header>
+      <div
+        v-if="panels.orders.error"
+        class="panel-read-warning"
+        data-testid="panel-orders-error"
+      >
+        订单刷新失败：{{ panels.orders.error }}。
+        <template v-if="panels.orders.lastSuccessAt">继续显示 last-good。</template>
+      </div>
+      <div
+        v-if="panels.privateTrades.error"
+        class="panel-read-warning"
+        data-testid="panel-private-trades-error"
+      >
+        个人成交刷新失败：{{ panels.privateTrades.error }}。
+        <template v-if="panels.privateTrades.lastSuccessAt">继续显示 last-good。</template>
+      </div>
       <div class="record-block">
         <h3>当前委托 · {{ openOrders.length }}</h3>
         <div class="record-table">
@@ -1127,6 +1311,33 @@ onBeforeUnmount(() => {
 
 .trade-card-head h2 { margin-top: 3px; font-size: 16px; }
 .trade-card-head code { color: var(--text-3); font-size: 11px; }
+
+.panel-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.panel-state {
+  color: var(--text-3) !important;
+  font: 600 10px var(--font-mono);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.panel-state--current { color: var(--up) !important; }
+.panel-state--last-good { color: var(--warn) !important; }
+.panel-state--unavailable { color: var(--down) !important; }
+
+.panel-read-warning {
+  padding: 8px 18px;
+  border-bottom: 1px solid #f0d58a;
+  color: #805700;
+  background: #fff8df;
+  font-size: 11px;
+}
 
 .intervals,
 .side-switch,
@@ -1361,6 +1572,7 @@ onBeforeUnmount(() => {
 @media (max-width: 700px) {
   .trade-metrics { grid-template-columns: 1fr; }
   .trade-card-head { align-items: flex-start; flex-direction: column; }
+  .panel-head-actions { justify-content: flex-start; }
   .fund-grid,
   .runtime-grid { grid-template-columns: 1fr; }
   .reference-foot { flex-direction: column; }

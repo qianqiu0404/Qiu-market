@@ -86,6 +86,15 @@ interface HarnessOptions {
   fundCommittedButResponseLostOnce?: boolean
 }
 
+type HarnessPanel =
+  | 'kline'
+  | 'orderbook'
+  | 'publicTrades'
+  | 'status'
+  | 'balances'
+  | 'orders'
+  | 'privateTrades'
+
 async function installHarness(page: Page, options: HarnessOptions = {}) {
   let loggedIn = false
   let sequence = 10
@@ -113,6 +122,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     sequence: string
     status: string
   }>()
+  const failedPanels = new Set<HarnessPanel>()
 
   await page.routeWebSocket('**/api/v1/trading/events/ws**', () => {
     // Keeping the mocked socket open is enough for the page to expose "live".
@@ -144,6 +154,14 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       }
     }
     const marketEnvelope = (result: unknown) => json(200, { code: 2000, result })
+    const failRead = async (panel: HarnessPanel) => {
+      if (!failedPanels.has(panel)) return false
+      await json(503, {
+        code: 'backend_unavailable',
+        message: `${panel} test read is unavailable`,
+      })
+      return true
+    }
 
     if (path === '/api/v2/get_asset_dashboard') {
       await json(200, { code: 2000, result: [btcAsset], total: 1 })
@@ -154,6 +172,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/get_klines') {
+      if (await failRead('kline')) return
       const candles = options.realKlines === false
         ? []
         : [
@@ -202,6 +221,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/markets/BTC-USDT/orderbook') {
+      if (await failRead('orderbook')) return
       await publicJSON(200, {
         market_id: 'BTC-USDT',
         sequence: String(sequence),
@@ -211,6 +231,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/markets/BTC-USDT/status') {
+      if (await failRead('status')) return
       await publicJSON(200, {
         market_id: 'BTC-USDT',
         state: 'ready',
@@ -222,20 +243,24 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       return
     }
     if (path === '/api/v1/trading/markets/BTC-USDT/trades') {
+      if (await failRead('publicTrades')) return
       await publicJSON(200, { trades })
       return
     }
     if (path === '/api/v1/trading/balances') {
+      if (await failRead('balances')) return
       await json(loggedIn ? 200 : 401, loggedIn
         ? { balances }
         : { code: 'invalid_session', message: 'session is invalid or expired' })
       return
     }
     if (path === '/api/v1/trading/orders' && request.method() === 'GET') {
+      if (await failRead('orders')) return
       await json(200, { orders })
       return
     }
     if (path === '/api/v1/trading/trades') {
+      if (await failRead('privateTrades')) return
       await json(200, { trades })
       return
     }
@@ -397,6 +422,10 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     get fundAttempts() { return fundAttempts },
     get fundRequests() { return [...fundRequests] },
     get maximumConcurrentPublicReads() { return maximumConcurrentPublicReads },
+    setPanelFailure(panel: HarnessPanel, failed = true) {
+      if (failed) failedPanels.add(panel)
+      else failedPanels.delete(panel)
+    },
   }
 }
 
@@ -436,6 +465,48 @@ test('slow public polling reuses one in-flight refresh batch', async ({ page }) 
   await page.waitForTimeout(7_000)
 
   expect(harness.maximumConcurrentPublicReads).toBe(3)
+})
+
+test('panel failures retain last-good data and never become a full-page outage', async ({ page }) => {
+  const harness = await installHarness(page)
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  await page.getByLabel('数量', { exact: true }).last().fill('10000')
+  await page.getByRole('button', { name: '发放虚拟资金' }).click()
+  await page.getByRole('button', { name: 'Market' }).click()
+  await page.getByLabel('Quote Budget · USDT').fill('100')
+  await page.getByRole('button', { name: '买入 BTC' }).click()
+  await expect(page.getByText('我的成交 · 1')).toBeVisible()
+
+  for (const panel of [
+    'kline',
+    'orderbook',
+    'publicTrades',
+    'balances',
+    'orders',
+    'privateTrades',
+  ] as const) {
+    harness.setPanelFailure(panel)
+  }
+  await page.getByRole('button', { name: '1m' }).click()
+  await page.getByRole('button', { name: '刷新' }).click()
+
+  for (const testID of [
+    'panel-kline-state',
+    'panel-orderbook-state',
+    'panel-public-trades-state',
+    'panel-balances-state',
+    'panel-orders-state',
+    'panel-private-trades-state',
+  ]) {
+    await expect(page.getByTestId(testID)).toContainText('LAST GOOD')
+  }
+  await expect(page.getByRole('button', { name: 'Bid 64990' })).toBeVisible()
+  await expect(page.getByText('10000', { exact: true })).toBeVisible()
+  await expect(page.getByText('历史委托 · 1')).toBeVisible()
+  await expect(page.locator('.trade-chart canvas')).toBeVisible()
+  await expect(page.locator('.trade-toast--error')).toHaveCount(0)
 })
 
 test('admin can fund, place, cancel and fill virtual orders with fee evidence', async ({ page }) => {
