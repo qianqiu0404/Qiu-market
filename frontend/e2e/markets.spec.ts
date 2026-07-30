@@ -483,6 +483,202 @@ test('a failed live tick keeps the verified venue snapshot without falling back 
   await expect(page.getByText(/Live price ticks are delayed/)).toBeVisible()
 })
 
+test('a late lower-version tick preserves the newer cached fact', async ({ page }) => {
+  let tickRequests = 0
+  const newestObservedAt = Date.now()
+  let releaseOlderResponse: (() => void) | undefined
+  const olderResponse = new Promise<void>((resolve) => {
+    releaseOlderResponse = resolve
+  })
+
+  await page.route('**/api/v2/get_market_price_ticks', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      venue?: string
+      asset_ids?: string[]
+    }
+    if (request.venue !== 'bybit') {
+      await route.fallback()
+      return
+    }
+    tickRequests += 1
+    const newest = tickRequests === 1
+    if (!newest) await olderResponse
+    const value = newest ? '64250.00' : '64100.00'
+    const observedAt = newest ? newestObservedAt : newestObservedAt - 5_000
+    const version = newest ? 12 : 11
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        venue: 'bybit',
+        server_time: Date.now(),
+        result: (request.asset_ids ?? []).map((assetID) => ({
+          asset_id: assetID,
+          provider: 'bybit',
+          price_kind: 'venue_spot',
+          price_usd: assetID === 'asset-btc' ? available(value) : unavailable,
+          change_24h_pct: assetID === 'asset-btc' ? available('1.25') : unavailable,
+          turnover_24h_usd: assetID === 'asset-btc'
+            ? available('500000000')
+            : unavailable,
+          available: assetID === 'asset-btc',
+          freshness_status: assetID === 'asset-btc' ? 'fresh' : 'unavailable',
+          freshness_age_seconds: 0,
+          source_time: observedAt - 500,
+          observed_at: observedAt,
+          last_success_at: observedAt,
+          version,
+          ...(assetID === 'asset-btc'
+            ? {
+                venue_price: {
+                  ...marketPriceFact(value, 'venue_spot', 'bybit', observedAt),
+                  version,
+                },
+              }
+            : {}),
+        })),
+      }),
+    })
+  })
+
+  await page.goto('/markets?venue=bybit')
+  const bitcoin = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
+  await expect(bitcoin).toContainText('$64,250.00')
+  await expect(bitcoin).toContainText('Bybit live')
+
+  releaseOlderResponse?.()
+  await expect.poll(() => tickRequests, { timeout: 7_000 }).toBeGreaterThanOrEqual(2)
+  await expect(bitcoin).toContainText('$64,250.00')
+  await expect(bitcoin).not.toContainText('$64,100.00')
+  await expect(bitcoin).toContainText('Bybit last-good · older tick rejected')
+})
+
+test('one offline asset does not degrade the other assets in the same tick batch', async ({ page }) => {
+  let tickRequests = 0
+  const initialObservedAt = Date.now()
+  let releasePartialResponse: (() => void) | undefined
+  const partialResponse = new Promise<void>((resolve) => {
+    releasePartialResponse = resolve
+  })
+  const ethAsset = {
+    ...asset,
+    rank: 2,
+    asset_id: 'asset-eth',
+    asset_symbol: 'ETH',
+    asset_name: 'Ethereum',
+    price_usd: available('3200.00'),
+    market_cap_usd: available('384000000000'),
+    venue_price: marketPriceFact(
+      '3200.00',
+      'venue_spot',
+      'okx',
+      initialObservedAt,
+    ),
+    price_kind: 'venue_spot',
+    price_source: 'okx',
+  }
+
+  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      venue?: string
+    }
+    if (request.venue !== 'okx') {
+      await route.fallback()
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        result: [{
+          ...asset,
+          price_usd: available('64200.00'),
+          venue_price: marketPriceFact(
+            '64200.00',
+            'venue_spot',
+            'okx',
+            initialObservedAt,
+          ),
+          price_kind: 'venue_spot',
+          price_source: 'okx',
+        }, ethAsset],
+        total: 2,
+        universe: 'provider_top50',
+      }),
+    })
+  })
+  await page.route('**/api/v2/get_market_price_ticks', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      venue?: string
+      asset_ids?: string[]
+    }
+    if (request.venue !== 'okx') {
+      await route.fallback()
+      return
+    }
+    tickRequests += 1
+    const secondBatch = tickRequests >= 2
+    if (secondBatch) await partialResponse
+    const observedAt = initialObservedAt + (secondBatch ? 3_000 : 0)
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        venue: 'okx',
+        server_time: Date.now(),
+        result: (request.asset_ids ?? []).map((assetID) => {
+          const unavailableETH = secondBatch && assetID === 'asset-eth'
+          const value = assetID === 'asset-btc'
+            ? secondBatch ? '64250.00' : '64200.00'
+            : '3200.00'
+          const version = secondBatch ? 11 : 10
+          return {
+            asset_id: assetID,
+            provider: 'okx',
+            price_kind: 'venue_spot',
+            price_usd: unavailableETH ? unavailable : available(value),
+            change_24h_pct: unavailableETH ? unavailable : available('1.25'),
+            turnover_24h_usd: unavailableETH
+              ? unavailable
+              : available('500000000'),
+            available: !unavailableETH,
+            freshness_status: unavailableETH ? 'unavailable' : 'fresh',
+            freshness_age_seconds: 0,
+            source_time: observedAt - 500,
+            observed_at: observedAt,
+            last_success_at: observedAt,
+            version,
+            venue_price: unavailableETH
+              ? unavailablePriceFact()
+              : {
+                  ...marketPriceFact(value, 'venue_spot', 'okx', observedAt),
+                  version,
+                },
+          }
+        }),
+      }),
+    })
+  })
+
+  await page.goto('/markets?venue=okx')
+  const bitcoin = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
+  const ethereum = page.locator('tbody tr').filter({ hasText: 'Ethereum' })
+  await expect(bitcoin).toContainText('$64,200.00')
+  await expect(ethereum).toContainText('$3,200.00')
+  await expect(bitcoin).toContainText('OKX live')
+  await expect(ethereum).toContainText('OKX live')
+
+  releasePartialResponse?.()
+  await expect.poll(() => tickRequests, { timeout: 7_000 }).toBeGreaterThanOrEqual(2)
+  await expect(bitcoin).toContainText('$64,250.00')
+  await expect(bitcoin).toContainText('OKX live')
+  await expect(ethereum).toContainText('$3,200.00')
+  await expect(ethereum).toContainText('OKX last-good · venue feed unavailable')
+})
+
 test('all seven provider tabs expose 50 assets while All exposes their canonical union', async ({ page }) => {
   await page.goto('/markets')
   await expect(page.locator('tbody tr')).toHaveCount(50)

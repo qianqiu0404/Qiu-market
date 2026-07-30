@@ -221,11 +221,39 @@ npm run build
 npm run test:e2e
 ```
 
+多个 worktree 同时运行 Playwright 时，必须给当前任务选择未占用端口，例如
+`S78_E2E_PORT=4197 npm run test:e2e -- markets.spec.ts`。测试默认启动当前
+checkout，端口已占用会失败；只有确认既有服务就是同一 checkout 时，才可显式
+设置 `S78_E2E_REUSE_SERVER=1`。误用另一个 worktree 的 4175 会验证错误代码
+版本，因此端口与 checkout 身份也是测试证据的一部分。
+
+行情可信度回归矩阵：
+
+| 风险 | 输入与断言 | 证据入口 |
+|---|---|---|
+| 同价异常 | 四家同为 `64200` 仍形成四个 venue cache key；同价但 source 属于另一家立即拒绝 | `market.test.ts` identity tests |
+| 延迟响应 | 延迟的旧 A 在 A→B→A 后返回，generation 不匹配，不能上屏 | `markets.spec.ts` A-to-B-to-A |
+| 乱序 | 较低 version / 较早 observed tick 晚到，保留较新价格并显示 `older tick rejected` | unit + browser |
+| 缓存 | 只有通过 identity/单调门的 venue+asset fact 能成为 last-good | `mergeMarketPriceTickSnapshot` tests |
+| 局部离线 | 同一 OKX 批次中 BTC 继续 Live，ETH 只降级自己的 last-good | unit + browser |
+| 查询切换竞态 | 快速 Coinbase→Bybit 与 A→B→A 均只显示当前 venue/generation | browser |
+
 Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not covered`、
 Route/Reference 双栏与 route 过期语义清除、资产抽屉、Unknown 不变 0、显式
-24h 原因、旧路由重定向和页面级无横向溢出。2026-07-30 Markets 专项为
-16/16；交易页的登录、虚拟入金、挂单、撤单、市价成交与费用证据仍由其独立
+24h 原因、旧路由重定向和页面级无横向溢出。2026-07-30 Markets 专项在隔离
+端口为 18/18；交易页的登录、虚拟入金、挂单、撤单、市价成交与费用证据仍由其独立
 spec 验收。
+
+- `implemented`：三类 price fact、CEX tick identity/单调门、五分钟同源
+  last-good、DEX 双栏与 60 秒 route 边界存在于当前代码。
+- `build-verified`：本轮专项 Vitest 20/20、Markets Playwright 18/18、Vue
+  production build 与 `git diff --check` 通过。
+- `integration-verified`：本轮未提供 `S78_TEST_DATABASE_DSN`，不新增真实
+  PostgreSQL/provider 联调结论。
+- `environment-pending`：真实 provider 的长时间乱序/局部离线观察、私有 DEX
+  endpoint 与 24/48/72 小时稳定窗口仍待环境验收。
+- `production-recommendation`：将 generation rejection、source mismatch 与
+  last-good age 暴露为长期指标和告警，不把测试注入当作线上事故证据。
 
 ## Owner 60 秒解释
 

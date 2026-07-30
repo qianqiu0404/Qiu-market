@@ -378,7 +378,7 @@ README 全局架构
 | 文档 | 内容 |
 |---|---|
 | [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
-| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX route/reference 双栏、竞态降级和响应式验收 |
+| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX 双栏、六类行情竞态回归和响应式验收 |
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、事件恢复、接口鉴权、demo-maker 和验收边界 |
 | [docs/klines-pipeline.md](docs/klines-pipeline.md) | K 线 market identity、显式时间、业务唯一键、分周期续传与刷新 |
 | [docs/redis-top-movers.md](docs/redis-top-movers.md) | Redis ZSET 涨跌榜、TTL 抖动防雪崩、SQL 回退 |

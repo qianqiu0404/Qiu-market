@@ -430,6 +430,33 @@ describe('market tick identity and monotonic merge', () => {
     ])
   })
 
+  it('rejects a same-price fact when its source belongs to another CEX', () => {
+    const binance = typedPriceFact(
+      '64200.00',
+      'venue_spot',
+      'binance',
+      ['binance'],
+    )
+    const disguisedCoinbase = typedPriceFact(
+      '64200.00',
+      'venue_spot',
+      'coinbase',
+      ['coinbase'],
+    )
+    const cacheKey = marketTickCacheKey('binance', 'asset-btc')
+    const merged = mergeMarketPriceTickSnapshot(new Map([[cacheKey, binance]]), {
+      venue: 'binance',
+      server_time: disguisedCoinbase.observed_at,
+      items: [tick('binance', 'asset-btc', disguisedCoinbase)],
+    }, 'binance', ['asset-btc'])
+
+    expect(merged.states.get('asset-btc')).toMatchObject({
+      status: 'source_mismatch',
+      fact: binance,
+    })
+    expect(merged.lastGood.get(cacheKey)).toEqual(binance)
+  })
+
   it('accepts a same-version same-price refresh with a newer observation time', () => {
     const previous = typedPriceFact('64200', 'venue_spot', 'binance', ['binance'])
     const next = {
