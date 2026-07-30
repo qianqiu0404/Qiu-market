@@ -17,6 +17,10 @@ lock_dir="$observation_dir/.observer.lock"
 started_epoch="$(date -u '+%s')"
 scheduled_epoch=$((started_epoch - started_epoch % 60))
 
+# shellcheck disable=SC1091
+source "$repo_root/ops/macos/proxy-env.sh"
+qiu_export_system_proxy
+
 mkdir -p "$observation_dir"
 if ! mkdir "$lock_dir" 2>/dev/null; then
   echo "Qiu Market production observation is already running."

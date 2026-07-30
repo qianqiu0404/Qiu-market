@@ -70,4 +70,13 @@ proxy_dump='
   [ -z "${HTTPS_PROXY:-}" ]
 )
 
+for consumer in observe-production.sh manage-acceptance-epoch.sh; do
+  if ! grep -Fq 'source "$repo_root/ops/macos/proxy-env.sh"' \
+    "$script_dir/$consumer" ||
+    ! grep -Fq 'qiu_export_system_proxy' "$script_dir/$consumer"; then
+    echo "$consumer does not inherit the bounded Qiu Market proxy." >&2
+    exit 1
+  fi
+done
+
 printf '%s\n' "Qiu Market proxy environment tests passed."

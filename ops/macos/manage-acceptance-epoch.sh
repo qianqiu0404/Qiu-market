@@ -11,7 +11,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 observation_dir="${QIU_MARKET_OBSERVATION_DIR:-$support_dir/observations}"
 epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoch.json}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
-database_env="${QIU_MARKET_DATABASE_ENV_FILE:-$repo_root/.env}"
+database_env="${QIU_MARKET_DATABASE_ENV_FILE:-${QIU_MARKET_ENV_FILE:-$support_dir/production.env}}"
+
+# shellcheck disable=SC1091
+source "$repo_root/ops/macos/proxy-env.sh"
+qiu_export_system_proxy
 
 usage() {
   cat >&2 <<'USAGE'
@@ -156,23 +160,36 @@ case "$action" in
       echo "An acceptance epoch is already active; stop it explicitly first." >&2
       exit 1
     fi
-    if [ ! -f "$database_env" ]; then
-      echo "Qiu Market private database configuration is unavailable." >&2
+    if [ ! -f "$database_env" ] || [ -L "$database_env" ]; then
+      echo "Qiu Market private production environment is unavailable." >&2
       exit 1
     fi
-    # shellcheck disable=SC1090
-    source "$database_env"
-    for database_key in \
-      MARKET_MASTER_DB_HOST \
-      MARKET_MASTER_DB_PORT \
-      MARKET_MASTER_DB_USER \
-      MARKET_MASTER_DB_PASSWORD \
-      MARKET_MASTER_DB_NAME; do
-      if [ -z "${!database_key:-}" ]; then
-        echo "Missing database setting: $database_key" >&2
+    database_env_mode="$(stat -f '%Lp' "$database_env")"
+    if [ "$database_env_mode" != 600 ] && [ "$database_env_mode" != 400 ]; then
+      echo "Qiu Market private production environment must have mode 0600 or 0400." >&2
+      exit 1
+    fi
+    # The repository environment carries non-secret database coordinates while
+    # the private production environment carries the password and overrides.
+    # shellcheck disable=SC1091
+    source "$repo_root/ops/macos/production-lib.sh"
+    QIU_MARKET_ENV_FILE="$database_env"
+    qiu_load_production_environment "$repo_root"
+    qiu_require_private_environment
+    if [ -z "$QIU_MARKET_DB_HOST" ] ||
+      [ -z "$QIU_MARKET_DB_PORT" ] ||
+      [ -z "$QIU_MARKET_DB_USER" ] ||
+      [ -z "$QIU_MARKET_DB_NAME" ]; then
+      echo "Merged Qiu Market database configuration is incomplete." >&2
+      exit 1
+    fi
+    case "$QIU_MARKET_DB_HOST" in
+      127.0.0.1|localhost|::1) ;;
+      *)
+        echo "Acceptance epoch database access must remain loopback-only." >&2
         exit 1
-      fi
-    done
+        ;;
+    esac
 
     mkdir -p "$observation_dir"
     chmod 700 "$observation_dir"
@@ -221,16 +238,8 @@ case "$action" in
       exit 1
     fi
 
-    psql_command=(
-      psql -X -v ON_ERROR_STOP=1
-      -h "$MARKET_MASTER_DB_HOST"
-      -p "$MARKET_MASTER_DB_PORT"
-      -U "$MARKET_MASTER_DB_USER"
-      -d "$MARKET_MASTER_DB_NAME"
-      -At
-    )
     if ! dex_canaries="$(
-      PGPASSWORD="$MARKET_MASTER_DB_PASSWORD" "${psql_command[@]}" <<'SQL'
+      qiu_psql <<'SQL'
 WITH observations AS (
     SELECT quote.provider,
            quote.asset_guid,
