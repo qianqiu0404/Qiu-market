@@ -52,6 +52,12 @@ import {
   deriveTerminalHealth,
   type EventTransportState,
 } from '../trading/terminal-health'
+import {
+  advanceTradingEventCursor,
+  latestTradingEventCursor,
+  normalizeTradingEventCursor,
+  type TradingEventCursor,
+} from '../trading/event-cursor'
 
 echarts.use([
   CandlestickChart,
@@ -62,6 +68,7 @@ echarts.use([
 ])
 
 const MARKET_ID = 'BTC-USDT'
+const EVENT_CURSOR_STORAGE_KEY = `qiu-market.trading-event-cursor.${MARKET_ID}.v1`
 const KLINE_INTERVALS: KlineInterval[] = ['1m', '15m', '1h', '1d']
 const PANEL_NAMES = [
   'reference',
@@ -97,7 +104,11 @@ const errorMessage = ref('')
 const notice = ref('')
 const busy = ref(false)
 const wsState = ref<EventTransportState>('polling')
-const cursor = ref<EventEnvelope>()
+const cursor = ref<TradingEventCursor>()
+const eventReconcilePending = ref(false)
+const duplicateEventCount = ref(0)
+const cursorGapCount = ref(0)
+const cursorError = ref('')
 const lastPrivateAt = ref(0)
 const pendingWrite = ref<PendingTradingWrite | null>(null)
 const nowMs = ref(Date.now())
@@ -121,12 +132,15 @@ let chart: echarts.ECharts | null = null
 
 let socket: WebSocket | undefined
 let reconnectTimer: number | undefined
+let socketConnectTimer: number | undefined
 let publicTimer: number | undefined
 let marketTimer: number | undefined
 let refreshTimer: number | undefined
 let clockTimer: number | undefined
 let publicRefreshPromise: Promise<void> | undefined
 let marketRefreshRunning = false
+let pendingGapCursor: TradingEventCursor | undefined
+let eventReconcilePromise: Promise<void> | undefined
 
 const form = reactive({
   clientOrderID: crypto.randomUUID(),
@@ -164,7 +178,9 @@ const terminalHealth = computed(() => deriveTerminalHealth({
   hasAsks: book.value.asks.length > 0,
   eventTransport: wsState.value,
   privateDataAt: lastPrivateAt.value,
-  reconcileComplete: pendingWrite.value === null,
+  reconcileComplete:
+    pendingWrite.value === null &&
+    !eventReconcilePending.value,
 }))
 const unknownClientOrderID = computed(() =>
   pendingWrite.value?.operation === 'submit'
@@ -183,9 +199,12 @@ const pendingWriteLabel = computed(() => {
 const writesEnabled = computed(() => {
   return !busy.value && terminalHealth.value.writesAllowed
 })
-const writeGateReason = computed(() =>
-  busy.value ? 'request_in_flight' : (terminalHealth.value.writeBlockReason || 'ready'),
-)
+const writeGateReason = computed(() => {
+  if (busy.value) return 'request_in_flight'
+  if (pendingWrite.value) return 'reconcile_pending'
+  if (eventReconcilePending.value) return 'transport_reconcile_pending'
+  return terminalHealth.value.writeBlockReason || 'ready'
+})
 
 function randomID(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
@@ -224,6 +243,103 @@ function panelStateLabel(name: PanelName): string {
 
 function panelStateClass(name: PanelName): string {
   return `panel-state--${panelReadAvailability(panels[name])}`
+}
+
+function persistEventCursor(next: TradingEventCursor): void {
+  try {
+    window.localStorage.setItem(EVENT_CURSOR_STORAGE_KEY, JSON.stringify(next))
+  } catch {
+    cursorError.value = 'cursor storage unavailable; using in-memory cursor'
+  }
+}
+
+function restoreEventCursor(): void {
+  try {
+    const raw = window.localStorage.getItem(EVENT_CURSOR_STORAGE_KEY)
+    if (!raw) return
+    const restored = normalizeTradingEventCursor(
+      JSON.parse(raw) as Partial<TradingEventCursor>,
+      MARKET_ID,
+    )
+    if (!restored) {
+      window.localStorage.removeItem(EVENT_CURSOR_STORAGE_KEY)
+      return
+    }
+    cursor.value = restored
+  } catch {
+    cursorError.value = 'stored cursor is unreadable; snapshot reconcile required'
+  }
+}
+
+function adoptEventCursor(next: TradingEventCursor): void {
+  const latest = latestTradingEventCursor(cursor.value, next)
+  if (cursor.value === latest) return
+  cursor.value = latest
+  persistEventCursor(latest)
+}
+
+function statusCheckpoint(): TradingEventCursor | null {
+  const sequence = status.value.outbox_checkpoint_sequence?.trim()
+  const eventIndex = status.value.outbox_checkpoint_event_index
+  if (!sequence || typeof eventIndex !== 'number') return null
+  return normalizeTradingEventCursor({
+    market_id: MARKET_ID,
+    sequence,
+    event_index: eventIndex,
+  }, MARKET_ID)
+}
+
+function adoptStatusCheckpoint(): void {
+  if (panels.status.error || !panels.status.lastSuccessAt) return
+  const checkpoint = statusCheckpoint()
+  if (checkpoint) adoptEventCursor(checkpoint)
+}
+
+function snapshotsCoverCursor(target?: TradingEventCursor): boolean {
+  const publicReady = ['status', 'orderbook', 'publicTrades'].every((name) => {
+    const panel = panels[name as PanelName]
+    return panel.lastSuccessAt > 0 && panel.error === ''
+  })
+  const privateReady = !principal.value ||
+    ['balances', 'orders', 'privateTrades'].every((name) => {
+      const panel = panels[name as PanelName]
+      return panel.lastSuccessAt > 0 && panel.error === ''
+    })
+  if (!publicReady || !privateReady) return false
+  if (!target) return true
+  try {
+    return BigInt(status.value.sequence) >= BigInt(target.sequence)
+  } catch {
+    return false
+  }
+}
+
+function reconcileEventTransport(): Promise<void> {
+  if (eventReconcilePromise) return eventReconcilePromise
+  eventReconcilePending.value = true
+  eventReconcilePromise = (async () => {
+    await refreshAll()
+    const target = pendingGapCursor
+    if (!snapshotsCoverCursor(target)) {
+      throw new Error('snapshot reconcile did not cover the pending event cursor')
+    }
+    adoptStatusCheckpoint()
+    if (target) adoptEventCursor(target)
+    pendingGapCursor = undefined
+    cursorError.value = ''
+    eventReconcilePending.value = false
+  })().catch((error) => {
+    cursorError.value = errorText(error)
+    wsState.value = 'polling'
+  }).finally(() => {
+    eventReconcilePromise = undefined
+  })
+  return eventReconcilePromise
+}
+
+function eventCursorLabel(): string {
+  if (!cursor.value) return 'none'
+  return `${cursor.value.sequence}:${cursor.value.event_index}`
 }
 
 function persistPendingWrite(next: PendingTradingWrite | null): boolean {
@@ -451,6 +567,7 @@ async function discoverSession(): Promise<void> {
     const session = await tradingAPI.session()
     principal.value = session.principal
     await loadPrivate()
+    adoptStatusCheckpoint()
     connectEvents()
   } catch {
     principal.value = null
@@ -475,6 +592,7 @@ async function localLogin(): Promise<void> {
     principal.value = session.principal
     notice.value = '本地回环登录成功'
     await loadPrivate()
+    adoptStatusCheckpoint()
     connectEvents()
   } catch (error) {
     showError(error)
@@ -658,46 +776,135 @@ function scheduleRefresh(): void {
   refreshTimer = window.setTimeout(() => void refreshAll(), 80)
 }
 
+function scheduleReconnect(delayMs: number): void {
+  if (reconnectTimer) window.clearTimeout(reconnectTimer)
+  if (!principal.value || tradingEventMode() === 'polling') return
+  reconnectTimer = window.setTimeout(() => void connectEvents(), delayMs)
+}
+
+function activatePollingFallback(reason: string): void {
+  if (!principal.value) {
+    wsState.value = 'polling'
+    eventReconcilePending.value = false
+    return
+  }
+  wsState.value = 'polling'
+  eventReconcilePending.value = true
+  cursorError.value = reason
+  void reconcileEventTransport().finally(() => {
+    scheduleReconnect(eventReconcilePending.value ? 2000 : 1200)
+  })
+}
+
+function handleEventMessage(message: MessageEvent): void {
+  try {
+    if (typeof message.data !== 'string') {
+      throw new Error('trading event frame must be JSON text')
+    }
+    const envelope = JSON.parse(message.data) as EventEnvelope
+    const decision = advanceTradingEventCursor(cursor.value, envelope, MARKET_ID)
+    if (decision.kind === 'duplicate') {
+      duplicateEventCount.value += 1
+      return
+    }
+    if (decision.kind === 'invalid') {
+      cursorGapCount.value += 1
+      cursorError.value = decision.reason
+      eventReconcilePending.value = true
+      socket?.close(4000, 'invalid event cursor')
+      return
+    }
+    if (decision.kind === 'gap') {
+      cursorGapCount.value += 1
+      pendingGapCursor = latestTradingEventCursor(
+        pendingGapCursor,
+        decision.cursor,
+      )
+      cursorError.value =
+        `cursor gap before ${decision.cursor.sequence}:${decision.cursor.event_index}`
+      eventReconcilePending.value = true
+      socket?.close(4000, 'event cursor gap')
+      return
+    }
+    adoptEventCursor(decision.cursor)
+    scheduleRefresh()
+  } catch (error) {
+    cursorGapCount.value += 1
+    cursorError.value = errorText(error)
+    eventReconcilePending.value = true
+    socket?.close(4000, 'invalid event frame')
+  }
+}
+
+async function refreshPollingFallback(): Promise<void> {
+  if (eventReconcilePending.value) {
+    await reconcileEventTransport()
+    return
+  }
+  await refreshAll()
+  adoptStatusCheckpoint()
+}
+
 async function connectEvents(): Promise<void> {
   if (tradingEventMode() === 'polling') {
     wsState.value = 'polling'
+    eventReconcilePending.value = false
+    adoptStatusCheckpoint()
     return
   }
   if (!principal.value || wsState.value === 'connecting' || wsState.value === 'live') return
-  wsState.value = wsState.value === 'offline' ? 'connecting' : 'retrying'
+  if (eventReconcilePending.value) {
+    await reconcileEventTransport()
+    if (eventReconcilePending.value) {
+      wsState.value = 'polling'
+      scheduleReconnect(2000)
+      return
+    }
+  }
+  wsState.value = 'connecting'
   try {
     const issued = await tradingAPI.ticket()
-    socket = new WebSocket(eventSocketURL(issued.ticket, cursor.value))
-    socket.onopen = () => {
+    const openedSocket = new WebSocket(eventSocketURL(issued.ticket, cursor.value))
+    socket = openedSocket
+    socketConnectTimer = window.setTimeout(() => {
+      if (socket === openedSocket && openedSocket.readyState === WebSocket.CONNECTING) {
+        openedSocket.close(4001, 'websocket connect timeout')
+      }
+    }, 5000)
+    openedSocket.onopen = () => {
+      if (socket !== openedSocket) return
+      if (socketConnectTimer) window.clearTimeout(socketConnectTimer)
+      socketConnectTimer = undefined
       wsState.value = 'live'
+      cursorError.value = ''
     }
-    socket.onmessage = (message) => {
-      const envelope = JSON.parse(message.data) as EventEnvelope
-      cursor.value = envelope
-      scheduleRefresh()
-    }
-    socket.onerror = () => socket?.close()
-    socket.onclose = () => {
+    openedSocket.onmessage = handleEventMessage
+    openedSocket.onerror = () => openedSocket.close()
+    openedSocket.onclose = () => {
+      if (socket !== openedSocket) return
+      if (socketConnectTimer) window.clearTimeout(socketConnectTimer)
+      socketConnectTimer = undefined
       socket = undefined
       if (!principal.value) {
         wsState.value = 'polling'
         return
       }
-      wsState.value = 'retrying'
-      reconnectTimer = window.setTimeout(() => void connectEvents(), 1200)
+      activatePollingFallback(cursorError.value || 'websocket disconnected')
     }
   } catch (error) {
-    showError(error)
-    wsState.value = 'retrying'
-    reconnectTimer = window.setTimeout(() => void connectEvents(), 2000)
+    activatePollingFallback(errorText(error))
   }
 }
 
 function closeEvents(): void {
   if (reconnectTimer) window.clearTimeout(reconnectTimer)
+  if (socketConnectTimer) window.clearTimeout(socketConnectTimer)
   reconnectTimer = undefined
+  socketConnectTimer = undefined
   socket?.close()
   socket = undefined
+  pendingGapCursor = undefined
+  eventReconcilePending.value = false
   wsState.value = 'polling'
 }
 
@@ -854,6 +1061,7 @@ function resizeChart(): void {
 watch(klineInterval, () => void loadKline())
 
 onMounted(async () => {
+  restoreEventCursor()
   restorePendingWrite()
   clockTimer = window.setInterval(() => {
     nowMs.value = Date.now()
@@ -866,7 +1074,11 @@ onMounted(async () => {
     await discoverSession()
   }
   publicTimer = window.setInterval(
-    () => void (tradingEventMode() === 'polling' ? refreshAll() : loadPublic()),
+    () => void (
+      tradingEventMode() === 'polling' || wsState.value === 'polling'
+        ? refreshPollingFallback()
+        : loadPublic()
+    ),
     3000,
   )
   marketTimer = window.setInterval(() => void refreshMarketData(), 15_000)
@@ -962,9 +1174,18 @@ onBeforeUnmount(() => {
         <em>
           transport_state={{ terminalHealth.transportState }}
           · liquidity_state={{ terminalHealth.liquidityState }}
+          · cursor={{ eventCursorLabel() }}
         </em>
       </article>
     </section>
+    <div
+      v-if="eventReconcilePending || cursorError"
+      class="transport-reconcile"
+      data-testid="transport-reconcile"
+    >
+      cursor_reconcile={{ eventReconcilePending ? 'pending' : 'complete' }}
+      · {{ cursorError || 'refreshing authoritative snapshots' }}
+    </div>
 
     <section class="market-workspace">
       <article class="card trade-chart-card">
@@ -1182,6 +1403,15 @@ onBeforeUnmount(() => {
             <span>恢复次数 <strong>{{ status.recovery_count }}</strong></span>
             <span>事件序列 <strong>{{ status.sequence }}</strong></span>
             <span>事件通道 <strong>{{ wsState }}</strong></span>
+            <span data-testid="event-cursor-state">
+              Cursor <strong>{{ eventCursorLabel() }}</strong>
+            </span>
+            <span data-testid="event-duplicate-count">
+              Duplicates <strong>{{ duplicateEventCount }}</strong>
+            </span>
+            <span data-testid="event-gap-count">
+              Gaps <strong>{{ cursorGapCount }}</strong>
+            </span>
           </div>
         </div>
       </article>
@@ -1324,6 +1554,15 @@ onBeforeUnmount(() => {
   width: auto;
   color: #805700;
   background: #fff8df;
+}
+
+.transport-reconcile {
+  padding: 10px 14px;
+  border: 1px solid #f0d58a;
+  border-radius: var(--radius-sm);
+  color: #805700;
+  background: #fff8df;
+  font: 11px var(--font-mono);
 }
 
 .trade-metrics {

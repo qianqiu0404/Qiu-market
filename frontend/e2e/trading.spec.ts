@@ -1,4 +1,10 @@
-import { expect, test, type Page, type Route } from '@playwright/test'
+import {
+  expect,
+  test,
+  type Page,
+  type Route,
+  type WebSocketRoute,
+} from '@playwright/test'
 
 const principal = {
   account_id: 'github:qianqiu0404',
@@ -105,6 +111,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
   let fundAttempts = 0
   let activePublicReads = 0
   let maximumConcurrentPublicReads = 0
+  let publicReadDelayMs = options.publicReadDelayMs ?? 0
   let loseSubmitBeforeCommit = options.submitResponseLostBeforeCommitOnce === true
   let loseSubmitAfterCommit = options.submitCommittedButResponseLostOnce === true
   let loseCancelBeforeCommit = options.cancelResponseLostBeforeCommitOnce === true
@@ -130,9 +137,12 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     status: string
   }>()
   const failedPanels = new Set<HarnessPanel>()
+  const sockets: WebSocketRoute[] = []
+  const socketURLs: string[] = []
 
-  await page.routeWebSocket('**/api/v1/trading/events/ws**', () => {
-    // Keeping the mocked socket open is enough for the page to expose "live".
+  await page.routeWebSocket('**/api/v1/trading/events/ws**', (webSocket) => {
+    sockets.push(webSocket)
+    socketURLs.push(webSocket.url())
   })
 
   await page.route(/\/api\/v[12]\//, async (route: Route) => {
@@ -152,8 +162,8 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
         activePublicReads,
       )
       try {
-        if (options.publicReadDelayMs) {
-          await new Promise((resolve) => setTimeout(resolve, options.publicReadDelayMs))
+        if (publicReadDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, publicReadDelayMs))
         }
         await json(status, body)
       } finally {
@@ -246,6 +256,9 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
         queue_depth: 0,
         recovery_count: '1',
         last_error: '',
+        outbox_state: 'ready',
+        outbox_checkpoint_sequence: String(sequence),
+        outbox_checkpoint_event_index: 1,
       })
       return
     }
@@ -464,6 +477,34 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     get fundAttempts() { return fundAttempts },
     get fundRequests() { return [...fundRequests] },
     get maximumConcurrentPublicReads() { return maximumConcurrentPublicReads },
+    get socketCount() { return sockets.length },
+    get socketURLs() { return [...socketURLs] },
+    sendEvent(event: {
+      market_id?: string
+      sequence: string
+      event_index: number
+      event?: unknown
+    }) {
+      const webSocket = sockets.at(-1)
+      if (!webSocket) throw new Error('no routed trading WebSocket')
+      const numericSequence = Number(event.sequence)
+      if (Number.isSafeInteger(numericSequence)) {
+        sequence = Math.max(sequence, numericSequence)
+      }
+      webSocket.send(JSON.stringify({
+        market_id: 'BTC-USDT',
+        event: {},
+        ...event,
+      }))
+    },
+    async closeLatestSocket() {
+      const webSocket = sockets.at(-1)
+      if (!webSocket) throw new Error('no routed trading WebSocket')
+      await webSocket.close({ code: 1012, reason: 'test disconnect' })
+    },
+    setPublicReadDelay(delayMs: number) {
+      publicReadDelayMs = delayMs
+    },
     setPanelFailure(panel: HarnessPanel, failed = true) {
       if (failed) failedPanels.add(panel)
       else failedPanels.delete(panel)
@@ -524,6 +565,52 @@ test('status older than ten seconds degrades the terminal and closes every write
   )
   await expect(page.getByRole('button', { name: '买入 BTC' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '发放虚拟资金' })).toBeDisabled()
+})
+
+test('websocket cursor deduplicates replay, reconciles gaps and resumes after polling', async ({ page }) => {
+  const harness = await installHarness(page)
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  await expect(page.getByTestId('transport-state')).toHaveText('websocket')
+  await expect.poll(() => harness.socketCount).toBe(1)
+  expect(harness.socketURLs[0]).toContain('sequence=10&event_index=1')
+
+  harness.sendEvent({ sequence: '11', event_index: 1 })
+  await expect(page.getByTestId('event-cursor-state')).toContainText('11:1')
+
+  harness.sendEvent({ sequence: '11', event_index: 1 })
+  await expect(page.getByTestId('event-duplicate-count')).toContainText('1')
+  await expect(page.getByTestId('event-cursor-state')).toContainText('11:1')
+
+  harness.setPublicReadDelay(800)
+  harness.sendEvent({ sequence: '13', event_index: 1 })
+  await expect(page.getByTestId('event-gap-count')).toContainText('1')
+  await expect(page.getByTestId('transport-reconcile')).toContainText(
+    'cursor_reconcile=pending',
+  )
+  await expect(page.getByTestId('terminal-availability')).toHaveText('DEGRADED')
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=transport_reconcile_pending',
+  )
+  await expect(page.getByRole('button', { name: '买入 BTC' })).toBeDisabled()
+
+  await expect(page.getByTestId('event-cursor-state')).toContainText('13:1')
+  await expect(page.getByTestId('transport-reconcile')).toHaveCount(0)
+  harness.setPublicReadDelay(0)
+  await expect.poll(() => harness.socketCount).toBeGreaterThan(1)
+  await expect(page.getByTestId('transport-state')).toHaveText('websocket')
+  expect(harness.socketURLs.at(-1)).toContain('sequence=13&event_index=1')
+
+  const socketsBeforeDisconnect = harness.socketCount
+  await harness.closeLatestSocket()
+  await expect(page.getByTestId('transport-state')).toHaveText('polling')
+  await expect.poll(() => harness.socketCount).toBeGreaterThan(socketsBeforeDisconnect)
+  expect(harness.socketURLs.at(-1)).toContain('sequence=13&event_index=1')
+
+  harness.sendEvent({ sequence: '13', event_index: 1 })
+  await expect(page.getByTestId('event-duplicate-count')).toContainText('2')
+  await expect(page.getByTestId('event-cursor-state')).toContainText('13:1')
 })
 
 test('slow public polling reuses one in-flight refresh batch', async ({ page }) => {
