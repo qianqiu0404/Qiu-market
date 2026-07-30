@@ -96,6 +96,31 @@ market-services trading :9094
 - 同一幂等键和同一 payload 返回原结果，不生成第二批事件；
 - 同一幂等键配不同 payload 必须拒绝。
 
+## 交易可靠性闭环
+
+### A. Submitted / unknown
+
+问题不是“请求失败”，而是服务端事件已经提交、调用方却没有收到响应。此时
+fund、submit 和 cancel 都必须保留原请求身份，先读取权威状态或以同一身份重放：
+
+| 操作 | 稳定身份 | 响应丢失后的权威核对 | 必须证明 |
+|---|---|---|---|
+| fund | `request_id` | 读取余额后以同一 request ID 重放 | 余额只增加一次、event batch 只有一个 |
+| submit | `client_order_id` | 按账户读取订单后以同一 client order ID 重放 | 订单/hold 只有一份、返回原 sequence/order ID |
+| cancel | `request_id` + 原 `order_id` | 先读取订单终态，再以同一 request ID 重放 | 余量只解冻一次、返回原 cancel 结果 |
+
+`trading/reliability/submitted_unknown_test.go` 在现有 `MarketRunner` 成功提交后
+主动丢弃响应，再完成上述查询、同 ID 重放、事件数量、held/available 和冲突
+payload 断言。这里拒绝的方案是生成新 ID 自动重试；代价是调用方必须持久保存
+原 payload 和身份。该测试复用真实内存 event store，但不经过 PostgreSQL、
+HTTP、浏览器或网络代理，因此证据是 `build-verified`，不是环境联调。
+
+2026-07-30 已执行：
+
+```bash
+go test ./trading/reliability -run '^TestSubmittedUnknownReusesOriginalIdentity$' -count=1
+```
+
 ## PostgreSQL 真值与恢复
 
 核心交易表由 `migrations/2026082100023.sql` 创建，发布游标分离由
