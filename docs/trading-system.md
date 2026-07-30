@@ -121,6 +121,32 @@ HTTP、浏览器或网络代理，因此证据是 `build-verified`，不是环�
 go test ./trading/reliability -run '^TestSubmittedUnknownReusesOriginalIdentity$' -count=1
 ```
 
+### B. Partial fill / cancel race
+
+撤单和成交不会同时修改订单；它们都进入同一个 `MarketRunner` 并被线性化为一个
+确定顺序。可靠性证明覆盖三条路径：
+
+1. 部分成交先发生：只清算已成交数量和双边费用，订单保留精确 remainder/held，
+   随后的 cancel 只解冻 remainder；
+2. 完全成交先发生：maker 已为 filled 且 held 为零，迟到的 cancel 只生成
+   `cancel_rejected` 事实，不生成 ledger 分录；
+3. fill 与 cancel 并发入队：合法结果只能是“cancel 先、零成交”或“partial fill
+   先、再 cancel”，两者最终都必须终态 held 为零且资产/费用一致。
+
+`trading/reliability/partial_fill_cancel_test.go` 对每条路径检查
+`filled + remaining = original`、available/held、maker/taker fee、逐笔逐资产
+ledger 平衡，并运行 32 次并发起跑。这里拒绝的是让撮合与撤单直接并发修改
+订单簿；单 runner 的代价是单市场吞吐受串行执行器限制。测试使用内存 event
+store，属于 `build-verified`，不代表 PostgreSQL 锁竞争或浏览器并发联调。
+
+2026-07-30 已执行：
+
+```bash
+go test ./trading/reliability \
+  -run '^(TestPartialFillThenCancelAccounting|TestFullFillThenLateCancelAccounting|TestConcurrentFillCancelLinearizesWithoutDoubleUnlock)$' \
+  -count=1
+```
+
 ## PostgreSQL 真值与恢复
 
 核心交易表由 `migrations/2026082100023.sql` 创建，发布游标分离由
