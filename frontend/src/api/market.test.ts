@@ -3,8 +3,11 @@ import {
   getAssetDashboardV2,
   getAssetVenuesV2,
   getMarketDashboard,
+  getMarketPriceTicks,
   getTop50VenueInsights,
 } from './market'
+
+const available = (value: string) => ({ value, available: true })
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -112,6 +115,55 @@ describe('getAssetDashboardV2', () => {
     })
     expect(row?.display_change_kind).toBe('unavailable')
     expect(row?.display_available).toBe(false)
+  })
+})
+
+describe('getMarketPriceTicks', () => {
+  it('keeps the requested venue and maps decimal strings without losing version metadata', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        venue: 'coinbase',
+        asset_ids: ['asset-btc'],
+      })
+      return new Response(JSON.stringify({
+        code: 2000,
+        venue: 'coinbase',
+        server_time: 1785400003000,
+        result: [{
+          asset_id: 'asset-btc',
+          provider: 'coinbase',
+          price_kind: 'venue_spot',
+          price_usd: available('64224.23'),
+          change_24h_pct: available('-0.19'),
+          turnover_24h_usd: available('500000000'),
+          available: true,
+          freshness_status: 'fresh',
+          freshness_age_seconds: 1,
+          source_time: 1785400001000,
+          observed_at: 1785400002000,
+          last_success_at: 1785400002000,
+          version: 101,
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await getMarketPriceTicks('coinbase', [
+      'asset-btc', 'asset-btc', '',
+    ])
+
+    expect(result.venue).toBe('coinbase')
+    expect(result.server_time).toBe(1785400003000)
+    expect(result.items).toEqual([expect.objectContaining({
+      asset_id: 'asset-btc',
+      provider: 'coinbase',
+      price_kind: 'venue_spot',
+      price_usd: { value: 64224.23, available: true },
+      version: 101,
+    })])
   })
 })
 

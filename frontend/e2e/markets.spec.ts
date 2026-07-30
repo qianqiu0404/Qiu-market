@@ -72,6 +72,15 @@ const providerAssets: Record<string, typeof assetUniverse> = {
   pancakeswap: [assetUniverse[0], ...assetUniverse.slice(31, 80)],
 }
 
+const liveBTCPrices: Record<string, string> = {
+  all: '64203.13',
+  binance: '64213.56',
+  coinbase: '64173.20',
+  bybit: '64232.46',
+  okx: '64238.61',
+  hyperliquid: '64220.12',
+}
+
 const markets = [
   {
     market_id: 'market-binance-btc-usdt',
@@ -145,6 +154,7 @@ test.beforeEach(async ({ page }) => {
       venue?: string
       page?: number
       page_size?: number
+      asset_ids?: string[]
     }
     const venue = request.venue ?? 'all'
     const universe = providerAssets[venue] ?? assetUniverse
@@ -152,7 +162,30 @@ test.beforeEach(async ({ page }) => {
     const pageSize = request.page_size ?? 50
     const pageStart = (pageNumber - 1) * pageSize
     let body: Record<string, unknown>
-    if (path.endsWith('/get_market_overview')) {
+    if (path.endsWith('/get_market_price_ticks')) {
+      body = {
+        code: 2000,
+        venue,
+        server_time: Date.now(),
+        result: (request.asset_ids ?? []).map((assetID) => ({
+          asset_id: assetID,
+          provider: venue,
+          price_kind: venue === 'all' ? 'composite_spot' : 'venue_spot',
+          price_usd: assetID === 'asset-btc'
+            ? available(liveBTCPrices[venue] ?? '64200')
+            : unavailable,
+          change_24h_pct: assetID === 'asset-btc' ? available('1.25') : unavailable,
+          turnover_24h_usd: assetID === 'asset-btc' ? available('500000000') : unavailable,
+          available: assetID === 'asset-btc',
+          freshness_status: assetID === 'asset-btc' ? 'fresh' : 'unavailable',
+          freshness_age_seconds: 1,
+          source_time: Date.now() - 1_000,
+          observed_at: Date.now() - 500,
+          last_success_at: Date.now() - 500,
+          version: 10,
+        })),
+      }
+    } else if (path.endsWith('/get_market_overview')) {
       body = {
         code: 2000,
         result: {
@@ -218,7 +251,7 @@ test.beforeEach(async ({ page }) => {
 test('composite asset drawer is URL-addressable and keeps perpetuals out of the spot index', async ({ page }) => {
   await page.goto('/markets')
   await expect(page.getByRole('heading', { name: 'Market Overview' })).toBeVisible()
-  await expect(page.getByText('$65,705.09')).toBeVisible()
+  await expect(page.getByText('$64,203.13')).toBeVisible()
   await page.getByRole('button', { name: 'Open BTC markets' }).click()
 
   await expect(page).toHaveURL(/asset=asset-btc/)
@@ -247,6 +280,60 @@ test('venue selection is URL-addressable without changing asset row grain', asyn
   await page.getByRole('button', { name: 'Uniswap', exact: true }).click()
   await expect(page).toHaveURL(/venue=uniswap/)
   await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' })).toHaveCount(1)
+})
+
+test('rapid CEX switching renders the selected venue tick instead of the previous venue response', async ({ page }) => {
+  await page.goto('/markets?venue=coinbase')
+  await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' }))
+    .toContainText('$64,173.20')
+
+  await page.getByRole('button', { name: 'Bybit', exact: true }).click()
+  await expect(page).toHaveURL(/venue=bybit/)
+  const bitcoin = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
+  await expect(bitcoin).toContainText('$64,232.46')
+  await expect(bitcoin).toContainText('Bybit live')
+  await expect(bitcoin).not.toContainText('$64,173.20')
+})
+
+test('a failed live tick keeps the verified venue snapshot without falling back to composite', async ({ page }) => {
+  await page.route('**/api/v2/get_market_price_ticks', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 5030, message: 'tick feed unavailable' }),
+    })
+  })
+  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as { venue?: string }
+    if (request.venue !== 'binance') {
+      await route.fallback()
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        result: [{
+          ...asset,
+          price_usd: available('64111.25'),
+          display_price_usd: available('65000.00'),
+          display_price_kind: 'composite_reference',
+          price_kind: 'venue_spot',
+          price_source: 'binance',
+        }],
+        total: 1,
+        universe: 'provider_top50',
+      }),
+    })
+  })
+
+  await page.goto('/markets?venue=binance')
+  const bitcoin = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
+  await expect(bitcoin).toContainText('$64,111.25')
+  await expect(bitcoin).not.toContainText('$65,000.00')
+  await expect(bitcoin).toContainText('verified snapshot · live ticks delayed')
+  await expect(page.getByText(/Live price ticks are delayed/)).toBeVisible()
 })
 
 test('all seven provider tabs expose 50 assets while All exposes their canonical union', async ({ page }) => {
@@ -368,7 +455,7 @@ test('asset name is not repeated when it equals the symbol', async ({ page }) =>
     })
   })
   await page.goto('/markets')
-  const assetRow = page.locator('tbody tr').filter({ hasText: '$65,705.09' })
+  const assetRow = page.locator('tbody tr').filter({ hasText: '$64,203.13' })
   await expect(assetRow.locator('.asset-name')).toHaveText('BTC')
   await expect(assetRow.locator('.asset-symbol')).toHaveCount(0)
 })

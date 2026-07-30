@@ -24,6 +24,7 @@ type RestService interface {
 	GetAssetMomentum(*model.AssetMomentumRequest) (*model.AssetMomentumResponse, error)
 	GetMarketOverview(*model.MarketOverviewRequest) (*model.MarketOverviewResponse, error)
 	GetAssetDashboardV2(*model.AssetDashboardV2Request) (*model.AssetDashboardV2Response, error)
+	GetMarketPriceTicks(*model.MarketPriceTicksRequest) (*model.MarketPriceTicksResponse, error)
 	GetAssetMarkets(*model.AssetMarketsRequest) (*model.AssetMarketsResponse, error)
 	GetAssetVenues(*model.AssetVenuesRequest) (*model.AssetVenuesResponse, error)
 	GetProviderCatalogAudit(*model.ProviderCatalogAuditRequest) (*model.ProviderCatalogAuditResponse, error)

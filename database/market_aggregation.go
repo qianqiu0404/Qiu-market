@@ -170,6 +170,25 @@ type AssetIndexDashboardRow struct {
 	LastErrorClass       *string    `gorm:"column:last_error_class"`
 }
 
+type MarketPriceTickQuery struct {
+	Venue    string
+	AssetIDs []string
+}
+
+type MarketPriceTickRow struct {
+	AssetID        string     `gorm:"column:asset_id"`
+	Provider       string     `gorm:"column:provider"`
+	PriceKind      string     `gorm:"column:price_kind"`
+	PriceUSD       *string    `gorm:"column:price_usd"`
+	Change24hPct   *string    `gorm:"column:change_24h_pct"`
+	Turnover24hUSD *string    `gorm:"column:turnover_24h_usd"`
+	Available      bool       `gorm:"column:available"`
+	SourceTime     *time.Time `gorm:"column:source_time"`
+	ObservedAt     *time.Time `gorm:"column:observed_at"`
+	LastSuccessAt  *time.Time `gorm:"column:last_success_at"`
+	Version        int64      `gorm:"column:version"`
+}
+
 type AssetMarketReadRow struct {
 	MarketID             string     `gorm:"column:market_id"`
 	MarketCode           string     `gorm:"column:market_code"`
@@ -260,6 +279,7 @@ type MarketAggregationDB interface {
 	QueryCompositeMarketCandidates() ([]CompositeMarketCandidate, error)
 	UpsertAssetPriceIndexes([]AssetPriceIndex) error
 	QueryAssetIndexDashboard(AssetIndexDashboardQuery) ([]AssetIndexDashboardRow, int64, error)
+	QueryMarketPriceTicks(MarketPriceTickQuery) ([]MarketPriceTickRow, error)
 	QueryAssetMarkets(assetID string) ([]AssetMarketReadRow, error)
 	QueryCatalogAudit(provider, status string, rankLimit int, page, pageSize int64) ([]CatalogAuditRow, []CatalogAuditCount, int64, error)
 	QueryGlobalMetric(provider string) (*MarketGlobalMetric, error)
@@ -993,6 +1013,80 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 		}
 	}
 	return rows, total, err
+}
+
+func (m *marketAggregationDB) QueryMarketPriceTicks(query MarketPriceTickQuery) ([]MarketPriceTickRow, error) {
+	venue, priceKind, err := NormalizeDashboardVenue(query.Venue)
+	if err != nil {
+		return nil, err
+	}
+	assetIDs := make([]string, 0, len(query.AssetIDs))
+	seen := make(map[string]struct{}, len(query.AssetIDs))
+	for _, candidate := range query.AssetIDs {
+		assetID := strings.TrimSpace(candidate)
+		if assetID == "" {
+			continue
+		}
+		if _, exists := seen[assetID]; exists {
+			continue
+		}
+		seen[assetID] = struct{}{}
+		assetIDs = append(assetIDs, assetID)
+	}
+	if len(assetIDs) == 0 {
+		return []MarketPriceTickRow{}, nil
+	}
+
+	var rows []MarketPriceTickRow
+	if venue == "all" {
+		err = m.gorm.Table("asset_price_index price").
+			Select(`price.asset_guid AS asset_id,
+				'all' AS provider,
+				'composite_spot' AS price_kind,
+				price.price_usd,
+				price.change_24h_pct,
+				price.turnover_24h_usd,
+				(
+					price.available = TRUE
+					AND price.price_usd IS NOT NULL
+					AND price.observed_at >= clock_timestamp() - INTERVAL '30 seconds'
+				) AS available,
+				price.observed_at AS source_time,
+				price.observed_at,
+				price.observed_at AS last_success_at,
+				price.version`).
+			Where("price.asset_guid IN ?", assetIDs).
+			Order("price.asset_guid ASC").
+			Scan(&rows).Error
+		return rows, err
+	}
+
+	freshInterval := "30 seconds"
+	if priceKind == "dex_route" {
+		freshInterval = "60 seconds"
+	}
+	err = m.gorm.Table("asset_venue_snapshot snapshot").
+		Select(`snapshot.asset_guid AS asset_id,
+			snapshot.provider,
+			snapshot.price_kind,
+			snapshot.price_usd,
+			snapshot.change_24h_pct,
+			snapshot.turnover_24h_usd,
+			(
+				snapshot.available = TRUE
+				AND snapshot.price_usd IS NOT NULL
+				AND snapshot.last_success_at >= clock_timestamp() - (?::interval)
+			) AS available,
+			snapshot.source_time,
+			snapshot.observed_at,
+			snapshot.last_success_at,
+			snapshot.version`, freshInterval).
+		Where(`snapshot.provider = ?
+			AND snapshot.price_kind = ?
+			AND snapshot.asset_guid IN ?`, venue, priceKind, assetIDs).
+		Order("snapshot.asset_guid ASC").
+		Scan(&rows).Error
+	return rows, err
 }
 
 func NormalizeDashboardVenue(value string) (string, string, error) {

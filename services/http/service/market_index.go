@@ -173,6 +173,69 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 	}, nil
 }
 
+func (h HandleSvc) GetMarketPriceTicks(request *model.MarketPriceTicksRequest) (*model.MarketPriceTicksResponse, error) {
+	venue, _, err := database.NormalizeDashboardVenue(request.Venue)
+	if err != nil {
+		return nil, err
+	}
+	if len(request.AssetIDs) > 100 {
+		return nil, fmt.Errorf("asset_ids cannot contain more than 100 items")
+	}
+	rows, err := h.marketAggregationView.QueryMarketPriceTicks(database.MarketPriceTickQuery{
+		Venue: venue, AssetIDs: request.AssetIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	result := make([]model.MarketPriceTickItem, 0, len(rows))
+	for _, row := range rows {
+		item := model.MarketPriceTickItem{
+			AssetID: row.AssetID, Provider: row.Provider, PriceKind: row.PriceKind,
+			PriceUSD:       availableDecimal(row.PriceUSD),
+			Change24hPct:   availableDecimal(row.Change24hPct),
+			Turnover24hUSD: availableDecimal(row.Turnover24hUSD),
+			Available:      row.Available,
+			Version:        row.Version,
+		}
+		if row.SourceTime != nil {
+			item.SourceTime = row.SourceTime.UnixMilli()
+		}
+		if row.ObservedAt != nil {
+			item.ObservedAt = row.ObservedAt.UnixMilli()
+		}
+		if row.LastSuccessAt != nil {
+			item.LastSuccessAt = row.LastSuccessAt.UnixMilli()
+			age := now.Sub(row.LastSuccessAt.UTC())
+			if age < 0 {
+				age = 0
+			}
+			item.FreshnessAgeSeconds = int64(age / time.Second)
+		}
+		switch {
+		case !row.Available:
+			item.FreshnessStatus = "unavailable"
+		case item.FreshnessAgeSeconds <= 30:
+			item.FreshnessStatus = "fresh"
+		case item.FreshnessAgeSeconds <= 300:
+			item.FreshnessStatus = "stale"
+		default:
+			item.FreshnessStatus = "unavailable"
+			item.Available = false
+		}
+		if !item.Available {
+			item.PriceUSD = model.AvailableDecimal{}
+			item.Change24hPct = model.AvailableDecimal{}
+			item.Turnover24hUSD = model.AvailableDecimal{}
+		}
+		result = append(result, item)
+	}
+	return &model.MarketPriceTicksResponse{
+		Code: 2000, Message: "get market price ticks success", Result: result,
+		Venue: venue, ServerTime: now.UnixMilli(),
+	}, nil
+}
+
 func dashboardUniverse(venue string) string {
 	switch strings.ToLower(strings.TrimSpace(venue)) {
 	case "all":

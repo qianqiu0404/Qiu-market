@@ -12,6 +12,86 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestIntegrationMarketPriceTicksKeepVenueIdentityAndFreshness(t *testing.T) {
+	dsn := os.Getenv("S78_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("S78_TEST_DATABASE_DSN is not set")
+	}
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{SkipDefaultTransaction: true})
+	require.NoError(t, err)
+	tx := gormDB.Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+
+	assetID := "test-market-price-ticks-btc"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, tx.Create(&Asset{
+		Guid: assetID, AssetName: "Tick Bitcoin", AssetSymbol: "TBTC", IsActive: true,
+	}).Error)
+	store := NewMarketAggregationDB(tx)
+	require.NoError(t, store.UpsertAssetPriceIndexes([]AssetPriceIndex{{
+		AssetGuid: assetID, PriceUSD: textPointer("65001.25"),
+		Change24hPct: textPointer("1.25"), Turnover24hUSD: textPointer("9000000"),
+		ContributorCount: 2, Confidence: "medium", Available: true, ObservedAt: now,
+	}}))
+	require.NoError(t, store.UpsertAssetVenueSnapshots([]AssetVenueSnapshot{
+		{
+			AssetGuid: assetID, Provider: "binance", PriceKind: "venue_spot",
+			PriceUSD: textPointer("65000.10"), Change24hPct: textPointer("1.10"),
+			Turnover24hUSD: textPointer("5000000"), ContributorCount: 1,
+			MarketCount: 1, Confidence: "low", Quality: "low",
+			Available: true, SourceTime: &now, ObservedAt: now,
+		},
+		{
+			AssetGuid: assetID, Provider: "coinbase", PriceKind: "venue_spot",
+			PriceUSD: textPointer("65002.40"), Change24hPct: textPointer("1.40"),
+			Turnover24hUSD: textPointer("4000000"), ContributorCount: 1,
+			MarketCount: 1, Confidence: "low", Quality: "low",
+			Available: true, SourceTime: &now, ObservedAt: now,
+		},
+	}))
+
+	binance, err := store.QueryMarketPriceTicks(MarketPriceTickQuery{
+		Venue: "binance", AssetIDs: []string{assetID, assetID, ""},
+	})
+	require.NoError(t, err)
+	require.Len(t, binance, 1)
+	require.Equal(t, "binance", binance[0].Provider)
+	require.Equal(t, "venue_spot", binance[0].PriceKind)
+	require.True(t, equalNumericString("65000.10", *binance[0].PriceUSD))
+	require.True(t, binance[0].Available)
+
+	coinbase, err := store.QueryMarketPriceTicks(MarketPriceTickQuery{
+		Venue: "coinbase", AssetIDs: []string{assetID},
+	})
+	require.NoError(t, err)
+	require.Len(t, coinbase, 1)
+	require.True(t, equalNumericString("65002.40", *coinbase[0].PriceUSD))
+	require.NotEqual(t, *binance[0].PriceUSD, *coinbase[0].PriceUSD)
+
+	composite, err := store.QueryMarketPriceTicks(MarketPriceTickQuery{
+		Venue: "all", AssetIDs: []string{assetID},
+	})
+	require.NoError(t, err)
+	require.Len(t, composite, 1)
+	require.Equal(t, "composite_spot", composite[0].PriceKind)
+	require.True(t, equalNumericString("65001.25", *composite[0].PriceUSD))
+
+	require.NoError(t, tx.Model(&AssetVenueSnapshot{}).
+		Where("asset_guid = ? AND provider = ? AND price_kind = ?",
+			assetID, "binance", "venue_spot").
+		Updates(map[string]any{
+			"last_success_at": now.Add(-time.Minute),
+			"observed_at":     now.Add(-time.Minute),
+		}).Error)
+	stale, err := store.QueryMarketPriceTicks(MarketPriceTickQuery{
+		Venue: "binance", AssetIDs: []string{assetID},
+	})
+	require.NoError(t, err)
+	require.Len(t, stale, 1)
+	require.False(t, stale[0].Available)
+}
+
 func TestIntegrationDexSnapshotReplacementClearsExpiredRoute(t *testing.T) {
 	dsn := os.Getenv("S78_TEST_DATABASE_DSN")
 	if dsn == "" {

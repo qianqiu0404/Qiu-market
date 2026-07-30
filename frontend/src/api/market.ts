@@ -200,6 +200,28 @@ export interface AssetDashboardV2Item {
   sparkline_available: boolean
 }
 
+export interface MarketPriceTick {
+  asset_id: string
+  provider: string
+  price_kind: string
+  price_usd: AvailableDecimal
+  change_24h_pct: AvailableDecimal
+  turnover_24h_usd: AvailableDecimal
+  available: boolean
+  freshness_status: string
+  freshness_age_seconds: number
+  source_time: number
+  observed_at: number
+  last_success_at: number
+  version: number
+}
+
+export interface MarketPriceTickSnapshot {
+  venue: MarketVenue
+  server_time: number
+  items: MarketPriceTick[]
+}
+
 export interface AssetMarketV2Item {
   market_id: string
   market_code: string
@@ -744,6 +766,42 @@ export async function getAssetDashboardV2(
     }
   })
   return { items, total: typeof total === 'number' ? total : items.length }
+}
+
+export async function getMarketPriceTicks(
+  venue: MarketVenue,
+  assetIDs: string[],
+): Promise<MarketPriceTickSnapshot> {
+  const uniqueAssetIDs = [...new Set(assetIDs.map((value) => value.trim()).filter(Boolean))]
+  if (uniqueAssetIDs.length > 100) {
+    throw new Error('Market tick requests are limited to 100 assets')
+  }
+  const response = await request<unknown>('/api/v2/get_market_price_ticks', {
+    venue,
+    asset_ids: uniqueAssetIDs,
+  })
+  return {
+    venue: (toStr(response.venue) || venue) as MarketVenue,
+    server_time: toNum(response.server_time),
+    items: toArray(response.result).map((raw): MarketPriceTick => {
+      const item = (raw ?? {}) as Record<string, unknown>
+      return {
+        asset_id: toStr(item.asset_id),
+        provider: toStr(item.provider),
+        price_kind: toStr(item.price_kind),
+        price_usd: toAvailableDecimal(item.price_usd),
+        change_24h_pct: toAvailableDecimal(item.change_24h_pct),
+        turnover_24h_usd: toAvailableDecimal(item.turnover_24h_usd),
+        available: Boolean(item.available),
+        freshness_status: toStr(item.freshness_status),
+        freshness_age_seconds: toNum(item.freshness_age_seconds),
+        source_time: toNum(item.source_time),
+        observed_at: toNum(item.observed_at),
+        last_success_at: toNum(item.last_success_at),
+        version: toNum(item.version),
+      }
+    }),
+  }
 }
 
 export async function getTop50VenueInsights(): Promise<Top50VenueInsights> {

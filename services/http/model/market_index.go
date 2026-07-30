@@ -119,6 +119,36 @@ type AssetDashboardV2Response struct {
 	Universe string                 `json:"universe"`
 }
 
+type MarketPriceTicksRequest struct {
+	ConsumerToken string   `json:"consumer_token"`
+	Venue         string   `json:"venue"`
+	AssetIDs      []string `json:"asset_ids"`
+}
+
+type MarketPriceTickItem struct {
+	AssetID             string           `json:"asset_id"`
+	Provider            string           `json:"provider"`
+	PriceKind           string           `json:"price_kind"`
+	PriceUSD            AvailableDecimal `json:"price_usd"`
+	Change24hPct        AvailableDecimal `json:"change_24h_pct"`
+	Turnover24hUSD      AvailableDecimal `json:"turnover_24h_usd"`
+	Available           bool             `json:"available"`
+	FreshnessStatus     string           `json:"freshness_status"`
+	FreshnessAgeSeconds int64            `json:"freshness_age_seconds"`
+	SourceTime          int64            `json:"source_time"`
+	ObservedAt          int64            `json:"observed_at"`
+	LastSuccessAt       int64            `json:"last_success_at"`
+	Version             int64            `json:"version"`
+}
+
+type MarketPriceTicksResponse struct {
+	Code       uint64                `json:"code"`
+	Message    string                `json:"message"`
+	Result     []MarketPriceTickItem `json:"result"`
+	Venue      string                `json:"venue"`
+	ServerTime int64                 `json:"server_time"`
+}
+
 type AssetMarketsRequest struct {
 	ConsumerToken string `json:"consumer_token"`
 	AssetID       string `json:"asset_id"`

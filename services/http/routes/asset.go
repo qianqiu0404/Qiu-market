@@ -105,6 +105,28 @@ func (h Routes) GetAssetDashboardV2(w http.ResponseWriter, r *http.Request) {
 	_ = jsonResponse(w, resp, http.StatusOK)
 }
 
+func (h Routes) GetMarketPriceTicks(w http.ResponseWriter, r *http.Request) {
+	var req model.MarketPriceTicksRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonErrorResponse(w, BadRequestCode, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(req.AssetIDs) > 100 {
+		jsonErrorResponse(w, BadRequestCode, "asset_ids cannot contain more than 100 items", http.StatusBadRequest)
+		return
+	}
+	resp, err := h.srv.GetMarketPriceTicks(&req)
+	if err != nil {
+		if errors.Is(err, database.ErrInvalidDashboardVenue) {
+			jsonErrorResponse(w, BadRequestCode, err.Error(), http.StatusBadRequest)
+			return
+		}
+		jsonErrorResponse(w, InternalErrorCode, "query market price ticks failed", http.StatusInternalServerError)
+		return
+	}
+	_ = jsonResponse(w, resp, http.StatusOK)
+}
+
 func (h Routes) GetAssetMarkets(w http.ResponseWriter, r *http.Request) {
 	var req model.AssetMarketsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

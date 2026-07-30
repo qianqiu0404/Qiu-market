@@ -42,6 +42,7 @@ const (
 	AssetMomentumPath        = "/api/v1/get_asset_momentum"
 	MarketOverviewPath       = "/api/v2/get_market_overview"
 	AssetDashboardV2Path     = "/api/v2/get_asset_dashboard"
+	MarketPriceTicksPath     = "/api/v2/get_market_price_ticks"
 	AssetMarketsPath         = "/api/v2/get_asset_markets"
 	AssetVenuesPath          = "/api/v2/get_asset_venues"
 	ProviderCatalogAuditPath = "/api/v2/get_provider_catalog_audit"
@@ -206,6 +207,7 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 		router.Post(fmt.Sprintf(AssetMomentumPath), h.GetAssetMomentum)
 		router.Post(fmt.Sprintf(MarketOverviewPath), h.GetMarketOverview)
 		router.Post(fmt.Sprintf(AssetDashboardV2Path), h.GetAssetDashboardV2)
+		router.Post(fmt.Sprintf(MarketPriceTicksPath), h.GetMarketPriceTicks)
 		router.Post(fmt.Sprintf(AssetMarketsPath), h.GetAssetMarkets)
 		router.Post(fmt.Sprintf(AssetVenuesPath), h.GetAssetVenues)
 		router.Post(fmt.Sprintf(ProviderCatalogAuditPath), h.GetProviderCatalogAudit)

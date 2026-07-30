@@ -12,11 +12,14 @@ import {
   getAssetVenuesV2,
   getFiatRates,
   getMarketOverviewV2,
+  getMarketPriceTicks,
   type AssetDashboardV2Item,
   type AssetFilter,
   type AssetMarketV2Item,
   type AvailableDecimal,
   type MarketOverviewV2,
+  type MarketPriceTick,
+  type MarketPriceTickSnapshot,
   type MarketVenue,
   type Paged,
 } from '../api/market'
@@ -55,6 +58,9 @@ const VENUE_GROUPS: Array<{
   },
 ]
 const VALID_VENUES = new Set(VENUE_GROUPS.flatMap((group) => group.venues.map((item) => item.value)))
+const REALTIME_VENUES = new Set<MarketVenue>([
+  'all', 'binance', 'coinbase', 'bybit', 'okx', 'hyperliquid',
+])
 
 const route = useRoute()
 const router = useRouter()
@@ -169,6 +175,57 @@ const currentDashboard = computed(() => {
 })
 const assets = computed(() => currentDashboard.value?.items ?? [])
 const total = computed(() => currentDashboard.value?.total ?? 0)
+interface PriceTickSnapshot {
+  queryKey: string
+  data: MarketPriceTickSnapshot
+}
+
+function priceTickQueryKey(selectedVenue = venue.value, rows = assets.value): string {
+  return JSON.stringify({
+    venue: selectedVenue,
+    asset_ids: rows.map((asset) => asset.asset_id),
+  })
+}
+
+const currentPriceTickQueryKey = computed(() => priceTickQueryKey())
+const priceTicks = usePolling(
+  async (): Promise<PriceTickSnapshot> => {
+    const requestedVenue = venue.value
+    const assetIDs = assets.value.map((asset) => asset.asset_id)
+    const queryKey = priceTickQueryKey(requestedVenue, assets.value)
+    if (!REALTIME_VENUES.has(requestedVenue) || assetIDs.length === 0) {
+      return {
+        queryKey,
+        data: { venue: requestedVenue, server_time: 0, items: [] },
+      }
+    }
+    return {
+      queryKey,
+      data: await getMarketPriceTicks(requestedVenue, assetIDs),
+    }
+  },
+  { interval: 3_000 },
+)
+const currentPriceTicks = computed(() => {
+  const snapshot = priceTicks.data.value
+  return snapshot?.queryKey === currentPriceTickQueryKey.value &&
+    snapshot.data.venue === venue.value
+    ? snapshot.data
+    : null
+})
+const currentPriceTickMap = computed(() =>
+  new Map(
+    (currentPriceTicks.value?.items ?? []).map((item) => [item.asset_id, item]),
+  ),
+)
+const priceRefreshedAt = computed(() => {
+  const serverTime = currentPriceTicks.value?.server_time ?? 0
+  return serverTime > 0
+    ? new Date(serverTime)
+    : currentDashboard.value
+      ? dashboard.lastUpdated.value
+      : null
+})
 const dexCoverage = computed(() => {
   if (
     !isDexVenue() ||
@@ -253,6 +310,11 @@ watch([venue, filter, page, pageSize, sortKey, sortDir], ([nextVenue, nextFilter
   void overview.refresh()
   void dashboard.refresh()
 })
+
+watch(
+  currentPriceTickQueryKey,
+  () => void priceTicks.refresh(),
+)
 
 let searchTimer: number | undefined
 watch(search, () => {
@@ -382,16 +444,38 @@ function isDexVenue(): boolean {
   return venue.value === 'uniswap' || venue.value === 'pancakeswap'
 }
 
+function isCexVenue(): boolean {
+  return venue.value === 'binance' ||
+    venue.value === 'coinbase' ||
+    venue.value === 'bybit' ||
+    venue.value === 'okx'
+}
+
+function liveTick(asset: AssetDashboardV2Item): MarketPriceTick | undefined {
+  if (priceTicks.error.value) return undefined
+  return currentPriceTickMap.value.get(asset.asset_id)
+}
+
 function displayPrice(asset: AssetDashboardV2Item): AvailableDecimal {
+  const tick = liveTick(asset)
+  if (tick) return tick.price_usd
   if (isDexVenue()) return asset.display_price_usd
-  return asset.display_price_usd?.available ? asset.display_price_usd : asset.price_usd
+  // A venue tab must never silently fall back to the cross-venue composite.
+  if (isCexVenue() || venue.value === 'hyperliquid' || venue.value === 'all') {
+    return asset.price_usd
+  }
+  return asset.display_price_usd
 }
 
 function displayChange(asset: AssetDashboardV2Item): AvailableDecimal {
+  const tick = liveTick(asset)
+  if (tick) return tick.change_24h_pct
   if (isDexVenue()) return asset.display_change_24h_pct
-  return asset.display_change_24h_pct?.available
-    ? asset.display_change_24h_pct
-    : asset.change_24h_pct
+  return asset.change_24h_pct
+}
+
+function displayTurnover(asset: AssetDashboardV2Item): AvailableDecimal {
+  return liveTick(asset)?.turnover_24h_usd ?? asset.covered_turnover_24h_usd
 }
 
 function marketCount(asset: AssetDashboardV2Item): number {
@@ -410,6 +494,19 @@ function marketCountLabel(asset: AssetDashboardV2Item): string {
 }
 
 function priceCaption(asset: AssetDashboardV2Item): string {
+  const tick = currentPriceTickMap.value.get(asset.asset_id)
+  if (tick && !tick.available) {
+    return `${selectedVenueLabel.value} live feed unavailable`
+  }
+  if (priceTicks.error.value) {
+    return `${selectedVenueLabel.value} verified snapshot · live ticks delayed`
+  }
+  if (tick?.available) {
+    const source = venue.value === 'all'
+      ? 'Composite'
+      : selectedVenueLabel.value
+    return `${source} live · ${tick.freshness_age_seconds}s old`
+  }
   if (asset.display_price_kind === 'composite_reference') return 'CEX composite reference · no fresh route'
   if (asset.display_price_kind === 'market_reference') return 'CoinGecko reference · no fresh route'
   if (asset.freshness_status === 'stale') {
@@ -458,7 +555,7 @@ function coverageReasonLabel(reason: string): string {
     <PageHeader
       :title="pageTitle"
       :subtitle="pageSubtitle"
-      :refreshed-at="currentDashboard ? dashboard.lastUpdated.value : null"
+      :refreshed-at="priceRefreshedAt"
     >
       <template #actions>
         <div class="segmented" role="group" aria-label="Fiat currency">
@@ -477,6 +574,12 @@ function coverageReasonLabel(reason: string): string {
 
     <p v-if="usingFallbackRates" class="fallback-hint">
       Fiat endpoint unavailable — the non-USD display uses a local fallback rate.
+    </p>
+    <p
+      v-if="REALTIME_VENUES.has(venue) && priceTicks.error.value"
+      class="fallback-hint"
+    >
+      Live price ticks are delayed — the latest verified dashboard snapshot remains visible.
     </p>
 
     <div class="market-overview-strip" aria-label="Global market overview">
@@ -637,7 +740,7 @@ function coverageReasonLabel(reason: string): string {
                 {{ formatMetric(asset.market_cap_usd, FIAT_SYMBOLS[fiat], rate) }}
               </td>
               <td class="align-right num">
-                {{ formatMetric(asset.covered_turnover_24h_usd, FIAT_SYMBOLS[fiat], rate) }}
+                {{ formatMetric(displayTurnover(asset), FIAT_SYMBOLS[fiat], rate) }}
               </td>
               <td class="align-center">
                 <button
