@@ -745,4 +745,3 @@ BTC sum                 0
 7. 第 7 天：60 秒闭卷复述并回填矩阵证据。
 
 完成标准不是“新增一个 test file”，而是一个测试能在同一 harness 中证明订单终态、filled/remaining、available/held、ledger 和恢复 hash 一致。
-

@@ -170,4 +170,3 @@ Bitcoin、Solana 等链必须替换为各自的 mempool、确认与 canonical �
 6. receipt 已出现后为什么仍不能立刻声称 final？
 7. replacement 要用哪两个身份维度关联候选交易？
 8. 指出一个 `build-verified` 测试和一个 `integration-verified` 测试，并说明它们各自不能证明什么。
-

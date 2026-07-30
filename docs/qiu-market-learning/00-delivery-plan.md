@@ -148,4 +148,3 @@
 - Obsidian 同步或 claim 未确认：不写目标讲义，只报告 `environment-pending`。
 - 测试需要私有 DSN、OAuth 或部署：不读取 `.env`，保留 skip/blocked 的原始事实。
 - 任一引用无法在 `8829518` 定位：修正文档，不用近似文件名补齐。
-
