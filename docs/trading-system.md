@@ -13,6 +13,7 @@
 - 价格时间优先订单簿、available/held 余额、不可变双重记账和 Maker/Taker 手续费；
 - 每市场单 goroutine、有界队列、严格 sequence、背压和未知提交恢复；
 - PostgreSQL 事件流、快照、outbox、订单/成交/余额/账本投影；
+- submitted/unknown、成交撤单竞态、断线补发、崩溃恢复和有界随机命令的可复现证明；
 - loopback gRPC、共享 HTTP API 下的 REST/WebSocket gateway；
 - 单用户会话、CSRF、Origin、限流、一次性 WebSocket ticket；
 - 共享 Vue 的 `/trade/BTC-USDT`：可信参考、真实 K 线、订单簿、下单、撤单、余额、订单和成交；
@@ -95,6 +96,16 @@ market-services trading :9094
 - 市场 sequence 严格单调，持久化 sequence 与状态 hash 一致；
 - 同一幂等键和同一 payload 返回原结果，不生成第二批事件；
 - 同一幂等键配不同 payload 必须拒绝。
+
+### 可靠性术语映射
+
+| 术语 | 准确含义 | 直白类比 | 本项目位置 |
+|---|---|---|---|
+| submitted / unknown | 服务端可能已经提交，但调用方没有拿到确定响应 | 转账按钮超时，不能再换单号转一次，要先查原流水 | `trading/runtime/runner.go`、`trading/reliability/submitted_unknown_test.go` |
+| linearization | 并发命令被归入一个确定的先后顺序 | 同一个柜台一次只盖一张章 | `MarketRunner` 的单 goroutine queue |
+| reconcile | 用权威持久化事实把本地 checkpoint 追平，缺口未补齐前不可写 | 对账没对平就不能继续记新账 | `trading/reliability/reconcile.go`、`trading/rpc/server/server.go` |
+| double-entry | 每笔 transaction 内，每个 asset 的正负 entry 之和必须为零 | BTC 账和 USDT 账分别都要借贷相抵 | `trading/ledger/ledger.go`、`trading/reliability/audit.go` |
+| snapshot + tail | 先载入已校验快照，再重放其 sequence 之后的事件 | 从存档点继续播放剩余录像 | `trading/exchange/exchange.go`、`trading/store/postgres/store.go` |
 
 ## 交易可靠性闭环
 
@@ -402,6 +413,10 @@ outbox 找到；源行清理开始后自动拒绝 legacy rollback。新 release 
 | API 停止 | 浏览器 trading/Markets 都显示离线 | 重启 API；撮合进程和事件流不丢 |
 | 命令队列满 | 立即返回背压，不偷偷排无限任务 | 客户端复用同一 request ID 重试 |
 | 提交结果不确定 | runner 停止接单 | 从 event stream 恢复后重新 ready |
+| reconcile 尚未追平 | 新写立即返回 unavailable，不进入待执行队列 | 补齐权威事件并验证 checkpoint/head 后开放 |
+| 事件重复 | 小于等于 checkpoint 的 cursor 被去重 | 从最后成功 cursor 继续，不重复应用 |
+| 事件缺口 | gRPC 返回 `DataLoss`，不跳过缺口 | 重新读取权威 batch metadata/feed 或从可信 checkpoint 重建 |
+| event 已提交、内存未应用即崩溃 | 旧内存被进程退出丢弃 | 新进程从 event 恢复；原 ID 重放只返回原结果 |
 | 快照损坏 | 启动 fail closed | 修复/移除损坏介质后从可信事件恢复，不能忽略 hash |
 | 事件损坏 | 启动 fail closed | 从备份恢复事件真值 |
 | 参考过期或跳变 | maker 撤单停机 | 新进程在可信参考恢复后再启动 maker |
@@ -412,13 +427,11 @@ outbox 找到；源行清理开始后自动拒绝 legacy rollback。新 release 
 
 建议按以下顺序阅读：
 
-1. `trading/domain/market.go` 与 `trading/domain/math.go`：整数单位、市场规则和 checked mulDiv。
-2. `trading/orderbook/orderbook.go` 与 `trading/exchange/exchange.go`：FIFO 撮合、冻结、费用、幂等和状态转换。
-3. `trading/runtime/runner.go`：单市场串行执行、背压和未知提交恢复。
-4. `trading/store/postgres/store.go`：事务 CAS、event/outbox/ledger/投影和快照。
-5. `trading/service/backend.go`、`trading/gateway/gateway.go`、`services/http/api.go`：独立后端、loopback gRPC 和共享 API 故障隔离。
-6. `trading/httpapi/api.go` 与 `trading/auth`：REST/WebSocket、会话、CSRF、Origin 和 ticket。
-7. `frontend/src/views/Trade.vue` 与 `frontend/src/api/trading.ts`：共享交易终端及十进制字符串契约。
+1. `trading/domain/types.go`：先看整数 atom、市场规则、命令身份、订单/事件类型和 checked mulDiv。
+2. `trading/exchange/exchange.go`：再看同 ID 判定、trial state、持久化先于内存应用和 `Restore`；具体撮合/结算进入同目录 `orders.go`。
+3. `trading/runtime/runner.go`：然后看单市场串行化、背压、unknown commit 后关写和恢复门禁。
+4. `trading/store/postgres/store.go`：接着看 sequence CAS 以及 event、journal、outbox、投影和快照的 PostgreSQL 边界。
+5. `trading/reliability/reconcile.go` 与 `audit.go`：最后看 cursor 连续性和账本/恢复证明；它们只审计前四步的真值，不复制撮合状态。
 
 ## 设计决策、被拒绝方案与代价
 
@@ -428,7 +441,7 @@ outbox 找到；源行清理开始后自动拒绝 legacy rollback。新 release 
 4. **整数 atom。** 被拒绝的是跨账本使用浮点；代价是所有边界都必须明确 scale、floor/ceil 和溢出处理。
 5. **服务端会话决定账户。** 被拒绝的是信任请求里的 `account_id`；代价是开发环境也必须显式登录。
 6. **参考价只驱动 maker，不驱动强制成交。** 被拒绝的是把外部指数当可执行价格；这样行情异常不会凭空改用户订单或资金。
-7. **教学正确性优先。** 当前命令会克隆完整状态，快照保留完整 journal，便于审计和恢复验证；生产低延迟版本需要分片、增量结构和容量压测，不能把本切片冒充 HFT 引擎。
+7. **教学正确性优先。** 当前命令会克隆完整状态；schema 5 快照只保存压缩后的逐资产余额 checkpoint，完整 journal 仍保留在 immutable event history 并由 `AuditRecords` 扫描。生产低延迟版本需要分片、增量结构和容量压测，不能把本切片冒充 HFT 引擎。
 
 ## 验证与证据等级
 
@@ -440,6 +453,8 @@ go test -race ./trading/...
 go vet ./...
 go test ./trading/exchange -run='^$' -fuzz=FuzzExchange -fuzztime=10s
 go test ./trading/orderbook -run='^$' -bench=BenchmarkMatch -benchmem
+GOMAXPROCS=2 go test ./trading/reliability -run='^$' -fuzz=FuzzBoundedCommandRecovery -fuzztime=10s
+go test ./trading/reliability -run='^$' -bench=BenchmarkAuditAndRestore -benchtime=100x -benchmem
 ./trading/scripts/verify-local.sh postgres
 ops/macos/release-production.sh verify
 ops/macos/release-production.sh status
@@ -460,7 +475,7 @@ git diff --check
 
 ## Owner 60 秒解释
 
-> 这个切片只做一个虚拟 BTC/USDT 市场。浏览器请求先经过共享 API 的登录、CSRF、Origin 和限流，再通过本机 9094 gRPC 进入唯一的 MarketRunner。runner 串行执行，所以 sequence、同价 FIFO 和重放结果确定。每条命令先在试算状态里完成撮合、冻结、双重记账和费用，再把事件、账本、outbox 与投影放进同一个 PostgreSQL 事务，提交成功后才更新内存。启动时校验快照并重放事件，hash 不一致就拒绝服务。行情只给页面和虚拟 maker 作参考，过期或跳变会撤单停 maker，不会伪造成交，更不会连接真实资金。
+> 这个切片只做一个虚拟 BTC/USDT 市场。浏览器写请求经登录、CSRF、Origin 和限流后，通过 loopback gRPC 进入唯一的 MarketRunner；它把 submit、fill 和 cancel 线性化，所以 sequence 与同价 FIFO 确定。Exchange 在 trial state 中冻结、撮合和双重记账，PostgreSQL 先原子提交 event、journal、outbox 与投影，随后才替换内存。若响应丢失，fund、submit、cancel 都保留原 ID 查询或重放，绝不换 ID 再做一遍。断线事件以 `(market_sequence,event_index)` 去重补发，batch count 暴露缺口；未 reconcile 完成就拒绝新写。启动时校验 snapshot，再重放 tail，逐批重算结果和 hash；损坏或不一致就 fail closed。完整 event history 还能证明每笔每资产借贷平衡和总资产守恒。这里没有真实资金或真实交易所下单，PostgreSQL/浏览器故障联调要和本地内存证明分开标注。
 
 ## 闭卷自检
 
@@ -482,3 +497,8 @@ git diff --check
 16. 为什么真实 K 线缺失时页面必须显示 unavailable？
 17. 共享 API 与 trading 分进程带来了什么收益和成本？
 18. 当前实现为什么是教学正确性系统，而不是生产 HFT 引擎？
+19. 为什么只有 `market_sequence` 不能发现同一批次中间丢失的事件？
+20. event append 已成功但内存 apply 前崩溃时，为什么重启后不会重复入账？
+21. `AuditRecords` 为什么不是第二套账本或第二套 reducer？
+22. 随机测试必须记录哪些信息，才能让失败闭环复现？
+23. 哪些结果只是 `build-verified`，还需要 PostgreSQL、HTTP 或浏览器环境证明？
