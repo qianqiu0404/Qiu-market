@@ -382,7 +382,7 @@ README 全局架构
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、事件恢复、接口鉴权、demo-maker 和验收边界 |
 | [docs/klines-pipeline.md](docs/klines-pipeline.md) | K 线 market identity、显式时间、业务唯一键、分周期续传与刷新 |
 | [docs/redis-top-movers.md](docs/redis-top-movers.md) | Redis ZSET 涨跌榜、TTL 抖动防雪崩、SQL 回退 |
-| [docs/catalog-audit.md](docs/catalog-audit.md) | provider 审核清单、版本化资产选择、候选市场、rollout 与安全 CLI |
+| [docs/catalog-audit.md](docs/catalog-audit.md) | provider 审核清单、版本化资产选择、候选市场、rollout、安全 CLI 与源码可重建边界 |
 | [docs/dex-hyperliquid.md](docs/dex-hyperliquid.md) | Hyperliquid Perp、Uniswap/Pancake V2+V3 mixed route、链上校验与综合价排除 |
 | [docs/grpc-service.md](docs/grpc-service.md) | gRPC MarketService、与 HTTP 共用业务层、proto 重新生成 |
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、覆盖率与故障隔离 |

@@ -99,6 +99,12 @@ S78_LOCAL_PREVIEW=1 ./market-services catalog preview \
   --enable
 ```
 
+### 源码可重建与 fail-closed 边界
+
+`cmd/market-services/catalog.go` 是上述命令的受版本控制入口。仓库只忽略根目录构建出的 `/market-services` 二进制，不再用无锚点规则忽略同名源码目录；因此 `NewCli → catalogCommand → 具体 action → database/crawler` 能从任意干净 checkout 重建。被拒绝的替代方案是删掉 `catalogCommand()` 调用、提交一个只返回成功的 stub，或继续依赖某台机器上被忽略的源码/旧二进制：这些做法虽能让编译变绿，却会让 operator 以为审核与灰度闸门仍然存在。
+
+Catalog 子命令只注册自己使用的配置。`apply-mappings --dry-run` 只解码并校验 manifest，不要求 HTTP、Redis 或数据库配置，也不建立数据库连接；数据库读写命令缺少 host/name 时立即拒绝；`endpoint-check` 只读取对应链的只读 endpoint 配置。代价是 Catalog 维护一组从公共 flag 定义复制出的可选 CLI flag 元数据，但避免了无关服务依赖阻断离线审核。正式 rollout 写入仍必须通过同一个 `EvaluateProviderRolloutReadiness`，Local Preview 仍要求 `S78_LOCAL_PREVIEW=1`、loopback PostgreSQL 且显式二选一 enable/disable。
+
 不传 `--file` 时兼容使用编译进二进制的同一份清单；不带 `--dry-run` 才写入审核过的 alias 与 representation，并把清单路径保存在 review source 中供审计。
 
 `rollout` 会拒绝：
@@ -135,7 +141,7 @@ S78_LOCAL_PREVIEW=1 ./market-services catalog preview \
 ## 关键代码入口
 
 1. `migrations/2026081500017.sql` 至 `2026082000022.sql`：增加版本化 provider/DEX/K 线 selection、快照 last attempt/success、pool listing/quote eligibility 与 V2/V3 protocol path。
-2. `catalog/provider-asset-mappings.yaml` + `catalog/manifest.go`：代码评审过的 Top 200 候选身份授权。
+2. `cmd/market-services/catalog.go` + `catalog/provider-asset-mappings.yaml` + `catalog/manifest.go`：可从干净 checkout 重建的安全 CLI，以及代码评审过的 Top 200 候选身份授权。
 3. `database/venue_aggregation.go`：原子生成/切换选币版本，保留历史版本和最后成功报价。
 4. `crawler/catalog_supervisor.go` + `crawler/spot_ticker_supervisor.go` + `crawler/spot_ticker_streams.go`：先确保 provider 选择，再启用目录并隔离 WebSocket primary/REST reconcile。
 5. `database/market_aggregation.go` + `frontend/src/views/Markets.vue`：`provider_top50` 与 `provider_union` 两种读模型及可解释新鲜度。
@@ -164,13 +170,13 @@ S78_LOCAL_PREVIEW=1 ./market-services catalog preview \
 ## 验证与证据边界
 
 - `implemented`：provider 级版本化 50 资产选择、七源去重并集、AMM listing/quote eligibility 分离、manifest、固定 canary、七源 shadow/preview 隔离、人工 promotion gate、能力级 System 状态和最后成功值保留已存在。
-- `build-verified`：以本次交付记录的状态机、公开读模型、source cadence、DEX 覆盖、RPC 首次失败恢复、日志流式轮转及完整工程门禁为准。
+- `build-verified`：以本次交付记录的状态机、公开读模型、source cadence、DEX 覆盖、Catalog CLI 干净源码重建、RPC 首次失败恢复、日志流式轮转及完整工程门禁为准。
 - `integration-verified`：当前业务库已执行到 `2026082000022.sql`。2026-07-25 本地动态快照中七家 selection 均为 50，All 七源并集为 109 个 canonical 资产且分页无重复；四家 K 线各映射 50 个 market，真实 CEX feed、Perp、公共发现、V2/V3 合约与 Router/Quoter 数据已经交换。这些数量不是永久覆盖承诺。
 - `environment-pending`：真实 provider 的 100+ 次正式观察与 24/48/72 小时 promotion、私有只读 DEX endpoint 正式路径、AMM 24h 路线观察和最终七天。
 
 ## Owner 60 秒解释
 
-> 七个 provider 都先建立身份审核通过的候选，再冻结成一个带版本号的 50 资产选择。All 取七家选择的 `asset_id` 并集，所以 BTC 仍只有一行，再按市值统一排序。Ticker/Quoter 失败不会删成员，而是保留行并从 Fresh 降为 Stale、Unavailable 或 Not covered；只有 Fresh CEX Spot 报价进入综合价和涨跌榜。本地预览只让这套产品立即可看，不会冒充正式灰度验收。
+> 七个 provider 都先建立身份审核通过的候选，再冻结成一个带版本号的 50 资产选择。All 取七家选择的 `asset_id` 并集，所以 BTC 仍只有一行，再按市值统一排序。Ticker/Quoter 失败不会删成员，而是保留行并从 Fresh 降为 Stale、Unavailable 或 Not covered；只有 Fresh CEX Spot 报价进入综合价和涨跌榜。Catalog CLI 的 dry-run 不连库，正式 rollout 必须通过同一个 readiness evaluator；本地预览只让这套产品立即可看，不会冒充正式灰度验收。
 
 ## 闭卷自检
 
@@ -195,3 +201,4 @@ S78_LOCAL_PREVIEW=1 ./market-services catalog preview \
 19. 为什么 DEX selection 必须固定 50，但实时可询价数量可以少于 50？
 20. 为什么 provider 资产 selection 之后还需要独立的 K 线 market selection？
 21. V2/V3 protocol path 为什么必须落入 route 审计，而不能只显示一个最终价格？
+22. 为什么只忽略根目录 `/market-services` 二进制，而不能忽略任意名为 `market-services` 的路径？
