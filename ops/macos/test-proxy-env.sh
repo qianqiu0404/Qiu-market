@@ -70,7 +70,7 @@ proxy_dump='
   [ -z "${HTTPS_PROXY:-}" ]
 )
 
-for consumer in observe-production.sh manage-acceptance-epoch.sh; do
+for consumer in observe-production.sh manage-acceptance-epoch.sh guardian.sh; do
   if ! grep -Fq 'source "$repo_root/ops/macos/proxy-env.sh"' \
     "$script_dir/$consumer" ||
     ! grep -Fq 'qiu_export_system_proxy' "$script_dir/$consumer"; then

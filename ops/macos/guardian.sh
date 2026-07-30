@@ -7,6 +7,11 @@ state_dir="$support_dir/guardian"
 log_dir="$support_dir/logs"
 incident_log="$state_dir/incidents.log"
 production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
+
+# shellcheck disable=SC1091
+source "$repo_root/ops/macos/proxy-env.sh"
+qiu_export_system_proxy
+
 install -d -m 700 "$state_dir" "$log_dir"
 touch "$incident_log"
 chmod 600 "$incident_log"
