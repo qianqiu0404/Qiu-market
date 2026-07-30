@@ -2,6 +2,7 @@ package database
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,4 +57,19 @@ func TestProviderPreviewKeysPreserveVenueSemantics(t *testing.T) {
 			return []string{kind, formal, preview}
 		}(),
 	)
+}
+
+func TestDashboardDisplayKeepsDexRouteOutOfReferenceExpressions(t *testing.T) {
+	for _, venue := range []string{"uniswap", "pancakeswap"} {
+		display := dashboardDisplay(venue)
+
+		require.NotContains(t, display.price, "venue_snapshot.price_usd")
+		require.NotContains(t, display.priceKind, "'dex_route'")
+		require.NotContains(t, display.change, "venue_snapshot.change_24h_pct")
+		require.NotContains(t, display.changeKind, "'dex_route'")
+		require.NotContains(t, display.observedAt, "venue_snapshot.last_success_at")
+		require.Contains(t, display.price, "composite.price_usd")
+		require.Contains(t, display.price, "am.reference_price_usd")
+		require.True(t, strings.Contains(display.dexRoute, "venue_snapshot.price_usd IS NOT NULL"))
+	}
 }

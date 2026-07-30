@@ -2,6 +2,23 @@ import { expect, test } from '@playwright/test'
 
 const available = (value: string) => ({ value, available: true })
 const unavailable = { value: null, available: false }
+const unavailablePriceFact = () => ({
+  price_usd: unavailable,
+  change_24h_pct: unavailable,
+  turnover_24h_usd: unavailable,
+  available: false,
+  kind: 'unavailable',
+  source: '',
+  source_time: 0,
+  observed_at: 0,
+  last_success_at: 0,
+  freshness_status: 'unavailable',
+  freshness_age_seconds: 0,
+  quality: 'unavailable',
+  contributor_count: 0,
+  contributors: [],
+  version: 0,
+})
 const marketPriceFact = (
   value: string,
   kind: string,
@@ -489,6 +506,115 @@ test('DEX tabs expose 50 identity-verified listed assets without inventing quote
   }
 })
 
+test('DEX route and reference stay in separate lanes after route expiry', async ({ page }) => {
+  const observedAt = Date.now() - 2_000
+  const routeFact = {
+    ...marketPriceFact('64211.10', 'dex_route', 'uniswap', observedAt),
+    change_24h_pct: available('0.42'),
+    turnover_24h_usd: available('1000000'),
+    quality: 'high',
+  }
+  const compositeReference = {
+    ...marketPriceFact(
+      '64203.13',
+      'composite_reference',
+      'cex_composite',
+      observedAt,
+    ),
+    change_24h_pct: available('1.25'),
+    quality: 'high',
+  }
+  const marketReference = {
+    ...marketPriceFact(
+      '64100.00',
+      'market_reference',
+      'coingecko',
+      observedAt,
+    ),
+    change_24h_pct: unavailable,
+    turnover_24h_usd: unavailable,
+    quality: 'reference',
+  }
+
+  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      venue?: string
+    }
+    if (request.venue !== 'uniswap') {
+      await route.fallback()
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        result: [
+          {
+            ...asset,
+            asset_id: 'asset-fresh-route',
+            asset_symbol: 'FRESH',
+            asset_name: 'Fresh Route',
+            price_usd: available('64211.10'),
+            change_24h_pct: available('0.42'),
+            price_kind: 'dex_route',
+            price_source: 'uniswap',
+            dex_route_available: true,
+            dex_route_count: 1,
+            dex_route_price: routeFact,
+            display_price: compositeReference,
+          },
+          {
+            ...asset,
+            rank: 2,
+            asset_id: 'asset-expired-route',
+            asset_symbol: 'OLD',
+            asset_name: 'Expired Route',
+            price_usd: available('63999.00'),
+            change_24h_pct: available('9.50'),
+            covered_turnover_24h_usd: available('123456'),
+            price_kind: 'dex_route',
+            price_source: 'uniswap',
+            available: true,
+            freshness_status: 'stale',
+            freshness_age_seconds: 90,
+            dex_route_available: false,
+            dex_route_count: 0,
+            dex_route_price: unavailablePriceFact(),
+            display_price: marketReference,
+          },
+        ],
+        total: 2,
+        universe: 'provider_top50',
+      }),
+    })
+  })
+
+  await page.goto('/markets?venue=uniswap')
+
+  const freshRow = page.locator('tbody tr').filter({ hasText: 'Fresh Route' })
+  await expect(freshRow.getByTestId('dex-route-price')).toContainText('$64,211.10')
+  await expect(freshRow.getByTestId('dex-route-price')).toContainText('Uniswap route')
+  await expect(freshRow.getByTestId('dex-reference-price')).toContainText('$64,203.13')
+  await expect(freshRow.getByTestId('dex-reference-price')).toContainText('CEX composite')
+  await expect(freshRow.getByTestId('dex-route-change')).toContainText('0.42%')
+  await expect(freshRow.getByTestId('dex-reference-change')).toContainText('1.25%')
+
+  const expiredRow = page.locator('tbody tr').filter({ hasText: 'Expired Route' })
+  await expect(expiredRow.getByTestId('dex-route-price')).toContainText('Route unavailable')
+  await expect(expiredRow.getByTestId('dex-route-price')).not.toContainText('Uniswap')
+  await expect(expiredRow.getByTestId('dex-route-price')).not.toContainText('$63,999.00')
+  await expect(expiredRow.getByTestId('dex-route-change')).not.toContainText('9.50%')
+  await expect(expiredRow.getByTestId('dex-route-quality')).toContainText('Route · unavailable')
+  await expect(expiredRow.getByTestId('dex-reference-price')).toContainText('$64,100.00')
+  await expect(expiredRow.getByTestId('dex-reference-price')).toContainText(
+    'CoinGecko market reference',
+  )
+  await expect(expiredRow.getByTestId('dex-reference-quality')).toContainText(
+    'Reference · reference',
+  )
+})
+
 test('DEX coverage never reuses a previous search response as the canonical universe', async ({ page }) => {
   let releaseFullResponse: (() => void) | undefined
   let signalFullRequest: (() => void) | undefined
@@ -506,6 +632,12 @@ test('DEX coverage never reuses a previous search response as the canonical univ
     display_change_kind: 'unavailable',
     display_available: true,
     dex_route_available: false,
+    dex_route_price: unavailablePriceFact(),
+    display_price: marketPriceFact(
+      '1',
+      'composite_reference',
+      'cex_composite',
+    ),
   })
 
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {

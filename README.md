@@ -115,8 +115,9 @@ V2 资产首页与 3 秒轻量 tick 还返回结构化的 `venue_price`、
 绑在一起；调用方不再从一个裸数值猜来源。`display_price` 是 CEX
 composite 或明确的 market reference 分栏，DEX route 只进入
 `dex_route_price`。原平铺字段暂时保留为兼容层；当前 HTTP/TypeScript
-契约已固化，Markets 的 3 秒 tick 已只消费匹配 venue 的价格事实，DEX
-双栏展示在后续切片完成。
+契约已固化，Markets 的 3 秒 tick 已只消费匹配 venue 的价格事实。DEX 页把
+Route 与 Reference 的价格、24h 和质量永久分栏；route 超过 60 秒后，兼容字段
+也会清空链上价格、涨跌、成交额、来源和质量，reference 只能留在自身栏位。
 
 ### 前端工程
 
@@ -377,7 +378,7 @@ README 全局架构
 | 文档 | 内容 |
 |---|---|
 | [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
-| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实契约、交互和响应式验收 |
+| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX route/reference 双栏、竞态降级和响应式验收 |
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、事件恢复、接口鉴权、demo-maker 和验收边界 |
 | [docs/klines-pipeline.md](docs/klines-pipeline.md) | K 线 market identity、显式时间、业务唯一键、分周期续传与刷新 |
 | [docs/redis-top-movers.md](docs/redis-top-movers.md) | Redis ZSET 涨跌榜、TTL 抖动防雪崩、SQL 回退 |
@@ -385,7 +386,7 @@ README 全局架构
 | [docs/dex-hyperliquid.md](docs/dex-hyperliquid.md) | Hyperliquid Perp、Uniswap/Pancake V2+V3 mixed route、链上校验与综合价排除 |
 | [docs/grpc-service.md](docs/grpc-service.md) | gRPC MarketService、与 HTTP 共用业务层、proto 重新生成 |
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、覆盖率与故障隔离 |
-| [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、All canonical 并集、CEX-only 综合现货价、rollout 与交易域边界 |
+| [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、DEX 60 秒 route 边界、All canonical 并集、CEX-only 综合现货价与 rollout |
 | [docs/market-data-quality.md](docs/market-data-quality.md) | provider 隔离、综合价排除/降级、身份异常与修复 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |
 | [docs/project-go-interview-bagua.md](docs/project-go-interview-bagua.md) | Go 工程知识与当前项目代码映射 |

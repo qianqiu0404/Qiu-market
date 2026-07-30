@@ -179,6 +179,79 @@ func TestIntegrationDexSnapshotReplacementClearsExpiredRoute(t *testing.T) {
 	require.Nil(t, legacy.PriceUSD)
 	require.NotNil(t, legacy.LastErrorClass)
 	require.Equal(t, "selection_not_current", *legacy.LastErrorClass)
+
+	dashboardNow := time.Now().UTC().Truncate(time.Millisecond)
+	rank := 1
+	require.NoError(t, store.UpsertAssetMetrics([]AssetMetricCurrent{{
+		AssetGuid: assetID, Provider: "coingecko",
+		ProviderAssetID: "test-dex-snapshot-replacement-reference",
+		MarketCapRank:   &rank, ReferencePriceUSD: textPointer("122.90"),
+		ProviderUpdatedAt: &dashboardNow, ObservedAt: dashboardNow,
+		UpdatedAt: dashboardNow,
+	}}))
+	selectionVersion := dashboardNow.UnixNano()
+	require.NoError(t, tx.Save(&ProviderAssetSelectionState{
+		Provider: "uniswap", ActiveVersion: selectionVersion,
+		TargetCount: 1, CandidateCount: 1, SelectedCount: 1,
+		GeneratedAt: dashboardNow, GenerationReason: "integration-test",
+		CreatedAt: dashboardNow, UpdatedAt: dashboardNow,
+	}).Error)
+	require.NoError(t, tx.Create(&ProviderAssetSelection{
+		Provider: "uniswap", SelectionVersion: selectionVersion,
+		AssetGuid: assetID, SelectionRank: 1, MarketCapRank: &rank,
+		SelectionReason: "integration-test", SelectedAt: dashboardNow,
+		CreatedAt: dashboardNow,
+	}).Error)
+	require.NoError(t, store.UpsertAssetPriceIndexes([]AssetPriceIndex{{
+		AssetGuid: assetID, PriceUSD: textPointer("123.10"),
+		Change24hPct: textPointer("1.25"), Turnover24hUSD: textPointer("9000000"),
+		ContributorCount: 2, Confidence: "medium", Available: true,
+		ObservedAt: dashboardNow,
+		Contributors: datatypes.JSON([]byte(`[
+			{"provider":"binance"},
+			{"provider":"coinbase"}
+		]`)),
+	}}))
+	expiredRouteAt := dashboardNow.Add(-90 * time.Second)
+	require.NoError(t, tx.Model(&AssetVenueSnapshot{}).
+		Where("asset_guid = ? AND provider = ? AND price_kind = ?",
+			assetID, "uniswap", "dex_route").
+		Updates(map[string]any{
+			"price_usd":         "999.99",
+			"change_24h_pct":    "9.5",
+			"turnover_24h_usd":  "123456",
+			"contributor_count": 1,
+			"confidence":        "high",
+			"quality":           "high",
+			"available":         true,
+			"observed_at":       expiredRouteAt,
+			"last_success_at":   expiredRouteAt,
+		}).Error)
+
+	dashboardRows, total, err := store.QueryAssetIndexDashboard(AssetIndexDashboardQuery{
+		Page: 1, PageSize: 20, Venue: "uniswap",
+		Universe: "provider_top50", IncludeUncovered: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, dashboardRows, 1)
+	dashboardRow := dashboardRows[0]
+	require.False(t, dashboardRow.DexRouteAvailable)
+	require.Nil(t, dashboardRow.Price)
+	require.Nil(t, dashboardRow.Change24hPct)
+	require.Nil(t, dashboardRow.Turnover24hUSD)
+	require.Equal(t, "unavailable", dashboardRow.PriceKind)
+	require.Empty(t, dashboardRow.PriceSource)
+	require.Equal(t, "unavailable", dashboardRow.Quality)
+	require.Equal(t, "unavailable", dashboardRow.Confidence)
+	require.False(t, dashboardRow.Available)
+	require.Nil(t, dashboardRow.SourceTime)
+	require.Nil(t, dashboardRow.ObservedAt)
+	require.Equal(t, "unavailable", dashboardRow.FreshnessStatus)
+	require.Equal(t, "composite_reference", dashboardRow.DisplayPriceKind)
+	require.True(t, dashboardRow.DisplayAvailable)
+	require.True(t, equalNumericString("123.10", *dashboardRow.DisplayPrice))
+	require.True(t, equalNumericString("1.25", *dashboardRow.DisplayChange24hPct))
 }
 
 func TestIntegrationTop50DashboardKeepsUnpricedAssetsAndStablePages(t *testing.T) {

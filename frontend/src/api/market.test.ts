@@ -9,6 +9,8 @@ import {
   marketTickCacheKey,
   mergeMarketPriceTickSnapshot,
   unavailableMarketPriceFact,
+  validatedDexRoutePriceFact,
+  validatedDisplayReferencePriceFact,
   type MarketPriceFact,
   type MarketPriceTick,
   type MarketVenue,
@@ -20,6 +22,7 @@ const priceFact = (
   kind: string,
   source: string,
   contributors: string[],
+  observedAt = Date.now(),
 ) => ({
   price_usd: available(value),
   change_24h_pct: available('1.25'),
@@ -27,9 +30,9 @@ const priceFact = (
   available: true,
   kind,
   source,
-  source_time: 1785400001000,
-  observed_at: 1785400002000,
-  last_success_at: 1785400002000,
+  source_time: observedAt - 1_000,
+  observed_at: observedAt,
+  last_success_at: observedAt,
   freshness_status: 'fresh',
   freshness_age_seconds: 1,
   quality: contributors.length >= 3 ? 'high' : 'low',
@@ -161,6 +164,66 @@ describe('getAssetDashboardV2', () => {
     })
     expect(row?.display_change_kind).toBe('unavailable')
     expect(row?.display_available).toBe(false)
+    expect(row?.dex_route_price).toMatchObject({
+      available: false,
+      kind: 'unavailable',
+      source: '',
+      change_24h_pct: { value: null, available: false },
+    })
+    expect(row?.display_price).toMatchObject({
+      available: false,
+      kind: 'unavailable',
+      source: '',
+    })
+  })
+
+  it('keeps an explicit legacy DEX reference out of the route lane', async () => {
+    const observedAt = Date.now() - 2_000
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({
+        code: 2000,
+        result: [{
+          asset_id: 'asset-reference-only',
+          asset_symbol: 'REF',
+          price_usd: available('42'),
+          change_24h_pct: available('9.5'),
+          price_kind: 'dex_route',
+          price_source: 'uniswap',
+          available: true,
+          freshness_status: 'stale',
+          freshness_age_seconds: 90,
+          dex_route_available: false,
+          display_price_usd: available('41.75'),
+          display_price_kind: 'market_reference',
+          display_change_24h_pct: { value: null, available: false },
+          display_available: true,
+          display_observed_at: observedAt,
+          provider_updated_at: observedAt - 1_000,
+        }],
+        total: 1,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })))
+
+    const result = await getAssetDashboardV2(1, 50, {
+      venue: 'uniswap',
+      universe: 'provider_top50',
+    })
+    const row = result.items[0]
+
+    expect(row?.dex_route_price).toMatchObject({
+      available: false,
+      kind: 'unavailable',
+      source: '',
+    })
+    expect(row?.display_price).toMatchObject({
+      available: true,
+      kind: 'market_reference',
+      source: 'coingecko',
+      price_usd: { value: 41.75, available: true },
+      change_24h_pct: { value: null, available: false },
+    })
   })
 
   it('maps venue, DEX route, and display reference facts without merging provenance', async () => {
@@ -208,6 +271,57 @@ describe('getAssetDashboardV2', () => {
       contributors: ['binance', 'coinbase', 'bybit', 'okx'],
     })
     expect(row?.display_price.price_usd).not.toEqual(row?.dex_route_price.price_usd)
+  })
+})
+
+describe('DEX price fact lane validation', () => {
+  it('expires route semantics at 60 seconds and never accepts a route as reference', () => {
+    const now = Date.now()
+    const expiredRoute: MarketPriceFact = {
+      ...typedPriceFact('64000', 'dex_route', 'uniswap', ['uniswap']),
+      change_24h_pct: { value: 9.5, available: true },
+      observed_at: now - 61_000,
+      last_success_at: now - 61_000,
+      freshness_status: 'stale',
+      freshness_age_seconds: 61,
+    }
+
+    expect(validatedDexRoutePriceFact(expiredRoute, 'uniswap', now)).toEqual(
+      unavailableMarketPriceFact(),
+    )
+    expect(validatedDisplayReferencePriceFact(expiredRoute, now)).toEqual(
+      unavailableMarketPriceFact(),
+    )
+  })
+
+  it('keeps a readable route and composite reference as distinct facts', () => {
+    const now = Date.now()
+    const route: MarketPriceFact = {
+      ...typedPriceFact('64211.10', 'dex_route', 'uniswap', ['uniswap']),
+      observed_at: now - 45_000,
+      last_success_at: now - 45_000,
+      freshness_status: 'fresh',
+      freshness_age_seconds: 1,
+    }
+    const reference = typedPriceFact(
+      '64203.13',
+      'composite_reference',
+      'cex_composite',
+      ['binance', 'coinbase'],
+    )
+
+    expect(validatedDexRoutePriceFact(route, 'uniswap', now)).toMatchObject({
+      available: true,
+      kind: 'dex_route',
+      source: 'uniswap',
+      freshness_status: 'stale',
+      freshness_age_seconds: 45,
+    })
+    expect(validatedDisplayReferencePriceFact(reference, now)).toMatchObject({
+      available: true,
+      kind: 'composite_reference',
+      source: 'cex_composite',
+    })
   })
 })
 
@@ -502,6 +616,13 @@ describe('getTop50VenueInsights', () => {
               dex_route_available: false,
               dex_route_count: 0,
               quality: 'medium',
+              dex_route_price: unavailableMarketPriceFact(),
+              display_price: priceFact(
+                '9.9',
+                'composite_reference',
+                'cex_composite',
+                ['binance', 'coinbase'],
+              ),
             },
             {
               asset_id: 'asset-live-route',
@@ -514,6 +635,11 @@ describe('getTop50VenueInsights', () => {
               dex_route_available: true,
               dex_route_count: 2,
               quality: 'high',
+              dex_route_price: {
+                ...priceFact('20', 'dex_route', 'uniswap', ['uniswap']),
+                quality: 'high',
+              },
+              display_price: unavailableMarketPriceFact(),
             },
           ]
         : body.venue === 'pancakeswap'
@@ -528,6 +654,8 @@ describe('getTop50VenueInsights', () => {
               dex_route_available: false,
               dex_route_count: 3,
               quality: 'stale',
+              dex_route_price: unavailableMarketPriceFact(),
+              display_price: unavailableMarketPriceFact(),
             }]
           : []
       return new Response(JSON.stringify({

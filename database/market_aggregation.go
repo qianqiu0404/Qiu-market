@@ -611,14 +611,12 @@ func dashboardDisplay(venue string) dashboardDisplayExpressions {
 		const routeFresh = "venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '60 seconds'"
 		return dashboardDisplayExpressions{
 			price: `CASE
-				WHEN ` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL THEN venue_snapshot.price_usd
 				WHEN composite.price_usd IS NOT NULL THEN composite.price_usd
 				WHEN am.reference_price_usd IS NOT NULL
 				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
 				THEN am.reference_price_usd
 			END`,
 			priceKind: `CASE
-				WHEN ` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL THEN 'dex_route'
 				WHEN composite.price_usd IS NOT NULL THEN 'composite_reference'
 				WHEN am.reference_price_usd IS NOT NULL
 				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
@@ -626,23 +624,16 @@ func dashboardDisplay(venue string) dashboardDisplayExpressions {
 				ELSE 'unavailable'
 			END`,
 			change: `CASE
-				WHEN ` + routeFresh + ` AND venue_snapshot.change_24h_pct IS NOT NULL
-				THEN venue_snapshot.change_24h_pct
 				WHEN composite.change_24h_pct IS NOT NULL THEN composite.change_24h_pct
 			END`,
 			changeKind: `CASE
-				WHEN ` + routeFresh + ` AND venue_snapshot.change_24h_pct IS NOT NULL
-				THEN 'dex_route'
 				WHEN composite.change_24h_pct IS NOT NULL THEN 'composite_reference'
 				ELSE 'unavailable'
 			END`,
-			available: `(` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL)
-				OR composite.price_usd IS NOT NULL
+			available: `composite.price_usd IS NOT NULL
 				OR (am.reference_price_usd IS NOT NULL
 					AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes')`,
 			observedAt: `CASE
-				WHEN ` + routeFresh + ` AND venue_snapshot.price_usd IS NOT NULL
-				THEN venue_snapshot.last_success_at
 				WHEN composite.price_usd IS NOT NULL THEN composite.observed_at
 				WHEN am.reference_price_usd IS NOT NULL
 				  AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes'
@@ -759,8 +750,11 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 	}
 	display := dashboardDisplay(venue)
 	venueStatisticFresh := "venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'"
+	venueSnapshotFresh := "venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds'"
 	if venue == "uniswap" || venue == "pancakeswap" {
 		venueStatisticFresh = display.dexRoute
+		venueSnapshotFresh = `(venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds'
+			AND venue_snapshot.price_usd IS NOT NULL)`
 	}
 	published := map[string]struct{}{}
 	eligible := map[string]struct{}{}
@@ -852,7 +846,7 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 			selected.selection_version,
 			selected.selection_rank,
 			CASE
-				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'
+				WHEN ` + venueStatisticFresh + `
 				THEN venue_snapshot.price_usd
 			END AS price,
 			composite.price_usd AS composite_price,
@@ -869,7 +863,7 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 			` + display.observedAt + ` AS display_observed_at,
 			(` + display.dexRoute + `) AS dex_route_available,
 			CASE
-				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'
+				WHEN ` + venueStatisticFresh + `
 				THEN venue_snapshot.change_24h_pct
 			END AS change_24h_pct,
 			COALESCE(venue_snapshot.version, 0) AS venue_price_version,
@@ -973,19 +967,29 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 			CASE WHEN ` + venueStatisticFresh + `
 				THEN COALESCE(venue_snapshot.contributor_count, 0) ELSE 0
 			END AS priced_venue_count,
-			COALESCE(venue_snapshot.confidence, 'unknown') AS confidence,
-			COALESCE(venue_snapshot.quality, 'unknown') AS quality,
-			COALESCE(venue_snapshot.price_kind, ?) AS price_kind,
-			? AS price_source,
+			CASE WHEN ` + venueStatisticFresh + `
+				THEN COALESCE(venue_snapshot.confidence, 'unknown') ELSE 'unavailable'
+			END AS confidence,
+			CASE WHEN ` + venueStatisticFresh + `
+				THEN COALESCE(venue_snapshot.quality, 'unknown') ELSE 'unavailable'
+			END AS quality,
+			CASE WHEN ` + venueStatisticFresh + `
+				THEN COALESCE(venue_snapshot.price_kind, ?) ELSE 'unavailable'
+			END AS price_kind,
+			CASE WHEN ` + venueStatisticFresh + ` THEN ? ELSE '' END AS price_source,
 			''::text AS coverage_status,
 			''::text AS coverage_reason,
 			CASE
-				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes'
+				WHEN ` + venueStatisticFresh + `
 				THEN TRUE
 				ELSE FALSE
 			END AS available,
-			venue_snapshot.source_time,
-			venue_snapshot.last_success_at AS observed_at,
+			CASE WHEN ` + venueStatisticFresh + `
+				THEN venue_snapshot.source_time
+			END AS source_time,
+			CASE WHEN ` + venueStatisticFresh + `
+				THEN venue_snapshot.last_success_at
+			END AS observed_at,
 			am.provider_updated_at,
 			(latest_snapshot.last_success_at IS NOT NULL) AS latest_available,
 			latest_snapshot.last_success_at AS latest_observed_at,
@@ -993,8 +997,8 @@ func (m *marketAggregationDB) QueryAssetIndexDashboard(query AssetIndexDashboard
 			venue_snapshot.last_success_at,
 			venue_snapshot.last_error_class,
 			CASE
-				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '30 seconds' THEN 'fresh'
-				WHEN venue_snapshot.last_success_at >= clock_timestamp() - INTERVAL '5 minutes' THEN 'stale'
+				WHEN ` + venueSnapshotFresh + ` THEN 'fresh'
+				WHEN ` + venueStatisticFresh + ` THEN 'stale'
 				ELSE 'unavailable'
 			END AS freshness_status,
 			CASE
@@ -1410,8 +1414,6 @@ func (m *marketAggregationDB) QueryAssetIndexSummary(venue string) (*AssetIndexS
 			OR (am.reference_price_usd IS NOT NULL
 				AND am.observed_at >= clock_timestamp() - INTERVAL '15 minutes')`
 		displayChange = `CASE
-			WHEN ` + routeFreshCondition + ` AND snapshot.change_24h_pct IS NOT NULL
-			THEN snapshot.change_24h_pct
 			WHEN composite.available = TRUE
 			  AND composite.observed_at >= clock_timestamp() - INTERVAL '30 seconds'
 			THEN composite.change_24h_pct

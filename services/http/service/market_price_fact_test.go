@@ -118,7 +118,7 @@ func TestDashboardPriceFactsReferenceFallbackDoesNotReviveExpiredDexRoute(t *tes
 		PriceKind:            "dex_route",
 		ObservedAt:           &expiredRouteAt,
 		LastSuccessAt:        &expiredRouteAt,
-		DexRouteAvailable:    false,
+		DexRouteAvailable:    true,
 		MarketReferencePrice: textPtr("64100"),
 		ReferenceObservedAt:  &referenceObservedAt,
 		ReferenceSourceTime:  &referenceSourceTime,
@@ -128,6 +128,7 @@ func TestDashboardPriceFactsReferenceFallbackDoesNotReviveExpiredDexRoute(t *tes
 
 	require.False(t, dexRoutePrice.Available)
 	require.Equal(t, "unavailable", dexRoutePrice.Kind)
+	require.Empty(t, dexRoutePrice.Source)
 	require.False(t, dexRoutePrice.Change24hPct.Available)
 	require.True(t, displayPrice.Available)
 	require.Equal(t, "market_reference", displayPrice.Kind)

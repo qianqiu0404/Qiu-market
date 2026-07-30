@@ -568,6 +568,65 @@ export function unavailableMarketPriceFact(): MarketPriceFact {
   }
 }
 
+function marketPriceFactAgeSecondsAt(
+  fact: MarketPriceFact,
+  nowMilliseconds: number,
+): number {
+  if (!fact.available || fact.observed_at <= 0) return Number.POSITIVE_INFINITY
+  if (fact.observed_at > nowMilliseconds + 5_000) return Number.POSITIVE_INFINITY
+  const wallAge = Math.max(0, Math.floor(
+    (nowMilliseconds - fact.observed_at) / 1_000,
+  ))
+  return Math.max(fact.freshness_age_seconds, wallAge)
+}
+
+export function validatedDexRoutePriceFact(
+  fact: MarketPriceFact,
+  venue: MarketVenue,
+  nowMilliseconds = Date.now(),
+): MarketPriceFact {
+  if (venue !== 'uniswap' && venue !== 'pancakeswap') {
+    return unavailableMarketPriceFact()
+  }
+  if (!fact.available || !fact.price_usd.available ||
+    fact.kind !== 'dex_route' || fact.source !== venue ||
+    (fact.freshness_status !== 'fresh' && fact.freshness_status !== 'stale')) {
+    return unavailableMarketPriceFact()
+  }
+  const age = marketPriceFactAgeSecondsAt(fact, nowMilliseconds)
+  if (!Number.isFinite(age) || age > 60) return unavailableMarketPriceFact()
+  return {
+    ...fact,
+    freshness_status: age <= 30 ? 'fresh' : 'stale',
+    freshness_age_seconds: age,
+  }
+}
+
+export function validatedDisplayReferencePriceFact(
+  fact: MarketPriceFact,
+  nowMilliseconds = Date.now(),
+): MarketPriceFact {
+  const composite = fact.kind === 'composite_reference' &&
+    fact.source === 'cex_composite'
+  const marketReference = fact.kind === 'market_reference' &&
+    fact.source === 'coingecko'
+  if (!fact.available || !fact.price_usd.available ||
+    (!composite && !marketReference) ||
+    (fact.freshness_status !== 'fresh' && fact.freshness_status !== 'stale')) {
+    return unavailableMarketPriceFact()
+  }
+  const age = marketPriceFactAgeSecondsAt(fact, nowMilliseconds)
+  const readableFor = composite ? 30 : 15 * 60
+  if (!Number.isFinite(age) || age > readableFor) {
+    return unavailableMarketPriceFact()
+  }
+  return {
+    ...fact,
+    freshness_status: composite || age <= 5 * 60 ? 'fresh' : 'stale',
+    freshness_age_seconds: age,
+  }
+}
+
 function toMarketPriceFact(value: unknown): MarketPriceFact {
   if (value == null || typeof value !== 'object') {
     return unavailableMarketPriceFact()
@@ -629,6 +688,50 @@ function legacyTickPriceFact(
     contributors,
     version: toNum(raw.version),
   }
+}
+
+function legacyDexRoutePriceFact(
+  raw: Record<string, unknown>,
+  venue: MarketVenue,
+): MarketPriceFact {
+  const observedAt = toNum(raw.observed_at)
+  const age = observedAt > 0
+    ? Math.max(0, Math.floor((Date.now() - observedAt) / 1_000))
+    : Number.POSITIVE_INFINITY
+  const candidate = legacyTickPriceFact({
+    ...raw,
+    available: Boolean(raw.dex_route_available),
+    freshness_status: age <= 30 ? 'fresh' : age <= 60 ? 'stale' : 'unavailable',
+    freshness_age_seconds: age,
+  }, toStr(raw.price_kind), toStr(raw.price_source).toLowerCase())
+  return validatedDexRoutePriceFact(candidate, venue)
+}
+
+function legacyDexDisplayReferencePriceFact(
+  raw: Record<string, unknown>,
+): MarketPriceFact {
+  const kind = toStr(raw.display_price_kind).toLowerCase()
+  const source = kind === 'composite_reference'
+    ? 'cex_composite'
+    : kind === 'market_reference'
+      ? 'coingecko'
+      : ''
+  const observedAt = toNum(raw.display_observed_at)
+  const candidate = legacyTickPriceFact({
+    price_usd: raw.display_price_usd,
+    change_24h_pct: raw.display_change_24h_pct,
+    turnover_24h_usd: { value: null, available: false },
+    available: Boolean(raw.display_available) && observedAt > 0,
+    source_time: kind === 'market_reference' ? raw.provider_updated_at : 0,
+    observed_at: observedAt,
+    last_success_at: observedAt,
+    freshness_status: 'fresh',
+    freshness_age_seconds: 0,
+    quality: kind === 'market_reference' ? 'reference' : 'unknown',
+    contributor_count: 0,
+    version: 0,
+  }, kind, source)
+  return validatedDisplayReferencePriceFact(candidate)
 }
 
 /* ===== Endpoints ===== */
@@ -841,7 +944,7 @@ export async function getAssetDashboardV2(
         ? change24hPct
         : toAvailableDecimal(item.display_change_24h_pct)
     let venuePrice = toMarketPriceFact(item.venue_price)
-    const dexRoutePrice = toMarketPriceFact(item.dex_route_price)
+    let dexRoutePrice = toMarketPriceFact(item.dex_route_price)
     let displayPrice = toMarketPriceFact(item.display_price)
     if (item.venue_price == null &&
       ['binance', 'coinbase', 'bybit', 'okx', 'hyperliquid'].includes(requestedVenue)) {
@@ -852,6 +955,16 @@ export async function getAssetDashboardV2(
     }
     if (item.display_price == null && requestedVenue === 'all') {
       displayPrice = legacyTickPriceFact(item, 'composite_reference', 'cex_composite')
+    }
+    if (strictDexDisplay) {
+      if (item.dex_route_price == null) {
+        dexRoutePrice = legacyDexRoutePriceFact(item, requestedVenue)
+      }
+      if (item.display_price == null) {
+        displayPrice = legacyDexDisplayReferencePriceFact(item)
+      }
+      dexRoutePrice = validatedDexRoutePriceFact(dexRoutePrice, requestedVenue)
+      displayPrice = validatedDisplayReferencePriceFact(displayPrice)
     }
     return {
       rank,
@@ -938,10 +1051,18 @@ export async function getMarketPriceTicks(
       }
       if (item.dex_route_price == null &&
         (responseVenue === 'uniswap' || responseVenue === 'pancakeswap')) {
-        dexRoutePrice = legacyTickPriceFact(item, 'dex_route', provider)
+        dexRoutePrice = legacyDexRoutePriceFact({
+          ...item,
+          dex_route_available: item.available,
+          price_source: provider,
+        }, responseVenue)
       }
       if (item.display_price == null && responseVenue === 'all') {
         displayPrice = legacyTickPriceFact(item, 'composite_reference', 'cex_composite')
+      }
+      if (responseVenue === 'uniswap' || responseVenue === 'pancakeswap') {
+        dexRoutePrice = validatedDexRoutePriceFact(dexRoutePrice, responseVenue)
+        displayPrice = validatedDisplayReferencePriceFact(displayPrice)
       }
       return {
         asset_id: toStr(item.asset_id),
@@ -1135,7 +1256,8 @@ export async function getTop50VenueInsights(): Promise<Top50VenueInsights> {
     const page = outcome.value.page
     const priced = page.items.filter((item) =>
       dexDisplay
-        ? item.display_available && item.display_price_usd.available
+        ? validatedDexRoutePriceFact(item.dex_route_price, venue).available ||
+          validatedDisplayReferencePriceFact(item.display_price).available
         : item.available && item.price_usd.available).length
     return {
       venue,
@@ -1181,18 +1303,19 @@ export async function getTop50VenueInsights(): Promise<Top50VenueInsights> {
   const dex_routes = snapshots
     .filter(({ venue }) => venue === 'uniswap' || venue === 'pancakeswap')
     .flatMap(({ venue, page }) => page.items
-      .filter((item) => item.dex_route_available && item.dex_route_count > 0)
-      .map((item): DexRouteMonitorRow => ({
-        asset_id: item.asset_id,
-        asset_symbol: item.asset_symbol,
-        provider: venue as 'uniswap' | 'pancakeswap',
-        price: item.dex_route_available && item.price_usd.available
-          ? item.price_usd.value
-          : null,
-        available: item.dex_route_available,
-        route_count: item.dex_route_count,
-        quality: item.quality || 'unknown',
-      })))
+      .flatMap((item): DexRouteMonitorRow[] => {
+        const routeFact = validatedDexRoutePriceFact(item.dex_route_price, venue)
+        if (!routeFact.available || item.dex_route_count <= 0) return []
+        return [{
+          asset_id: item.asset_id,
+          asset_symbol: item.asset_symbol,
+          provider: venue as 'uniswap' | 'pancakeswap',
+          price: routeFact.price_usd.value,
+          available: true,
+          route_count: item.dex_route_count,
+          quality: routeFact.quality || 'unknown',
+        }]
+      }))
 
   return { coverage, dispersion, dex_routes }
 }

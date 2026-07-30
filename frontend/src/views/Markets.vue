@@ -16,6 +16,8 @@ import {
   marketTickCacheKey,
   mergeMarketPriceTickSnapshot,
   unavailableMarketPriceFact,
+  validatedDexRoutePriceFact,
+  validatedDisplayReferencePriceFact,
   type AssetDashboardV2Item,
   type AssetFilter,
   type AssetMarketV2Item,
@@ -279,13 +281,14 @@ const dexCoverage = computed(() => {
   ) {
     return null
   }
-  const routed = assets.value.filter((asset) => asset.dex_route_available).length
-  const displayed = assets.value.filter((asset) => asset.display_available).length
+  const routed = assets.value.filter((asset) => dexRouteFact(asset).available).length
+  const displayed = assets.value.filter((asset) =>
+    dexRouteFact(asset).available || dexReferenceFact(asset).available).length
   return {
     displayed,
     routed,
     referenceOnly: assets.value.filter((asset) =>
-      asset.display_available && !asset.dex_route_available).length,
+      dexReferenceFact(asset).available && !dexRouteFact(asset).available).length,
     unavailable: Math.max(0, total.value - displayed),
     coveragePct: displayed / total.value * 100,
   }
@@ -411,7 +414,7 @@ const pageSubtitle = computed(() => {
     const coverage = dexCoverage.value
     if (coverage) {
       return `${coverage.displayed}/${total.value} displayed · ` +
-        `${coverage.routed} fresh on-chain · ${coverage.referenceOnly} reference only${version}${preview}`
+        `${coverage.routed} current routes · ${coverage.referenceOnly} reference only${version}${preview}`
     }
     return `${current.displayed_asset_count}/${current.asset_count} displayed snapshot · ` +
       `route freshness pending full-page verification${version}${preview}`
@@ -480,8 +483,30 @@ function confidenceVariant(confidence: string): 'live' | 'delayed' | 'accent' {
   return 'accent'
 }
 
+function dexRouteFact(asset: AssetDashboardV2Item): MarketPriceFact {
+  if (!isDexVenue()) return unavailableMarketPriceFact()
+  return validatedDexRoutePriceFact(asset.dex_route_price, venue.value)
+}
+
+function dexReferenceFact(asset: AssetDashboardV2Item): MarketPriceFact {
+  if (!isDexVenue()) return unavailableMarketPriceFact()
+  return validatedDisplayReferencePriceFact(asset.display_price)
+}
+
+function priceFactQualityLabel(fact: MarketPriceFact): string {
+  if (!fact.available) return 'unavailable'
+  return fact.quality || 'unknown'
+}
+
+function priceFactQualityVariant(
+  fact: MarketPriceFact,
+): 'live' | 'delayed' | 'accent' {
+  if (!fact.available) return 'accent'
+  if (fact.freshness_status === 'stale') return 'delayed'
+  return confidenceVariant(fact.quality)
+}
+
 function assetQualityLabel(asset: AssetDashboardV2Item): string {
-  if (isDexVenue() && asset.display_available && !asset.dex_route_available) return 'reference'
   if (REALTIME_VENUES.has(venue.value)) {
     const resolved = resolveRealtimePrice(asset)
     if (resolved.mode === 'last_good') return 'last-good'
@@ -576,7 +601,7 @@ function resolveRealtimePrice(asset: AssetDashboardV2Item): RealtimePriceResolut
 }
 
 function displayPrice(asset: AssetDashboardV2Item): AvailableDecimal {
-  if (isDexVenue()) return asset.display_price_usd
+  if (isDexVenue()) return dexRouteFact(asset).price_usd
   if (REALTIME_VENUES.has(venue.value)) {
     return resolveRealtimePrice(asset).fact.price_usd
   }
@@ -584,7 +609,7 @@ function displayPrice(asset: AssetDashboardV2Item): AvailableDecimal {
 }
 
 function displayChange(asset: AssetDashboardV2Item): AvailableDecimal {
-  if (isDexVenue()) return asset.display_change_24h_pct
+  if (isDexVenue()) return dexRouteFact(asset).change_24h_pct
   if (REALTIME_VENUES.has(venue.value)) {
     return resolveRealtimePrice(asset).fact.change_24h_pct
   }
@@ -592,6 +617,7 @@ function displayChange(asset: AssetDashboardV2Item): AvailableDecimal {
 }
 
 function displayTurnover(asset: AssetDashboardV2Item): AvailableDecimal {
+  if (isDexVenue()) return dexRouteFact(asset).turnover_24h_usd
   if (REALTIME_VENUES.has(venue.value)) {
     return resolveRealtimePrice(asset).fact.turnover_24h_usd
   }
@@ -614,12 +640,7 @@ function marketCountLabel(asset: AssetDashboardV2Item): string {
 }
 
 function priceCaption(asset: AssetDashboardV2Item): string {
-  if (isDexVenue() && asset.display_price_kind === 'composite_reference') {
-    return 'CEX composite reference · no fresh route'
-  }
-  if (isDexVenue() && asset.display_price_kind === 'market_reference') {
-    return 'CoinGecko reference · no fresh route'
-  }
+  if (isDexVenue()) return dexRouteCaption(asset)
   if (REALTIME_VENUES.has(venue.value)) {
     const resolved = resolveRealtimePrice(asset)
     const source = venue.value === 'all' ? 'Composite' : selectedVenueLabel.value
@@ -642,8 +663,23 @@ function priceCaption(asset: AssetDashboardV2Item): string {
     return `${asset.priced_venue_count || asset.contributor_count} contributor${(asset.priced_venue_count || asset.contributor_count) === 1 ? '' : 's'}`
   }
   if (venue.value === 'hyperliquid') return 'Perpetual mark'
-  if (isDexVenue()) return 'Fresh on-chain route indication'
   return `${selectedVenueLabel.value} spot`
+}
+
+function dexRouteCaption(asset: AssetDashboardV2Item): string {
+  const fact = dexRouteFact(asset)
+  if (!fact.available) return 'Route unavailable'
+  return `${selectedVenueLabel.value} route · ${fact.freshness_status} · ` +
+    `${priceFactAgeSeconds(fact)}s old`
+}
+
+function dexReferenceCaption(asset: AssetDashboardV2Item): string {
+  const fact = dexReferenceFact(asset)
+  if (!fact.available) return 'Reference unavailable'
+  const source = fact.kind === 'composite_reference'
+    ? 'CEX composite'
+    : 'CoinGecko market reference'
+  return `${source} · ${fact.freshness_status} · ${priceFactAgeSeconds(fact)}s old`
 }
 
 function tickDegradationLabel(reason: string): string {
@@ -733,7 +769,7 @@ function coverageReasonLabel(reason: string): string {
         <span>{{ selectedVenueLabel }} Coverage</span>
         <strong class="num">{{ coveragePercentLabel }}</strong>
         <small v-if="isDexVenue() && dexCoverage">
-          {{ dexCoverage.routed }} on-chain ·
+          {{ dexCoverage.routed }} current routes ·
           {{ dexCoverage.referenceOnly }} reference only ·
           {{ dexCoverage.unavailable }} unavailable
         </small>
@@ -818,12 +854,24 @@ function coverageReasonLabel(reason: string): string {
             <tr>
               <th><button type="button" class="sort-label" @click="setSort('rank')">#</button></th>
               <th><button type="button" class="sort-label" @click="setSort('symbol')">Asset</button></th>
-              <th class="align-right"><button type="button" class="sort-label" @click="setSort('price')">Price</button></th>
-              <th class="align-right"><button type="button" class="sort-label" @click="setSort('change24h')">24h %</button></th>
+              <th class="align-right">
+                <button type="button" class="sort-label" @click="setSort('price')">
+                  {{ isDexVenue() ? 'Route / Reference' : 'Price' }}
+                </button>
+              </th>
+              <th class="align-right">
+                <button type="button" class="sort-label" @click="setSort('change24h')">
+                  {{ isDexVenue() ? 'Route / Ref 24h %' : '24h %' }}
+                </button>
+              </th>
               <th class="align-right"><button type="button" class="sort-label" @click="setSort('market_cap')">Market Cap</button></th>
-              <th class="align-right"><button type="button" class="sort-label" @click="setSort('turnover24h')">Venue Volume</button></th>
+              <th class="align-right">
+                <button type="button" class="sort-label" @click="setSort('turnover24h')">
+                  {{ isDexVenue() ? 'Route Volume' : 'Venue Volume' }}
+                </button>
+              </th>
               <th class="align-center">Markets / Routes</th>
-              <th class="align-center">Quality</th>
+              <th class="align-center">{{ isDexVenue() ? 'Route / Ref Quality' : 'Quality' }}</th>
             </tr>
           </thead>
           <tbody v-if="dashboard.loading.value && assets.length === 0">
@@ -854,24 +902,62 @@ function coverageReasonLabel(reason: string): string {
                 </span>
               </td>
               <td class="align-right">
-                <strong class="num">{{ formatMetricPrice(displayPrice(asset)) }}</strong>
-                <small class="contributors">{{ priceCaption(asset) }}</small>
+                <div v-if="isDexVenue()" class="dex-price-lanes">
+                  <span class="dex-price-lane" data-testid="dex-route-price">
+                    <small class="dex-lane-label">Route</small>
+                    <strong class="num">{{ formatMetricPrice(dexRouteFact(asset).price_usd) }}</strong>
+                    <small class="contributors">{{ dexRouteCaption(asset) }}</small>
+                  </span>
+                  <span class="dex-price-lane" data-testid="dex-reference-price">
+                    <small class="dex-lane-label">Reference</small>
+                    <strong class="num">{{ formatMetricPrice(dexReferenceFact(asset).price_usd) }}</strong>
+                    <small class="contributors">{{ dexReferenceCaption(asset) }}</small>
+                  </span>
+                </div>
+                <template v-else>
+                  <strong class="num">{{ formatMetricPrice(displayPrice(asset)) }}</strong>
+                  <small class="contributors">{{ priceCaption(asset) }}</small>
+                </template>
               </td>
               <td class="align-right">
-                <StatusBadge
-                  v-if="displayChange(asset).available"
-                  :variant="(displayChange(asset).value ?? 0) >= 0 ? 'up' : 'down'"
-                  :label="formatPercent(displayChange(asset).value ?? 0)"
-                  :dot="false"
-                />
-                <span
-                  v-else
-                  class="unavailable missing-24h"
-                  :title="coverageReasonLabel(asset.coverage_reason || 'missing_24h_reference')"
-                >
-                  <strong>—</strong>
-                  <small>{{ coverageReasonLabel(asset.coverage_reason || 'missing_24h_reference') }}</small>
-                </span>
+                <div v-if="isDexVenue()" class="dex-change-lanes">
+                  <span class="dex-change-lane" data-testid="dex-route-change">
+                    <small class="dex-lane-label">Route</small>
+                    <StatusBadge
+                      v-if="dexRouteFact(asset).change_24h_pct.available"
+                      :variant="(dexRouteFact(asset).change_24h_pct.value ?? 0) >= 0 ? 'up' : 'down'"
+                      :label="formatPercent(dexRouteFact(asset).change_24h_pct.value ?? 0)"
+                      :dot="false"
+                    />
+                    <strong v-else class="unavailable">—</strong>
+                  </span>
+                  <span class="dex-change-lane" data-testid="dex-reference-change">
+                    <small class="dex-lane-label">Reference</small>
+                    <StatusBadge
+                      v-if="dexReferenceFact(asset).change_24h_pct.available"
+                      :variant="(dexReferenceFact(asset).change_24h_pct.value ?? 0) >= 0 ? 'up' : 'down'"
+                      :label="formatPercent(dexReferenceFact(asset).change_24h_pct.value ?? 0)"
+                      :dot="false"
+                    />
+                    <strong v-else class="unavailable">—</strong>
+                  </span>
+                </div>
+                <template v-else>
+                  <StatusBadge
+                    v-if="displayChange(asset).available"
+                    :variant="(displayChange(asset).value ?? 0) >= 0 ? 'up' : 'down'"
+                    :label="formatPercent(displayChange(asset).value ?? 0)"
+                    :dot="false"
+                  />
+                  <span
+                    v-else
+                    class="unavailable missing-24h"
+                    :title="coverageReasonLabel(asset.coverage_reason || 'missing_24h_reference')"
+                  >
+                    <strong>—</strong>
+                    <small>{{ coverageReasonLabel(asset.coverage_reason || 'missing_24h_reference') }}</small>
+                  </span>
+                </template>
               </td>
               <td class="align-right num">
                 {{ formatMetric(asset.market_cap_usd, FIAT_SYMBOLS[fiat], rate) }}
@@ -891,7 +977,20 @@ function coverageReasonLabel(reason: string): string {
                 </button>
               </td>
               <td class="align-center">
+                <div v-if="isDexVenue()" class="dex-quality-lanes">
+                  <StatusBadge
+                    data-testid="dex-route-quality"
+                    :variant="priceFactQualityVariant(dexRouteFact(asset))"
+                    :label="`Route · ${priceFactQualityLabel(dexRouteFact(asset))}`"
+                  />
+                  <StatusBadge
+                    data-testid="dex-reference-quality"
+                    :variant="priceFactQualityVariant(dexReferenceFact(asset))"
+                    :label="`Reference · ${priceFactQualityLabel(dexReferenceFact(asset))}`"
+                  />
+                </div>
                 <StatusBadge
+                  v-else
                   :variant="assetQualityVariant(asset)"
                   :label="assetQualityLabel(asset)"
                 />
@@ -1171,6 +1270,35 @@ th {
 .asset-name { color: var(--text-1); font-weight: 600; }
 .asset-symbol,
 .contributors { display: block; color: var(--text-3); font-size: 10px; font-weight: 400; }
+.dex-price-lanes,
+.dex-change-lanes,
+.dex-quality-lanes {
+  display: inline-grid;
+  gap: 6px;
+}
+.dex-price-lanes { min-width: 200px; }
+.dex-price-lane {
+  display: grid;
+  grid-template-columns: 58px minmax(110px, 1fr);
+  align-items: baseline;
+  gap: 1px 8px;
+}
+.dex-price-lane .contributors { grid-column: 1 / -1; }
+.dex-change-lane {
+  display: grid;
+  grid-template-columns: 58px minmax(64px, auto);
+  align-items: center;
+  justify-content: end;
+  gap: 7px;
+}
+.dex-quality-lanes { justify-items: stretch; }
+.dex-lane-label {
+  color: var(--text-3);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
 .rank,
 .unavailable { color: var(--text-3); }
 .missing-24h {

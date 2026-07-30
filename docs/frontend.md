@@ -51,8 +51,25 @@ v2 接口：
 contributor count/list 和 version。DEX 页面可以同时展示 route 与 reference，但
 不能把 reference 写回 route，也不能让过期 route 的 change/source 标签附着到
 reference。旧 `price_usd/display_price_usd` 暂时只为旧调用方保留；新前端状态以
-price fact 为准。API 类型化与解析、Markets tick 代次/乱序保护已经完成；DEX
-双栏消费在下一独立提交完成。
+price fact 为准。API 类型化与解析、Markets tick 代次/乱序保护已经完成。DEX
+表格的 Price、24h 与 Quality 永久拆成 Route / Reference 两行；Venue Volume
+在 DEX tab 明确改为 Route Volume，不拿 composite turnover 冒充链上成交额。
+
+DEX 读取链路是：
+
+```text
+asset_venue_snapshot (route, <=60s)
+  -> dex_route_price -> identity + wall-age validation -> Route lane
+
+asset_price_index / asset_metric_current
+  -> display_price -> reference-kind + wall-age validation -> Reference lane
+```
+
+服务端兼容字段也执行同一边界：route 超过 60 秒后，旧 `price_usd`、
+`change_24h_pct`、turnover、source、quality 与 observed time 均不可见；旧
+`display_price_usd` 对 DEX 只表达 composite/market reference。前端兼容解析器
+只接受显式 `dex_route_available + dex_route + 同 venue + <=60s` 的旧 route，
+也只接受带独立 observed time 的 composite/market reference。
 
 ### 3 秒 tick、请求代次与 last-good
 
@@ -137,12 +154,13 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 6. **DEX selection 固定 50，但不伪造 50 条报价。** listed membership 来自 reviewed chain contract 和链上 V2/V3 pool identity；询价按 `$10K → $1K → $100` 逐级尝试，路线最多两跳且可混合协议，仍使用 TVL、成交量、新鲜度、冲击和 spread 门槛。小金额成功必须显示实际金额并降为 Low。代价是 DEX 页仍会同时出现可询价行和 `Not covered` 行，但产品覆盖与价格质量不再互相污染。
 7. **价格事实不在组件内重新拼装。** 被拒绝的是让 `Markets.vue` 从 price/source/time 多个字段猜当前语义；响应稍大，但旧缓存、乱序响应和 route/reference 切换都有同一校验单位。
 8. **generation + 单调事实门，而不是只看 query key。** 被拒绝的是 A→B→A 时复用同 key，也拒绝“最后返回者获胜”；代价是保存一个小型 venue+asset last-good map，但请求竞态不会改写来源。
+9. **DEX 永久双栏，而不是选一个“最好看的价格”。** 被拒绝的是 route 新鲜时覆盖 reference、route 过期时再把 reference 改名为 route。代价是 DEX 行更高、字段更多，但链上指示价与市场参考永远不会静默换口径。
 
 ## 关键代码入口与顺序
 
 1. `frontend/src/router.ts`：资产首页、market 详情、旧地址兼容和 System Catalog。
-2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal、三类 `MarketPriceFact` 与类型归一。
-3. `frontend/src/views/Markets.vue`：概览条、全局资产表、tick generation、last-good 降级、URL 抽屉和 venue K 线入口。
+2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal、三类 `MarketPriceFact`、DEX identity/时间窗校验与类型归一。
+3. `frontend/src/views/Markets.vue`：概览条、Route/Reference 双栏、tick generation、last-good 降级、URL 抽屉和 venue K 线入口。
 4. `frontend/src/api/trading.ts`：十进制字符串 REST、CSRF 和 WebSocket cursor。
 5. `frontend/src/views/Trade.vue`：参考/K 线、订单簿、下单、余额、订单与成交。
 6. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
@@ -155,6 +173,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | Asset row | 一个 canonical 资产的综合读模型 | 首页的一枚币 | v2 asset dashboard |
 | Venue market | 某 CEX 的一条可报价交易对 | 某家店的具体报价牌 | CEX drawer |
 | DEX route | 某链上池组合、带实际名义金额的指示性询价 | 先问 $10K，不行再问 $1K/$100 | DEX drawer |
+| Reference lane | 不改变 route 状态的 CEX composite 或 CoinGecko 市场参考 | 旁边单独挂一张参考价牌，不能改写链上价牌 | `display_price` |
 | Price fact | 把价格、来源、时间、新鲜度和质量绑在一起的状态对象 | 一张不能撕掉店名和打印时间的价签 | dashboard/tick |
 | Request generation | 每次查询身份变化都递增的本地批次号 | 同一道菜重新点单，也要看新单号 | `Markets.vue` tick snapshot |
 | Last-good | 最近一次通过身份和单调性检查、仍在可读窗口内的事实 | 明说是上一张有效价签，不假装刚打印 | venue+asset tick cache |
@@ -202,11 +221,15 @@ npm run build
 npm run test:e2e
 ```
 
-Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not covered`、资产抽屉、Unknown 不变 0、显式 24h 原因、旧路由重定向，以及交易页的无假 K 线、登录、虚拟入金、挂单、撤单、市价成交、费用证据和 1440/1180/768 页面级无横向溢出。2026-07-26 全量为 16 个场景。
+Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not covered`、
+Route/Reference 双栏与 route 过期语义清除、资产抽屉、Unknown 不变 0、显式
+24h 原因、旧路由重定向和页面级无横向溢出。2026-07-30 Markets 专项为
+16/16；交易页的登录、虚拟入金、挂单、撤单、市价成交与费用证据仍由其独立
+spec 验收。
 
 ## Owner 60 秒解释
 
-> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact。3 秒 tick 还绑定 query generation，先检查真实 venue identity，再要求 version 和 observed time 不倒退；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。Trade 是独立虚拟交易纵切片；任一真实数据缺失都显示 unavailable，不使用 mock。
+> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact。DEX 的 Route 和 Reference 永远分栏，route 最多读 60 秒，过期会同时失去链上价格、涨跌、成交额、来源和质量；reference 只保留自己的标签。3 秒 CEX tick 绑定 query generation，再检查 venue identity、version 和 observed time；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。
 
 ## 闭卷自检
 
@@ -228,6 +251,7 @@ Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not cov
 16. 为什么本地登录按钮必须由 `/auth/capabilities` 决定是否显示？
 17. 为什么 trading WebSocket 重连必须携带 cursor？
 18. 为什么行情参考不可用时不能影响用户撤单和撮合恢复？
+19. 为什么 DEX route 过期后，reference 即使仍可用也不能继承 route 的涨跌、质量或来源？
 19. 为什么旧缓存里的 `display_price_usd` 不能覆盖一个更新的 `dex_route_price.version`？
 20. A→B→A 时 query key 最终相同，为什么 generation 仍必须不同？
 21. 为什么同价、同 version、但更新的 observed time 应当被接受？
