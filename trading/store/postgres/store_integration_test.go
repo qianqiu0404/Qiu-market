@@ -169,6 +169,17 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 		(remaining[0].Sequence == firstCursor.Sequence && remaining[0].EventIndex <= firstCursor.EventIndex) {
 		t.Fatalf("cursor replay = %+v after %+v", remaining, firstCursor)
 	}
+	for _, event := range remaining {
+		eventCount, found, err := persistence.EventBatchSize(ctx, event.Sequence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !found || event.BatchEventCount != eventCount ||
+			event.EventIndex > event.BatchEventCount {
+			t.Fatalf("feed batch metadata = event=%+v count=%d found=%t",
+				event, eventCount, found)
+		}
+	}
 	published, err := persistence.OutboxAfter(ctx, postgresstore.Cursor{}, 1)
 	if err != nil {
 		t.Fatal(err)

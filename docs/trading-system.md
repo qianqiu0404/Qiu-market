@@ -147,6 +147,42 @@ go test ./trading/reliability \
   -count=1
 ```
 
+### C. Reconnect / reconcile
+
+只记 `market_sequence` 不足以发现同一命令批次中间丢了一条事件。现在 cursor
+checkpoint 同时保存 `(market_sequence,event_index)` 和该 sequence 的权威
+`batch_event_count`：
+
+1. PostgreSQL feed 读取会关联对应 `trading_event_batch.result_payload`，带回该批
+   总事件数；
+2. gRPC reconnect 先核对客户端 cursor 所在批次的 event count；
+3. `EventReconciler` 忽略小于等于 checkpoint 的重复 cursor，只把严格后继交给
+   原 consumer；
+4. 同批 index 跳号或跨过完整 sequence 会返回 `DataLoss`，不静默继续；
+5. 断线后仍以最后成功 cursor 分页补发；从 snapshot checkpoint 启动时只重放
+   checkpoint 之后的事件；
+6. unknown commit 的 event replay 期间，`MarketRunner` 立即返回 unavailable，
+   不再把新写排队；恢复成功并追平后才重新接受写入。
+
+这里拒绝的是“只按 sequence 去重”以及“reconcile 时先收下写请求以后再执行”：
+前者看不见批内缺口，后者把 unavailable 伪装成可写。代价是 reconnect 时多一次
+batch metadata 查询，feed 查询也必须关联不可变 event batch。cursor gate 不保存
+订单、余额或账本，因此没有形成第二套交易状态。
+
+`trading/reliability/reconcile_test.go` 覆盖重复、批内/跨批缺口、多次断线分页和
+snapshot 后重放；`trading/rpc/server/reconcile_stream_test.go` 覆盖 gRPC 去重与
+gap fail-closed；`trading/runtime/reconcile_gate_test.go` 覆盖恢复未完成不可写。
+这些是 `build-verified`。PostgreSQL 集成断言已加入，但本次没有
+`S78_TEST_POSTGRES_DSN`，因此真实 feed join/reconnect 仍是 `environment-pending`。
+
+2026-07-30 已执行：
+
+```bash
+go test ./trading/reliability -run '^TestEventReconciler' -count=1
+go test ./trading/runtime -run '^TestMarketRunnerRejectsWritesUntilReconcileCompletes$' -count=1
+go test ./trading/rpc/server -run '^TestTradingGRPCSubscribeEvents' -count=1
+```
+
 ## PostgreSQL 真值与恢复
 
 核心交易表由 `migrations/2026082100023.sql` 创建，发布游标分离由

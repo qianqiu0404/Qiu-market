@@ -15,6 +15,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/exchange"
 	"github.com/the-web3/s78-market-services/trading/ledger"
 	"github.com/the-web3/s78-market-services/trading/outbox"
+	"github.com/the-web3/s78-market-services/trading/reliability"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
 )
@@ -38,13 +39,15 @@ type Cursor struct {
 }
 
 type StoredEvent struct {
-	MarketID domain.MarketID
-	Cursor   Cursor
-	Event    domain.Event
+	MarketID        domain.MarketID
+	Cursor          Cursor
+	BatchEventCount uint32
+	Event           domain.Event
 }
 
 type EventSource interface {
 	EventsAfter(context.Context, Cursor, int) ([]StoredEvent, error)
+	BatchEventCount(context.Context, uint64) (uint32, bool, error)
 }
 
 type DeliveryStatusSource interface {
@@ -405,6 +408,29 @@ func (s *Server) SubscribeEvents(
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
+	checkpoint := reliability.Checkpoint{
+		Cursor: reliability.Cursor{
+			MarketSequence: cursor.Sequence,
+			EventIndex:     cursor.EventIndex,
+		},
+	}
+	if cursor.Sequence > 0 {
+		eventCount, found, readErr := s.events.BatchEventCount(
+			stream.Context(),
+			cursor.Sequence,
+		)
+		if readErr != nil {
+			return status.Error(codes.Unavailable, "read trading cursor metadata")
+		}
+		if !found {
+			return status.Error(codes.InvalidArgument, "cursor sequence is unavailable")
+		}
+		checkpoint.BatchEventCount = eventCount
+	}
+	reconciler, err := reliability.NewEventReconciler(checkpoint)
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	timer := time.NewTimer(0)
 	defer timer.Stop()
@@ -418,23 +444,59 @@ func (s *Server) SubscribeEvents(
 		if readErr != nil {
 			return status.Error(codes.Unavailable, "read trading events")
 		}
+		head := reconciler.Checkpoint().Cursor
+		envelopes := make([]reliability.EventEnvelope, 0, len(events))
 		for _, stored := range events {
 			if stored.MarketID != market.ID {
 				return status.Error(codes.Internal, "event source returned another market")
 			}
-			converted, convertErr := toEvent(market, stored.Event)
-			if convertErr != nil {
-				return status.Error(codes.Internal, convertErr.Error())
+			eventCursor := reliability.Cursor{
+				MarketSequence: stored.Cursor.Sequence,
+				EventIndex:     stored.Cursor.EventIndex,
 			}
-			if sendErr := stream.Send(&tradingv1.EventEnvelope{
-				MarketId:   string(stored.MarketID),
-				Sequence:   strconv.FormatUint(stored.Cursor.Sequence, 10),
-				EventIndex: stored.Cursor.EventIndex,
-				Event:      converted,
-			}); sendErr != nil {
-				return mapError(sendErr)
+			if cursorAfter(eventCursor, head) {
+				head = eventCursor
 			}
-			cursor = stored.Cursor
+			envelopes = append(envelopes, reliability.EventEnvelope{
+				Cursor:          eventCursor,
+				BatchEventCount: stored.BatchEventCount,
+				Event:           stored.Event,
+			})
+		}
+		var (
+			convertErr error
+			sendErr    error
+		)
+		report, reconcileErr := reconciler.Reconcile(
+			head,
+			envelopes,
+			func(event reliability.EventEnvelope) error {
+				converted, err := toEvent(market, event.Event)
+				if err != nil {
+					convertErr = err
+					return err
+				}
+				sendErr = stream.Send(&tradingv1.EventEnvelope{
+					MarketId:   string(market.ID),
+					Sequence:   strconv.FormatUint(event.MarketSequence, 10),
+					EventIndex: event.EventIndex,
+					Event:      converted,
+				})
+				return sendErr
+			},
+		)
+		if convertErr != nil {
+			return status.Error(codes.Internal, convertErr.Error())
+		}
+		if sendErr != nil {
+			return mapError(sendErr)
+		}
+		if reconcileErr != nil {
+			return status.Error(codes.DataLoss, "trading event reconciliation failed")
+		}
+		cursor = Cursor{
+			Sequence:   report.End.MarketSequence,
+			EventIndex: report.End.EventIndex,
 		}
 		if len(events) == s.config.EventBatchSize {
 			timer.Reset(0)
@@ -442,6 +504,12 @@ func (s *Server) SubscribeEvents(
 			timer.Reset(s.config.EventPollEvery)
 		}
 	}
+}
+
+func cursorAfter(left, right reliability.Cursor) bool {
+	return left.MarketSequence > right.MarketSequence ||
+		(left.MarketSequence == right.MarketSequence &&
+			left.EventIndex > right.EventIndex)
 }
 
 func (s *Server) market(requested string) (domain.Market, error) {

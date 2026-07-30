@@ -185,8 +185,9 @@ func TestCancelOrderIdempotencyPrecedesClosedStateCheck(t *testing.T) {
 
 func TestTradingGRPCSubscribeEventsFromCursor(t *testing.T) {
 	source := &oneEventSource{event: tradingserver.StoredEvent{
-		MarketID: "BTC-USDT",
-		Cursor:   tradingserver.Cursor{Sequence: 1, EventIndex: 1},
+		MarketID:        "BTC-USDT",
+		Cursor:          tradingserver.Cursor{Sequence: 1, EventIndex: 1},
+		BatchEventCount: 1,
 		Event: domain.Event{
 			Sequence:  1,
 			Index:     1,
@@ -230,6 +231,16 @@ func (s *oneEventSource) EventsAfter(
 		return []tradingserver.StoredEvent{s.event}, nil
 	}
 	return nil, nil
+}
+
+func (s *oneEventSource) BatchEventCount(
+	_ context.Context,
+	sequence uint64,
+) (uint32, bool, error) {
+	if sequence != s.event.Cursor.Sequence {
+		return 0, false, nil
+	}
+	return s.event.BatchEventCount, true, nil
 }
 
 func newTestClient(

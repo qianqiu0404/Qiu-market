@@ -8,6 +8,7 @@ import (
 
 type PostgresEventFeed interface {
 	FeedAfter(context.Context, postgresstore.Cursor, int) ([]postgresstore.OutboxEvent, error)
+	EventBatchSize(context.Context, uint64) (uint32, bool, error)
 }
 
 type PostgresEventSource struct {
@@ -38,8 +39,16 @@ func (s *PostgresEventSource) EventsAfter(
 				Sequence:   event.Sequence,
 				EventIndex: event.EventIndex,
 			},
-			Event: event.Event,
+			BatchEventCount: event.BatchEventCount,
+			Event:           event.Event,
 		})
 	}
 	return result, nil
+}
+
+func (s *PostgresEventSource) BatchEventCount(
+	ctx context.Context,
+	sequence uint64,
+) (uint32, bool, error) {
+	return s.store.EventBatchSize(ctx, sequence)
 }

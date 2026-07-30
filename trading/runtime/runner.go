@@ -377,16 +377,19 @@ func (r *MarketRunner) handle(request command) {
 }
 
 func (r *MarketRunner) recoverAfterPersistenceError(cause error) {
+	r.gate.Lock()
+	r.accepting = false
 	r.mu.Lock()
 	r.state = StateRecovering
 	r.recordIncidentLocked(cause)
 	r.mu.Unlock()
+	r.gate.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	restored, err := exchange.Restore(ctx, r.market, r.eventLog, r.snapshots)
 	cancel()
 	if err != nil {
 		r.gate.Lock()
-		r.accepting = false
 		r.mu.Lock()
 		r.state = StateFailed
 		r.recordIncidentLocked(fmt.Errorf("recover after persistence failure: %w", err))
@@ -394,14 +397,23 @@ func (r *MarketRunner) recoverAfterPersistenceError(cause error) {
 		r.gate.Unlock()
 		return
 	}
+
+	r.gate.Lock()
 	r.mu.Lock()
 	r.trading = restored
-	r.state = StateReady
 	r.sequence = restored.Sequence()
 	r.lastError = ""
 	r.lastRecoveredAt = time.Now().UTC()
 	r.recoveryCount++
+	select {
+	case <-r.stop:
+		r.state = StateClosing
+	default:
+		r.state = StateReady
+		r.accepting = true
+	}
 	r.mu.Unlock()
+	r.gate.Unlock()
 }
 
 func (r *MarketRunner) readyExchange() (*exchange.Exchange, error) {

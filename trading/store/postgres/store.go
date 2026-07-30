@@ -34,13 +34,14 @@ type Cursor struct {
 }
 
 type OutboxEvent struct {
-	MarketID    domain.MarketID  `json:"market_id"`
-	Sequence    uint64           `json:"sequence"`
-	EventIndex  uint32           `json:"event_index"`
-	EventType   domain.EventType `json:"event_type"`
-	Event       domain.Event     `json:"event"`
-	PublishedAt *time.Time       `json:"published_at,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
+	MarketID        domain.MarketID  `json:"market_id"`
+	Sequence        uint64           `json:"sequence"`
+	EventIndex      uint32           `json:"event_index"`
+	BatchEventCount uint32           `json:"batch_event_count,omitempty"`
+	EventType       domain.EventType `json:"event_type"`
+	Event           domain.Event     `json:"event"`
+	PublishedAt     *time.Time       `json:"published_at,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
 }
 
 type ProjectionCheckpoint struct {
@@ -735,6 +736,31 @@ func (s *Store) PublishOutboxBatch(
 	}, nil
 }
 
+func (s *Store) EventBatchSize(
+	ctx context.Context,
+	sequence uint64,
+) (uint32, bool, error) {
+	if sequence == 0 || sequence > math.MaxInt64 {
+		return 0, false, fmt.Errorf("event batch sequence is outside PostgreSQL bigint range")
+	}
+	var count int32
+	err := s.pool.QueryRow(ctx, `
+		SELECT jsonb_array_length(result_payload->'events')
+		FROM trading_event_batch
+		WHERE market_id=$1 AND sequence=$2
+	`, s.market.ID, int64(sequence)).Scan(&count)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("query trading event batch size: %w", err)
+	}
+	if count <= 0 {
+		return 0, false, fmt.Errorf("trading event batch %d is empty", sequence)
+	}
+	return uint32(count), true, nil
+}
+
 func (s *Store) FeedAfter(ctx context.Context, cursor Cursor, limit int) ([]OutboxEvent, error) {
 	if cursor.Sequence > math.MaxInt64 || cursor.EventIndex > math.MaxInt32 {
 		return nil, fmt.Errorf("cursor exceeds PostgreSQL integer range")
@@ -743,11 +769,19 @@ func (s *Store) FeedAfter(ctx context.Context, cursor Cursor, limit int) ([]Outb
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT sequence, event_index, event_type, payload, published_at
-		FROM trading_event_feed
-		WHERE market_id=$1
-		  AND (sequence>$2 OR (sequence=$2 AND event_index>$3))
-		ORDER BY sequence ASC, event_index ASC
+		SELECT feed.sequence,
+		       feed.event_index,
+		       jsonb_array_length(batch.result_payload->'events'),
+		       feed.event_type,
+		       feed.payload,
+		       feed.published_at
+		FROM trading_event_feed AS feed
+		JOIN trading_event_batch AS batch
+		  ON batch.market_id=feed.market_id
+		 AND batch.sequence=feed.sequence
+		WHERE feed.market_id=$1
+		  AND (feed.sequence>$2 OR (feed.sequence=$2 AND feed.event_index>$3))
+		ORDER BY feed.sequence ASC, feed.event_index ASC
 		LIMIT $4
 	`, s.market.ID, int64(cursor.Sequence), int32(cursor.EventIndex), limit)
 	if err != nil {
@@ -758,15 +792,17 @@ func (s *Store) FeedAfter(ctx context.Context, cursor Cursor, limit int) ([]Outb
 	var events []OutboxEvent
 	for rows.Next() {
 		var (
-			sequence    int64
-			eventIndex  int32
-			eventType   string
-			payload     []byte
-			publishedAt time.Time
+			sequence        int64
+			eventIndex      int32
+			batchEventCount int32
+			eventType       string
+			payload         []byte
+			publishedAt     time.Time
 		)
 		if err := rows.Scan(
 			&sequence,
 			&eventIndex,
+			&batchEventCount,
 			&eventType,
 			&payload,
 			&publishedAt,
@@ -784,6 +820,8 @@ func (s *Store) FeedAfter(ctx context.Context, cursor Cursor, limit int) ([]Outb
 		}
 		if event.Sequence != uint64(sequence) ||
 			event.Index != uint32(eventIndex) ||
+			batchEventCount <= 0 ||
+			eventIndex > batchEventCount ||
 			event.Type != domain.EventType(eventType) {
 			return nil, fmt.Errorf(
 				"event feed identity mismatch at %d/%d",
@@ -792,13 +830,14 @@ func (s *Store) FeedAfter(ctx context.Context, cursor Cursor, limit int) ([]Outb
 			)
 		}
 		events = append(events, OutboxEvent{
-			MarketID:    s.market.ID,
-			Sequence:    uint64(sequence),
-			EventIndex:  uint32(eventIndex),
-			EventType:   domain.EventType(eventType),
-			Event:       event,
-			PublishedAt: &publishedAt,
-			CreatedAt:   publishedAt,
+			MarketID:        s.market.ID,
+			Sequence:        uint64(sequence),
+			EventIndex:      uint32(eventIndex),
+			BatchEventCount: uint32(batchEventCount),
+			EventType:       domain.EventType(eventType),
+			Event:           event,
+			PublishedAt:     &publishedAt,
+			CreatedAt:       publishedAt,
 		})
 	}
 	if err := rows.Err(); err != nil {
