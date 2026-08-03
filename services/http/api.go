@@ -22,6 +22,7 @@ import (
 	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/http/routes"
 	"github.com/the-web3/s78-market-services/services/http/service"
+	"github.com/the-web3/s78-market-services/services/http/systemstatus"
 	tradinggateway "github.com/the-web3/s78-market-services/trading/gateway"
 )
 
@@ -201,6 +202,7 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 		router.Post(fmt.Sprintf(KlinePath), h.GetKlines)
 		router.Post(fmt.Sprintf(MarketSparklinesPath), h.GetMarketSparklines)
 		router.Post(fmt.Sprintf(SystemOverviewPath), h.GetSystemOverview)
+		mountSystemStatusRoute(router, svc, a.tradingHandler)
 		router.Post(fmt.Sprintf(FiatRatePath), h.GetFiatRates)
 		router.Post(fmt.Sprintf(TopMoversPath), h.GetTopMovers)
 		router.Post(fmt.Sprintf(KlineAnalyticsPath), h.GetKlineAnalytics)
@@ -219,6 +221,20 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 
 func mountTradingRoutes(router chi.Router, handler http.Handler) {
 	router.Handle("/api/v1/trading/*", handler)
+}
+
+func mountSystemStatusRoute(
+	router chi.Router,
+	market systemstatus.MarketSource,
+	trading http.Handler,
+) {
+	router.Handle(
+		systemstatus.Path,
+		systemstatus.NewHandler(systemstatus.NewService(
+			market,
+			systemstatus.NewHandlerTradingProbe(trading),
+		)),
+	)
 }
 
 func (a *API) initDB(ctx context.Context, cfg *config.Config) error {
