@@ -155,6 +155,55 @@ func TestEventReconcilerReconnectsInPagesWithoutReapplying(t *testing.T) {
 	}
 }
 
+func TestEventReconcilerStartsAtBeginningOfExistingBatch(t *testing.T) {
+	checkpoint := reliability.Checkpoint{
+		Cursor: reliability.Cursor{
+			MarketSequence: 3,
+			EventIndex:     0,
+		},
+		BatchEventCount: 2,
+	}
+	reconciler, err := reliability.NewEventReconciler(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var applied []string
+	report, err := reconciler.Reconcile(
+		reliability.Cursor{MarketSequence: 3, EventIndex: 2},
+		[]reliability.EventEnvelope{
+			reconcileEvent(3, 1, 2),
+			reconcileEvent(3, 2, 2),
+		},
+		func(event reliability.EventEnvelope) error {
+			applied = append(applied, cursorLabel(event.Cursor))
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Complete || report.Applied != 2 || report.Duplicates != 0 ||
+		fmt.Sprint(applied) != "[3/1 3/2]" {
+		t.Fatalf("batch-start report=%+v applied=%v", report, applied)
+	}
+}
+
+func TestEventReconcilerRejectsZeroIndexEnvelope(t *testing.T) {
+	reconciler, err := reliability.NewEventReconciler(reliability.Checkpoint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := reconcileEvent(1, 0, 1)
+	if _, err := reconciler.Reconcile(
+		reliability.Cursor{MarketSequence: 1, EventIndex: 1},
+		[]reliability.EventEnvelope{event},
+		func(reliability.EventEnvelope) error { return nil },
+	); !errors.Is(err, reliability.ErrInvalidCursor) {
+		t.Fatalf("zero-index envelope error = %v", err)
+	}
+}
+
 func TestEventReconcilerReplaysOnlyAfterSnapshotCheckpoint(t *testing.T) {
 	snapshot := reliability.Checkpoint{
 		Cursor:          reliability.Cursor{MarketSequence: 2, EventIndex: 2},

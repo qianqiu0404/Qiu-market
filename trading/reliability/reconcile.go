@@ -216,6 +216,12 @@ func validateCheckpoint(checkpoint Checkpoint) error {
 }
 
 func validateEnvelope(envelope EventEnvelope) error {
+	if envelope.EventIndex == 0 {
+		return fmt.Errorf(
+			"%w: event envelope requires a non-zero event index",
+			ErrInvalidCursor,
+		)
+	}
 	if err := validateCheckpoint(Checkpoint{
 		Cursor:          envelope.Cursor,
 		BatchEventCount: envelope.BatchEventCount,
@@ -241,9 +247,6 @@ func validateCursor(cursor Cursor) error {
 			return fmt.Errorf("%w: zero sequence requires zero event index", ErrInvalidCursor)
 		}
 		return nil
-	}
-	if cursor.EventIndex == 0 {
-		return fmt.Errorf("%w: non-zero sequence requires an event index", ErrInvalidCursor)
 	}
 	return nil
 }
