@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 frontend_root="$repo_root/frontend"
+vercel_project_file="${QIU_MARKET_VERCEL_PROJECT_FILE:-$frontend_root/.vercel/project.json}"
 support_dir="$HOME/Library/Application Support/Qiu Market"
 production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
 evidence_file="${QIU_MARKET_PREVIEW_OAUTH_EVIDENCE_FILE:-$support_dir/observations/preview-oauth-evidence.json}"
@@ -63,7 +64,7 @@ for required_command in curl git jq python3 vercel; do
     exit 1
   fi
 done
-if [ ! -f "$frontend_root/.vercel/project.json" ]; then
+if [ ! -f "$vercel_project_file" ]; then
   echo "The Qiu Market frontend is not linked to Vercel." >&2
   exit 1
 fi

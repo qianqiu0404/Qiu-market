@@ -8,6 +8,7 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 frontend_root="$repo_root/frontend"
+vercel_project_file="${QIU_MARKET_VERCEL_PROJECT_FILE:-$frontend_root/.vercel/project.json}"
 support_dir="${QIU_MARKET_SUPPORT_DIR:-$HOME/Library/Application Support/Qiu Market}"
 release_dir="${QIU_MARKET_VERCEL_RELEASE_DIR:-$support_dir/vercel-release}"
 gate_report="${QIU_MARKET_PREVIEW_GATE_REPORT:-$support_dir/observations/preview-gate-latest.json}"
@@ -148,14 +149,14 @@ require_commands() {
       return 1
     fi
   done
-  if [ ! -f "$frontend_root/.vercel/project.json" ]; then
+  if [ ! -f "$vercel_project_file" ]; then
     echo "Qiu Market frontend is not linked to Vercel." >&2
     return 1
   fi
 }
 
 project_identity() {
-  jq -er "$1 // empty" "$frontend_root/.vercel/project.json"
+  jq -er "$1 // empty" "$vercel_project_file"
 }
 
 private_json_mode() {

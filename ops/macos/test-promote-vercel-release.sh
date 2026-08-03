@@ -44,8 +44,11 @@ export QIU_MARKET_FIXTURE_PROMOTED_HOST="$promoted_host"
 export QIU_MARKET_FIXTURE_PREVIOUS_ID="$previous_id"
 export QIU_MARKET_FIXTURE_PREVIOUS_HOST="$previous_host"
 export QIU_MARKET_FIXTURE_COMMIT="$candidate_commit"
+export QIU_MARKET_VERCEL_PROJECT_FILE="$fixture_dir/vercel-project.json"
+printf '{"projectId":"prj_fixture","orgId":"team_fixture"}\n' \
+  > "$QIU_MARKET_VERCEL_PROJECT_FILE"
 export QIU_MARKET_FIXTURE_PROJECT_ID="$(
-  jq -r '.projectId' "$repo_root/frontend/.vercel/project.json"
+  jq -r '.projectId' "$QIU_MARKET_VERCEL_PROJECT_FILE"
 )"
 export QIU_MARKET_PRODUCTION_ORIGIN="https://qiu-market.vercel.app"
 export QIU_MARKET_FUNNEL_ORIGIN="https://fixture-funnel.invalid"
