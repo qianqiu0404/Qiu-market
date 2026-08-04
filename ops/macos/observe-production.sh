@@ -21,6 +21,13 @@ guardian_last_restart_file="$support_dir/guardian/last-automatic-restart-at"
 lock_dir="$observation_dir/.observer.lock"
 started_epoch="$(date -u '+%s')"
 scheduled_epoch=$((started_epoch - started_epoch % 60))
+observer_curl_timeout="${QIU_MARKET_OBSERVER_CURL_TIMEOUT_SECONDS:-12}"
+if [[ ! "$observer_curl_timeout" =~ ^[0-9]+$ ]] ||
+  [ "$observer_curl_timeout" -lt 3 ] ||
+  [ "$observer_curl_timeout" -gt 20 ]; then
+  echo "QIU_MARKET_OBSERVER_CURL_TIMEOUT_SECONDS must be an integer from 3 to 20." >&2
+  exit 1
+fi
 
 # shellcheck disable=SC1091
 source "$repo_root/ops/macos/proxy-env.sh"
@@ -63,7 +70,7 @@ curl_code() {
   local result
   local code
   local duration
-  result="$(curl --silent --show-error --max-time 20 \
+  result="$(curl --silent --show-error --max-time "$observer_curl_timeout" \
     --dump-header "$output.headers" \
     --output "$output" --write-out '%{http_code} %{time_total}' "$@" \
     2>"$output.error" || true)"
@@ -73,7 +80,7 @@ curl_code() {
     awk -v seconds="$duration" 'BEGIN { printf "%.0f\n", seconds * 1000 }' \
       > "$output.latency-ms"
   else
-    printf '20000\n' > "$output.latency-ms"
+    printf '%s000\n' "$observer_curl_timeout" > "$output.latency-ms"
   fi
   if [[ "$code" =~ ^[0-9]{3}$ ]]; then
     printf '%s' "$code"
@@ -124,23 +131,14 @@ dashboard_body() {
   }'
 }
 
+# Public page and cache-backed market reads do not all need the live Funnel on
+# a cache hit, so they can be sampled together. The three requests that always
+# exercise the personal Funnel are intentionally serialized below. This keeps
+# the observer from generating its own ingress burst on a bandwidth-limited
+# demo tunnel.
 probe_pids=()
 curl_code "$temp_dir/site.html" "$production_origin/markets" \
   > "$temp_dir/site.http" &
-probe_pids+=("$!")
-curl_code "$temp_dir/funnel-health.txt" "$funnel_origin/healthz" \
-  > "$temp_dir/funnel-health.http" &
-probe_pids+=("$!")
-curl_code "$temp_dir/unsigned.json" \
-  --request POST \
-  --header 'content-type: application/json' \
-  --data '{"consumer_token":"production-observer","venue":"all","universe":"provider_union"}' \
-  "$funnel_origin/api/v2/get_market_overview" \
-  > "$temp_dir/unsigned.http" &
-probe_pids+=("$!")
-curl_code "$temp_dir/trading.json" \
-  "$production_origin/api/v1/trading/markets/BTC-USDT/status" \
-  > "$temp_dir/trading.http" &
 probe_pids+=("$!")
 curl_code "$temp_dir/system.json" \
   --request POST \
@@ -167,6 +165,18 @@ probe_pids+=("$!")
 for probe_pid in "${probe_pids[@]}"; do
   wait "$probe_pid"
 done
+
+curl_code "$temp_dir/funnel-health.txt" "$funnel_origin/healthz" \
+  > "$temp_dir/funnel-health.http"
+curl_code "$temp_dir/unsigned.json" \
+  --request POST \
+  --header 'content-type: application/json' \
+  --data '{"consumer_token":"production-observer","venue":"all","universe":"provider_union"}' \
+  "$funnel_origin/api/v2/get_market_overview" \
+  > "$temp_dir/unsigned.http"
+curl_code "$temp_dir/trading.json" \
+  "$production_origin/api/v1/trading/markets/BTC-USDT/status" \
+  > "$temp_dir/trading.http"
 
 site_http="$(cat "$temp_dir/site.http")"
 funnel_health_http="$(cat "$temp_dir/funnel-health.http")"
