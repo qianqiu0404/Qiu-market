@@ -424,6 +424,7 @@ canary 身份由 `asset_guid + route_key + quote_notional_usd + selected_at` 构
 ~/Library/Application Support/Qiu Market/observations/latest.json
 ~/Library/Application Support/Qiu Market/observations/production-soak.jsonl
 ~/Library/Application Support/Qiu Market/observations/acceptance-epoch.json
+~/Library/Application Support/Qiu Market/observations/archive/observer-locks/
 ```
 
 `latest.json` 是当前状态，JSONL 是追加式审计历史。正式汇总不是混合部署的滚动
@@ -431,6 +432,14 @@ canary 身份由 `asset_guid + route_key + quote_notional_usd + selected_at` 构
 URL 和 release commit 全部匹配且 provenance 在线校验通过的样本。旧 schema、
 其它 epoch 和其它 release 永远不计入；漏掉的墙钟分钟按失败处理，同一分钟的重复
 样本采用“任一失败即失败”。
+
+Observer 使用原子目录锁，并把 PID、进程启动时间和精确脚本入口共同作为 owner
+身份。下一分钟触发看到真实活 owner 时只退出，不发送信号、不覆盖锁；PID 已退出、
+PID 被复用或初始化锁超过 30 秒仍不完整时，会先把整个旧锁移动到上述 archive，再由
+唯一的竞争者获得新锁。正常退出只清理 token 仍属于自己的锁；HUP/INT/TERM 产生
+独立 evidence，SIGKILL/断电留下的锁会在下次启动时形成 `stale-lock-recovered`
+证据。因此观察器可以从异常退出自愈，同时保留为什么失去一个墙钟样本的证据；归档
+不能补算漏掉的分钟，正式 SLO 仍把缺失分钟计为失败。
 
 只有两个固定 DEX canary 的 24/48/72 小时窗口全部通过，并且完整 10,080 个预定
 分钟、监控覆盖率和可用率均不低于 99.5%、REST 5xx 低于 0.5%、REST p95 低于

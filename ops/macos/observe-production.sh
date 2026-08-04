@@ -19,6 +19,7 @@ tailscale_cli="/opt/homebrew/bin/tailscale"
 runtime_link="$support_dir/runtime-current"
 guardian_last_restart_file="$support_dir/guardian/last-automatic-restart-at"
 lock_dir="$observation_dir/.observer.lock"
+lock_archive_dir="$observation_dir/archive/observer-locks"
 started_epoch="$(date -u '+%s')"
 scheduled_epoch=$((started_epoch - started_epoch % 60))
 observer_curl_timeout="${QIU_MARKET_OBSERVER_CURL_TIMEOUT_SECONDS:-12}"
@@ -32,19 +33,35 @@ fi
 # shellcheck disable=SC1091
 source "$repo_root/ops/macos/proxy-env.sh"
 qiu_export_system_proxy
+# shellcheck disable=SC1091
+source "$repo_root/ops/macos/observer-lock.sh"
 
 mkdir -p "$observation_dir"
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  echo "Qiu Market production observation is already running."
+if ! qiu_observer_acquire_lock \
+  "$lock_dir" \
+  "$lock_archive_dir" \
+  "$repo_root/ops/macos/observe-production.sh"; then
+  echo "Qiu Market production observation is already running ($QIU_OBSERVER_LOCK_BUSY_REASON)."
   exit 0
 fi
 
 temp_dir="$(mktemp -d "$observation_dir/.run.XXXXXX")"
 cleanup() {
+  local exit_status="$1"
   rm -rf -- "$temp_dir"
-  rmdir "$lock_dir" 2>/dev/null || true
+  qiu_observer_release_lock
+  return "$exit_status"
 }
-trap cleanup EXIT
+on_signal() {
+  local signal_name="$1"
+  local exit_code="$2"
+  qiu_observer_record_lock_event "signal-$signal_name" "launchd-observer-signal"
+  exit "$exit_code"
+}
+trap 'cleanup $?' EXIT
+trap 'on_signal hup 129' HUP
+trap 'on_signal int 130' INT
+trap 'on_signal term 143' TERM
 
 for command in curl jq psql; do
   if ! command -v "$command" >/dev/null 2>&1; then

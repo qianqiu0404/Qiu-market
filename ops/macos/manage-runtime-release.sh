@@ -30,6 +30,7 @@ runtime_paths=(
   ops/macos/manage-transport-smoke.sh
   ops/macos/manage-user-resilience.sh
   ops/macos/observe-production.sh
+  ops/macos/observer-lock.sh
   ops/macos/production-lib.sh
   ops/macos/proxy-env.sh
   ops/macos/restore-drill.sh
