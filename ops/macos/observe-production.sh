@@ -14,6 +14,8 @@ database_env="${QIU_MARKET_DATABASE_ENV_FILE:-$support_dir/database.env}"
 epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoch.json}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
 funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
+tailscale_socket="$support_dir/tailscale/tailscaled.sock"
+tailscale_cli="/opt/homebrew/bin/tailscale"
 lock_dir="$observation_dir/.observer.lock"
 started_epoch="$(date -u '+%s')"
 scheduled_epoch=$((started_epoch - started_epoch % 60))
@@ -171,6 +173,26 @@ trading_http="$(cat "$temp_dir/trading.http")"
 system_http="$(cat "$temp_dir/system.http")"
 uniswap_http="$(cat "$temp_dir/uniswap.http")"
 pancake_http="$(cat "$temp_dir/pancakeswap.http")"
+
+tailscale_backend_state="unavailable"
+tailscale_health_json='["tailscale status unavailable"]'
+tailscale_health_ok=false
+if [ -x "$tailscale_cli" ] && [ -S "$tailscale_socket" ]; then
+  tailscale_status_json="$(
+    "$tailscale_cli" --socket="$tailscale_socket" status --json 2>/dev/null || echo '{}'
+  )"
+  tailscale_backend_state="$(
+    jq -r '.BackendState // "unavailable"' <<<"$tailscale_status_json" 2>/dev/null || echo unavailable
+  )"
+  tailscale_health_json="$(
+    jq -c 'if (.Health | type) == "array" then .Health else [] end' \
+      <<<"$tailscale_status_json" 2>/dev/null || echo '["invalid tailscale health payload"]'
+  )"
+  if [ "$tailscale_backend_state" = Running ] &&
+    jq -e 'length == 0' <<<"$tailscale_health_json" >/dev/null 2>&1; then
+    tailscale_health_ok=true
+  fi
+fi
 
 trading_provenance="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Provenance)"
 trading_release_commit="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Release-Commit)"
@@ -582,6 +604,7 @@ if [ "$site_http" = 200 ] &&
   [ -z "$trading_last_error" ] &&
   { [ -z "$trading_outbox_state" ] || [ "$trading_outbox_state" = ready ]; } &&
   [ -z "$trading_outbox_last_error" ] &&
+  [ "$tailscale_health_ok" = true ] &&
   [ "$disk_free_bytes" -ge $((25 * 1024 * 1024 * 1024)) ] &&
   [ -z "$retention_last_error" ] &&
   [ "$database_ok" = true ]; then
@@ -622,7 +645,9 @@ uniswap_transport_error="$(error_summary "$temp_dir/uniswap.json.error")"
 pancake_transport_error="$(error_summary "$temp_dir/pancakeswap.json.error")"
 failure_scope="none"
 if [ "$sample_ok" != true ]; then
-  if [ "$site_http" = 000 ] &&
+  if [ "$tailscale_health_ok" != true ]; then
+    failure_scope="tailscale_health"
+  elif [ "$site_http" = 000 ] &&
     [ "$funnel_health_http" = 000 ] &&
     [ "$trading_http" = 000 ] &&
     [ "$system_http" = 000 ] &&
@@ -708,6 +733,9 @@ jq -n \
   --arg system_transport_error "$system_transport_error" \
   --arg uniswap_transport_error "$uniswap_transport_error" \
   --arg pancake_transport_error "$pancake_transport_error" \
+  --arg tailscale_backend_state "$tailscale_backend_state" \
+  --arg tailscale_health_ok "$tailscale_health_ok" \
+  --argjson tailscale_health "$tailscale_health_json" \
   --argjson uniswap "$uniswap_summary" \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
@@ -824,7 +852,10 @@ jq -n \
       disk_free_bytes: ($disk_free_bytes | tonumber? // 0),
       disk_state: $disk_state,
       retention_last_success_at: ($retention_last_success_at | tonumber? // 0),
-      retention_last_error: $retention_last_error
+      retention_last_error: $retention_last_error,
+      tailscale_backend_state: $tailscale_backend_state,
+      tailscale_health: $tailscale_health,
+      tailscale_health_ok: ($tailscale_health_ok == "true")
     },
     latency_ms: {
       production_page: ($site_latency_ms | tonumber? // 20000),
