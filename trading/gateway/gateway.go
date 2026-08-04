@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -102,6 +103,7 @@ func New(ctx context.Context, config Config) (*Gateway, error) {
 	httpConfig.AllowedOrigins = config.AllowedOrigins
 	httpConfig.LocalMode = config.LocalAuth
 	httpConfig.SecureCookies = config.SecureCookies
+	httpConfig.RecoveryGate = config.RecoveryGate
 	server, err := httpapi.New(
 		tradingv1.NewTradingServiceClient(connection),
 		sessions,
@@ -269,7 +271,49 @@ func writeRecoveryStatus(
 	}
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(writer).Encode(status)
+	_ = json.NewEncoder(writer).Encode(recoveryStatusDTO{
+		SchemaVersion:       status.SchemaVersion,
+		MarketID:            string(status.MarketID),
+		EpochID:             status.EpochID,
+		Phase:               string(status.Phase),
+		RuntimeSequence:     strconv.FormatUint(status.Proof.RuntimeSequence, 10),
+		StateHash:           status.Proof.StateHash,
+		LedgerBalanced:      status.Proof.LedgerBalanced,
+		EventContinuous:     status.Proof.EventContinuous,
+		ProjectionCaughtUp:  status.Proof.ProjectionCaughtUp,
+		OutboxCaughtUp:      status.Proof.OutboxCaughtUp,
+		TransportHealthy:    status.Proof.TransportHealthy,
+		WritesEnabled:       status.WritesEnabled,
+		LastError:           status.LastError,
+		Version:             strconv.FormatUint(status.Version, 10),
+		StartedAt:           status.StartedAt,
+		UpdatedAt:           status.UpdatedAt,
+		ContinuityUncertain: status.ContinuityUncertain,
+		ContinuityError:     status.ContinuityError,
+	})
+}
+
+// recoveryStatusDTO keeps counters as decimal strings at the browser boundary;
+// internal CAS types remain uint64 and never depend on JavaScript precision.
+type recoveryStatusDTO struct {
+	SchemaVersion       int       `json:"schema_version"`
+	MarketID            string    `json:"market_id"`
+	EpochID             string    `json:"epoch_id"`
+	Phase               string    `json:"phase"`
+	RuntimeSequence     string    `json:"runtime_sequence"`
+	StateHash           string    `json:"state_hash"`
+	LedgerBalanced      bool      `json:"ledger_balanced"`
+	EventContinuous     bool      `json:"event_continuous"`
+	ProjectionCaughtUp  bool      `json:"projection_caught_up"`
+	OutboxCaughtUp      bool      `json:"outbox_caught_up"`
+	TransportHealthy    bool      `json:"transport_healthy"`
+	WritesEnabled       bool      `json:"writes_enabled"`
+	LastError           string    `json:"last_error,omitempty"`
+	Version             string    `json:"version"`
+	StartedAt           time.Time `json:"started_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	ContinuityUncertain bool      `json:"continuity_uncertain"`
+	ContinuityError     string    `json:"continuity_error,omitempty"`
 }
 
 func writeRecoveryBlocked(

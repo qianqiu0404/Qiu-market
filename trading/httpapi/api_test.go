@@ -43,6 +43,7 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 	}
 	config := httpapi.DefaultConfig()
 	config.LocalMode = true
+	config.RecoveryGate = true
 	config.AllowedOrigins = []string{"http://trade.test"}
 	config.WriteLimit = 100
 	api, err := httpapi.New(grpcClient, sessions, tickets, oauthStates, nil, config)
@@ -64,7 +65,8 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 	}
 	var capabilities map[string]bool
 	decodeResponse(t, response, &capabilities)
-	if !capabilities["local_login_enabled"] || capabilities["github_oauth_enabled"] {
+	if !capabilities["local_login_enabled"] || capabilities["github_oauth_enabled"] ||
+		!capabilities["recovery_gate_enabled"] {
 		t.Fatalf("auth capabilities = %+v", capabilities)
 	}
 

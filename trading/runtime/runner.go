@@ -9,6 +9,7 @@ import (
 
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/exchange"
+	"github.com/the-web3/s78-market-services/trading/recovery"
 	"github.com/the-web3/s78-market-services/trading/store"
 )
 
@@ -35,6 +36,8 @@ type Config struct {
 	SnapshotTimeout time.Duration
 	WriteGate       interface {
 		RequireWritable(context.Context) error
+		Admit(context.Context, recovery.AdmissionMode, domain.AccountID) (recovery.Admission, error)
+		ValidateAdmission(context.Context, recovery.Admission) error
 	}
 }
 
@@ -56,6 +59,7 @@ type Status struct {
 	LastIncident    string          `json:"last_incident,omitempty"`
 	LastIncidentAt  string          `json:"last_incident_at,omitempty"`
 	LastRecoveredAt string          `json:"last_recovered_at,omitempty"`
+	StateHash       string          `json:"state_hash,omitempty"`
 }
 
 type operation uint8
@@ -67,12 +71,15 @@ const (
 )
 
 type command struct {
-	ctx      context.Context
-	kind     operation
-	fund     domain.FundRequest
-	submit   domain.NewOrder
-	cancel   domain.CancelOrder
-	response chan response
+	ctx          context.Context
+	kind         operation
+	fund         domain.FundRequest
+	submit       domain.NewOrder
+	cancel       domain.CancelOrder
+	response     chan response
+	safetyCancel bool
+	safetyFund   bool
+	admission    *recovery.Admission
 }
 
 type response struct {
@@ -82,7 +89,9 @@ type response struct {
 
 // MarketRunner is the single sequential command owner for one market. Once a
 // command is accepted into the queue it may still commit after the caller's
-// context is canceled; callers must retry with the same idempotency key.
+// context is canceled; callers must retry with the same idempotency key. With
+// a recovery gate, enqueue-time admission is revalidated at the single writer;
+// a phase/version change rejects commands that have not started execution.
 type MarketRunner struct {
 	market    domain.Market
 	eventLog  store.EventStore
@@ -101,6 +110,7 @@ type MarketRunner struct {
 	trading         *exchange.Exchange
 	state           State
 	sequence        uint64
+	stateHash       string
 	lastError       string
 	lastIncident    string
 	lastIncidentAt  time.Time
@@ -132,6 +142,10 @@ func NewMarketRunner(
 	if err != nil {
 		return nil, fmt.Errorf("restore market %s: %w", market.ID, err)
 	}
+	initialHash, err := restored.StateHash()
+	if err != nil {
+		return nil, fmt.Errorf("hash restored market %s: %w", market.ID, err)
+	}
 	runner := &MarketRunner{
 		market:    market,
 		eventLog:  eventLog,
@@ -144,6 +158,7 @@ func NewMarketRunner(
 		trading:   restored,
 		state:     StateReady,
 		sequence:  restored.Sequence(),
+		stateHash: initialHash,
 	}
 	go runner.loop()
 	return runner, nil
@@ -153,12 +168,41 @@ func (r *MarketRunner) Fund(ctx context.Context, request domain.FundRequest) (do
 	return r.execute(ctx, command{ctx: ctx, kind: operationFund, fund: request})
 }
 
+// FundSafety is reserved for the idempotent system demo-maker bootstrap that
+// happens before a recovery proof is computed.
+func (r *MarketRunner) FundSafety(
+	ctx context.Context,
+	request domain.FundRequest,
+) (domain.Result, error) {
+	if request.AccountID != domain.AccountID("system:demo-maker") {
+		return domain.Result{}, ErrRecoveryInProgress
+	}
+	return r.execute(ctx, command{
+		ctx: ctx, kind: operationFund, fund: request, safetyFund: true,
+	})
+}
+
 func (r *MarketRunner) Submit(ctx context.Context, request domain.NewOrder) (domain.Result, error) {
 	return r.execute(ctx, command{ctx: ctx, kind: operationSubmit, submit: request})
 }
 
 func (r *MarketRunner) Cancel(ctx context.Context, request domain.CancelOrder) (domain.Result, error) {
 	return r.execute(ctx, command{ctx: ctx, kind: operationCancel, cancel: request})
+}
+
+// CancelSafety is a narrow recovery unwind path. It accepts only the
+// system:demo-maker account and still enters the same sequential command queue.
+// A configured gate must explicitly authorize it.
+func (r *MarketRunner) CancelSafety(
+	ctx context.Context,
+	request domain.CancelOrder,
+) (domain.Result, error) {
+	if request.AccountID != domain.AccountID("system:demo-maker") {
+		return domain.Result{}, ErrRecoveryInProgress
+	}
+	return r.execute(ctx, command{
+		ctx: ctx, kind: operationCancel, cancel: request, safetyCancel: true,
+	})
 }
 
 func (r *MarketRunner) Market() (domain.Market, error) {
@@ -227,6 +271,7 @@ func (r *MarketRunner) Status() Status {
 	lastRecoveredAt := r.lastRecoveredAt
 	recoveryCount := r.recoveryCount
 	sequence := r.sequence
+	stateHash := r.stateHash
 	r.mu.RUnlock()
 
 	return Status{
@@ -239,6 +284,7 @@ func (r *MarketRunner) Status() Status {
 		LastIncident:    lastIncident,
 		LastIncidentAt:  formatStatusTime(lastIncidentAt),
 		LastRecoveredAt: formatStatusTime(lastRecoveredAt),
+		StateHash:       stateHash,
 	}
 }
 
@@ -265,9 +311,29 @@ func (r *MarketRunner) execute(ctx context.Context, request command) (domain.Res
 		return domain.Result{}, fmt.Errorf("context is required")
 	}
 	if r.config.WriteGate != nil {
-		if err := r.config.WriteGate.RequireWritable(ctx); err != nil {
+		mode := recovery.AdmissionNormal
+		var accountID domain.AccountID
+		if request.safetyCancel {
+			mode = recovery.AdmissionSafetyCancel
+			accountID = request.cancel.AccountID
+		} else if request.safetyFund {
+			mode = recovery.AdmissionBootstrap
+			accountID = request.fund.AccountID
+		} else {
+			switch request.kind {
+			case operationFund:
+				accountID = request.fund.AccountID
+			case operationSubmit:
+				accountID = request.submit.AccountID
+			case operationCancel:
+				accountID = request.cancel.AccountID
+			}
+		}
+		admission, err := r.config.WriteGate.Admit(ctx, mode, accountID)
+		if err != nil {
 			return domain.Result{}, fmt.Errorf("%w: %v", ErrRecoveryInProgress, err)
 		}
+		request.admission = &admission
 	}
 	request.response = make(chan response, 1)
 
@@ -336,6 +402,19 @@ func (r *MarketRunner) drainAndClose() {
 }
 
 func (r *MarketRunner) handle(request command) {
+	if r.config.WriteGate != nil {
+		if request.admission == nil {
+			request.response <- response{err: ErrRecoveryInProgress}
+			return
+		}
+		gateContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := r.config.WriteGate.ValidateAdmission(gateContext, *request.admission)
+		cancel()
+		if err != nil {
+			request.response <- response{err: fmt.Errorf("%w: %v", ErrRecoveryInProgress, err)}
+			return
+		}
+	}
 	r.mu.RLock()
 	trading := r.trading
 	state := r.state
@@ -364,9 +443,15 @@ func (r *MarketRunner) handle(request command) {
 		return
 	}
 	if err == nil {
-		after := trading.Sequence()
+		after, stateHash, hashErr := trading.StateFingerprint()
 		r.mu.Lock()
 		r.sequence = after
+		if hashErr == nil {
+			r.stateHash = stateHash
+		} else {
+			r.stateHash = ""
+			r.recordIncidentLocked(fmt.Errorf("hash applied market state: %w", hashErr))
+		}
 		r.mu.Unlock()
 		if after > before && after%r.config.SnapshotEvery == 0 {
 			snapshotContext, cancel := context.WithTimeout(
@@ -406,11 +491,22 @@ func (r *MarketRunner) recoverAfterPersistenceError(cause error) {
 		r.gate.Unlock()
 		return
 	}
+	_, restoredHash, hashErr := restored.StateFingerprint()
+	if hashErr != nil {
+		r.gate.Lock()
+		r.mu.Lock()
+		r.state = StateFailed
+		r.recordIncidentLocked(fmt.Errorf("hash recovered market state: %w", hashErr))
+		r.mu.Unlock()
+		r.gate.Unlock()
+		return
+	}
 
 	r.gate.Lock()
 	r.mu.Lock()
 	r.trading = restored
 	r.sequence = restored.Sequence()
+	r.stateHash = restoredHash
 	r.lastError = ""
 	r.lastRecoveredAt = time.Now().UTC()
 	r.recoveryCount++

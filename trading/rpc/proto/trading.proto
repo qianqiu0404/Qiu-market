@@ -13,6 +13,8 @@ service TradingService {
   rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse);
   rpc GetOrderBook(GetOrderBookRequest) returns (OrderBook);
   rpc GetStatus(GetStatusRequest) returns (StatusResponse);
+  rpc GetRecoveryStatus(GetRecoveryStatusRequest) returns (RecoveryStatusResponse);
+  rpc PromoteRecovery(PromoteRecoveryRequest) returns (RecoveryStatusResponse);
   rpc AdminFundVirtual(AdminFundVirtualRequest) returns (CommandResult);
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream EventEnvelope);
 }
@@ -99,6 +101,44 @@ message GetOrderBookRequest {
 
 message GetStatusRequest {
   string market_id = 1;
+}
+
+message GetRecoveryStatusRequest {
+  string market_id = 1;
+}
+
+message RecoveryBinding {
+  string market_id = 1;
+  string epoch_id = 2;
+  string version = 3;
+  string runtime_sequence = 4;
+  string state_hash = 5;
+}
+
+message RecoveryTransportEvidence {
+  uint32 sample_count = 1;
+  string first_sample_at = 2;
+  string last_sample_at = 3;
+  string maximum_gap_ms = 4;
+  string evidence_sha256 = 5;
+}
+
+message PromoteRecoveryRequest {
+  RecoveryBinding binding = 1;
+  RecoveryTransportEvidence transport_evidence = 2;
+}
+
+message RecoveryStatusResponse {
+  string market_id = 1;
+  string epoch_id = 2;
+  string phase = 3;
+  string version = 4;
+  string runtime_sequence = 5;
+  string state_hash = 6;
+  bool writes_enabled = 7;
+  bool continuity_uncertain = 8;
+  string continuity_error = 9;
+  string updated_at = 10;
 }
 
 message AdminFundVirtualRequest {
@@ -224,6 +264,7 @@ message StatusResponse {
   string outbox_last_error = 13;
   string outbox_last_published_at = 14;
   string outbox_last_cleanup_at = 15;
+  string state_hash = 16;
 }
 
 message EventEnvelope {

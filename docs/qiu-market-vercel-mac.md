@@ -139,20 +139,19 @@ upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请�
 `VERCEL_URL` 由 Vercel 自动提供，BFF 将两者与受管 release commit 作为不可变
 provenance 响应头。不要手工把 Production alias 当成 immutable deployment URL。
 
-当前待 OAuth 验收的 protected Preview 为
-`dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e`，immutable URL 是
-`https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app`，源提交与
-provenance commit 都是 `2aa8bda39d2298e1d57886e472f9a090d728f56e`。旧
-`dpl_C5k5...` 没有 runtime provenance，只保留为历史证据，不再 promote。
+2026-07-28 的 protected Preview、deployment `dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e`
+与 commit `2aa8bda39d2298e1d57886e472f9a090d728f56e` 仅是历史归档证据，禁止直接
+复用或 promote；更早的 `dpl_C5k5...` 同样只保留为历史证据。每次发布都必须从当前
+不可变 Preview/release 状态重新取得 deployment ID、immutable URL 和精确 40 字符
+commit，并在以下命令中替换占位符，绝不能复制历史值。
 
 非登录 Gate 2C 可以重复执行：
 
 ```bash
 bash ops/macos/verify-preview-gate.sh \
-  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
-  --deployment-url \
-    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
-  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
 ```
 
 报告保存在私有运行目录
@@ -170,10 +169,9 @@ callback、Cookie、CSRF/Origin、unknown reconcile、logout 与旧 session 401 
 
 ```bash
 bash ops/macos/manage-preview-oauth-window.sh preflight \
-  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
-  --deployment-url \
-    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
-  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
 ```
 
 预检会复用上面的 immutable Preview gate，并要求：私有文件权限为 `0600/0400`、
@@ -182,10 +180,9 @@ OAuth 凭据非 placeholder、本地登录关闭、Secure Cookie 开启、Produc
 
 ```bash
 bash ops/macos/manage-preview-oauth-window.sh open \
-  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
-  --deployment-url \
-    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
-  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
 ```
 
 `open` 在私有目录保存带 SHA-256 的原始环境备份和随机 `window_id`，原子切换两个
@@ -233,10 +230,9 @@ Secret 不得粘贴到聊天、日志或 evidence JSON。
 ```bash
 cd frontend
 npm run gate:preview-oauth -- \
-  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
-  --deployment-url \
-    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
-  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
 ```
 
 脚本打开真实 Chrome，并给 Vercel/GitHub 登录各最多 5 分钟。专用浏览器 profile
@@ -282,10 +278,9 @@ npm run test:gate-lib
 
 ```bash
 bash ops/macos/promote-vercel-release.sh preflight \
-  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
-  --deployment-url \
-    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
-  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
 ```
 
 预检只读执行以下约束：
@@ -302,10 +297,9 @@ bash ops/macos/promote-vercel-release.sh preflight \
 
 ```bash
 bash ops/macos/promote-vercel-release.sh promote --execute \
-  --deployment-id dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e \
-  --deployment-url \
-    https://qiu-market-qnzz1s6a0-qianqiu0404s-projects.vercel.app \
-  --commit 2aa8bda39d2298e1d57886e472f9a090d728f56e
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
 ```
 
 脚本只调用 `vercel promote`，不调用 build/deploy。它先写入随机 `promotion_id` 和
@@ -349,6 +343,37 @@ curl -i -X POST https://<node>.<tailnet>.ts.net/api/v2/get_market_overview \
 第一条应为 200；第二条绕过 BFF，应为 401。随后检查 Vercel `/api/**` 为 200，
 Cookie 带 Secure，错误 Origin、过期 WebSocket ticket 与伪造 CSRF 均被拒绝。
 交易仍只使用虚拟资金，不接充值、提现、私钥或实盘。
+
+### 断网/断电后的交易写入补偿
+
+启用 Recovery Gate 后，LaunchDaemon 重启 trading 只会恢复到
+`transport_warmup`。operator 先用 loopback `trading-recovery status` 固定本次
+market/epoch/version/sequence/hash，再用 `promote` 连续 30 秒核对运维者指定的 HTTPS
+recovery JSON、权威 gRPC、runner state hash 和 outbox checkpoint。当前实现尚未把
+status URL 绑定到 Production origin 或验证其 deployment provenance，因此这只能证明
+指定 HTTPS endpoint 的观察结果，不能称为 Production 公网证明。命令由
+trading 进程内部 CAS，禁止手工 SQL。任一样本失败、版本变化、数据库读写不确定或
+CAS 冲突都保持只读；同一 epoch 不会因网络恢复自动开放，必须重启 trading 创建新
+epoch 并重新证明。Demo Maker 在 writable 前不启动，旧订单与回退后的订单通过
+runner safety-cancel 撤销。
+
+`transport_warmup` 是不可变观察窗：旧 demo-maker 订单必须在此前经 runner 撤销，
+进入该 phase 后普通写、bootstrap 和 safety-cancel 都会失败。最终 promote 还会在
+交易进程内立即复核 runner ready/sequence/hash/queue 与 outbox checkpoint，再执行
+Coordinator CAS。operator gRPC 仅绑定显式 IP loopback，其信任边界是本机用户、受管
+release 目录与 LaunchDaemon；目前无需额外共享 secret，未来若开放远程监听则必须改用
+mTLS 或等价强认证。
+
+正常写入也使用两次 fail-closed 门禁：入队时签发精确 epoch/version/phase 准入票据，
+单写者执行前再读取 recovery row。回退发生后，尚在队列中的旧票据命令不会执行；已经
+完成二次校验且正在提交的单个命令允许先解决提交结果，再按原 request ID 做权威查询和
+恢复，不能把超时等同于未执行。
+
+这部分目前是 `implemented / build-verified`；随机隔离数据库中的 migration/CAS/fault
+与真实 loopback gRPC TransportProbe 30 秒集成已达到
+`integration-verified (isolated local PostgreSQL + loopback gRPC)`。默认 flag 仍为 false，
+Mac mini production PostgreSQL/epoch、实际外部 HTTPS、Production origin/provenance
+绑定和断电故障注入仍为 `environment-pending`，完成前不得修改生产配置。
 
 ## 6. 极省空间 K 线治理
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,9 +29,11 @@ func (s *PostgresStore) Load(
 	marketID domain.MarketID,
 ) (Status, bool, error) {
 	var (
-		status  Status
-		version int64
-		seq     int64
+		status      Status
+		version     int64
+		seq         int64
+		firstSample *time.Time
+		lastSample  *time.Time
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT epoch.schema_version, epoch.market_id, epoch.epoch_id,
@@ -38,6 +41,9 @@ func (s *PostgresStore) Load(
 		       epoch.ledger_balanced, epoch.event_continuous,
 		       epoch.projection_caught_up, epoch.outbox_caught_up,
 		       epoch.transport_healthy, epoch.writes_enabled,
+		       epoch.transport_sample_count, epoch.transport_first_sample_at,
+		       epoch.transport_last_sample_at, epoch.transport_maximum_gap_ms,
+		       epoch.transport_evidence_sha256,
 		       epoch.last_error, epoch.version, epoch.started_at, epoch.updated_at
 		FROM trading_recovery_current current
 		JOIN trading_recovery_epoch epoch
@@ -56,6 +62,11 @@ func (s *PostgresStore) Load(
 		&status.Proof.OutboxCaughtUp,
 		&status.Proof.TransportHealthy,
 		&status.WritesEnabled,
+		&status.Transport.SampleCount,
+		&firstSample,
+		&lastSample,
+		&status.Transport.MaximumGapMS,
+		&status.Transport.EvidenceSHA256,
 		&status.LastError,
 		&version,
 		&status.StartedAt,
@@ -72,6 +83,12 @@ func (s *PostgresStore) Load(
 	}
 	status.Version = uint64(version)
 	status.Proof.RuntimeSequence = uint64(seq)
+	if firstSample != nil {
+		status.Transport.FirstSampleAt = *firstSample
+	}
+	if lastSample != nil {
+		status.Transport.LastSampleAt = *lastSample
+	}
 	return status, true, nil
 }
 
@@ -159,9 +176,14 @@ func (s *PostgresStore) Save(
 		    outbox_caught_up=$10,
 		    transport_healthy=$11,
 		    writes_enabled=$12,
-		    last_error=$13,
-		    version=$14,
-		    updated_at=$15
+		    transport_sample_count=$13,
+		    transport_first_sample_at=$14,
+		    transport_last_sample_at=$15,
+		    transport_maximum_gap_ms=$16,
+		    transport_evidence_sha256=$17,
+		    last_error=$18,
+		    version=$19,
+		    updated_at=$20
 		FROM trading_recovery_current current
 		WHERE epoch.market_id=$1 AND epoch.epoch_id=$2 AND epoch.version=$3
 		  AND current.market_id=epoch.market_id AND current.epoch_id=epoch.epoch_id
@@ -178,6 +200,11 @@ func (s *PostgresStore) Save(
 		next.Proof.OutboxCaughtUp,
 		next.Proof.TransportHealthy,
 		next.WritesEnabled,
+		next.Transport.SampleCount,
+		nullTime(next.Transport.FirstSampleAt),
+		nullTime(next.Transport.LastSampleAt),
+		next.Transport.MaximumGapMS,
+		next.Transport.EvidenceSHA256,
 		next.LastError,
 		int64(next.Version),
 		next.UpdatedAt,
@@ -200,8 +227,10 @@ func insertEpochRow(ctx context.Context, tx pgx.Tx, next Status) error {
 			schema_version, market_id, epoch_id, phase, runtime_sequence,
 			state_hash, ledger_balanced, event_continuous,
 			projection_caught_up, outbox_caught_up, transport_healthy,
-			writes_enabled, last_error, version, started_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+			writes_enabled, transport_sample_count, transport_first_sample_at,
+			transport_last_sample_at, transport_maximum_gap_ms,
+			transport_evidence_sha256, last_error, version, started_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 	`,
 		next.SchemaVersion,
 		next.MarketID,
@@ -215,6 +244,11 @@ func insertEpochRow(ctx context.Context, tx pgx.Tx, next Status) error {
 		next.Proof.OutboxCaughtUp,
 		next.Proof.TransportHealthy,
 		next.WritesEnabled,
+		next.Transport.SampleCount,
+		nullTime(next.Transport.FirstSampleAt),
+		nullTime(next.Transport.LastSampleAt),
+		next.Transport.MaximumGapMS,
+		next.Transport.EvidenceSHA256,
 		next.LastError,
 		int64(next.Version),
 		next.StartedAt,
@@ -224,4 +258,11 @@ func insertEpochRow(ctx context.Context, tx pgx.Tx, next Status) error {
 		return fmt.Errorf("insert trading recovery epoch: %w", err)
 	}
 	return nil
+}
+
+func nullTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }

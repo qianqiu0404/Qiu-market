@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/recovery"
@@ -71,8 +72,20 @@ func TestRecoveryWriteGuardOpensOnlyAfterWritableProof(t *testing.T) {
 			t.Fatalf("advance to %s: %v", phase, err)
 		}
 	}
-	proof.TransportHealthy = true
-	if _, err := coordinator.Advance(ctx, recovery.PhaseWritable, proof); err != nil {
+	status, err := coordinator.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := time.Now().UTC().Add(-recovery.MinimumTransportWindow)
+	if _, err := coordinator.Promote(ctx, recovery.Binding{
+		MarketID: status.MarketID, EpochID: status.EpochID, Version: status.Version,
+		RuntimeSequence: status.Proof.RuntimeSequence, StateHash: status.Proof.StateHash,
+	}, recovery.TransportEvidence{
+		SampleCount:   recovery.MinimumTransportSamples,
+		FirstSampleAt: first, LastSampleAt: time.Now().UTC(),
+		MaximumGapMS:   recovery.MaximumTransportGap.Milliseconds(),
+		EvidenceSHA256: strings.Repeat("b", 64),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -98,7 +111,9 @@ func TestRecoveryWriteGuardOpensOnlyAfterWritableProof(t *testing.T) {
 		nil,
 	))
 	if statusResponse.Code != http.StatusOK ||
-		!strings.Contains(statusResponse.Body.String(), `"writes_enabled":true`) {
+		!strings.Contains(statusResponse.Body.String(), `"writes_enabled":true`) ||
+		!strings.Contains(statusResponse.Body.String(), `"version":"`) ||
+		!strings.Contains(statusResponse.Body.String(), `"runtime_sequence":"12"`) {
 		t.Fatalf("recovery status = %d %s", statusResponse.Code, statusResponse.Body.String())
 	}
 }

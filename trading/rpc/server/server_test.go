@@ -3,6 +3,8 @@ package server_test
 import (
 	"context"
 	"net"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,11 +15,169 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
+	"github.com/the-web3/s78-market-services/trading/recovery"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
 	"github.com/the-web3/s78-market-services/trading/store"
 )
+
+func TestRecoveryOperatorRPCBindsAndPromotesAuthoritativeCoordinator(t *testing.T) {
+	ctx := context.Background()
+	coordinator, err := recovery.NewCoordinator(
+		recovery.NewMemoryStore(),
+		domain.MarketID("BTC-USDT"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := coordinator.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory := store.NewMemory()
+	runner, err := tradingruntime.NewMarketRunner(
+		ctx, domain.DefaultBTCUSDTMarket(), memory, memory,
+		tradingruntime.DefaultConfig(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runner.Close(context.Background()) }()
+	runtimeStatus := runner.Status()
+	proof := recovery.Proof{
+		RuntimeSequence: runtimeStatus.Sequence, StateHash: runtimeStatus.StateHash,
+		LedgerBalanced: true, EventContinuous: true,
+		ProjectionCaughtUp: true, OutboxCaughtUp: true,
+	}
+	for _, phase := range []recovery.Phase{
+		recovery.PhaseDependenciesReady, recovery.PhaseTradingReplay,
+		recovery.PhaseReconciling, recovery.PhaseReadOnly,
+		recovery.PhaseTransportWarmup,
+	} {
+		current, err = coordinator.Advance(ctx, phase, proof)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := tradingserver.DefaultConfig()
+	config.Recovery = coordinator
+	service, err := tradingserver.New(runner, nil, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusResponse, err := service.GetRecoveryStatus(ctx, &tradingv1.GetRecoveryStatusRequest{
+		MarketId: "BTC-USDT",
+	})
+	if err != nil || statusResponse.GetEpochId() != current.EpochID ||
+		statusResponse.GetVersion() != strconv.FormatUint(current.Version, 10) {
+		t.Fatalf("operator status = %+v err=%v", statusResponse, err)
+	}
+	last := time.Now().UTC()
+	request := &tradingv1.PromoteRecoveryRequest{
+		Binding: &tradingv1.RecoveryBinding{
+			MarketId: "BTC-USDT", EpochId: current.EpochID,
+			Version:         strconv.FormatUint(current.Version, 10),
+			RuntimeSequence: strconv.FormatUint(current.Proof.RuntimeSequence, 10),
+			StateHash:       current.Proof.StateHash,
+		},
+		TransportEvidence: &tradingv1.RecoveryTransportEvidence{
+			SampleCount:    recovery.MinimumTransportSamples,
+			FirstSampleAt:  last.Add(-recovery.MinimumTransportWindow).Format(time.RFC3339Nano),
+			LastSampleAt:   last.Format(time.RFC3339Nano),
+			MaximumGapMs:   strconv.FormatInt(recovery.MaximumTransportGap.Milliseconds(), 10),
+			EvidenceSha256: strings.Repeat("b", 64),
+		},
+	}
+	promoted, err := service.PromoteRecovery(ctx, request)
+	if err != nil || !promoted.GetWritesEnabled() || promoted.GetPhase() != "writable" {
+		t.Fatalf("operator promotion = %+v err=%v", promoted, err)
+	}
+	if _, err := service.PromoteRecovery(ctx, request); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("stale operator promotion error = %v", err)
+	}
+}
+
+func TestPromoteRecoveryRejectsLiveRuntimeDivergence(t *testing.T) {
+	ctx := context.Background()
+	coordinator, err := recovery.NewCoordinator(
+		recovery.NewMemoryStore(),
+		domain.MarketID("BTC-USDT"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := coordinator.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memory := store.NewMemory()
+	runner, err := tradingruntime.NewMarketRunner(
+		ctx, domain.DefaultBTCUSDTMarket(), memory, memory,
+		tradingruntime.DefaultConfig(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runner.Close(context.Background()) }()
+	observed := runner.Status()
+	proof := recovery.Proof{
+		RuntimeSequence: observed.Sequence, StateHash: observed.StateHash,
+		LedgerBalanced: true, EventContinuous: true,
+		ProjectionCaughtUp: true, OutboxCaughtUp: true,
+	}
+	for _, phase := range []recovery.Phase{
+		recovery.PhaseDependenciesReady, recovery.PhaseTradingReplay,
+		recovery.PhaseReconciling, recovery.PhaseReadOnly,
+		recovery.PhaseTransportWarmup,
+	} {
+		current, err = coordinator.Advance(ctx, phase, proof)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	config := tradingserver.DefaultConfig()
+	config.Recovery = coordinator
+	service, err := tradingserver.New(runner, nil, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Fund(ctx, domain.FundRequest{
+		RequestID: "post-observation-fund",
+		AccountID: "user",
+		Asset:     "USDT",
+		Amount:    1_000_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	last := time.Now().UTC()
+	_, err = service.PromoteRecovery(ctx, &tradingv1.PromoteRecoveryRequest{
+		Binding: &tradingv1.RecoveryBinding{
+			MarketId: "BTC-USDT", EpochId: current.EpochID,
+			Version:         strconv.FormatUint(current.Version, 10),
+			RuntimeSequence: strconv.FormatUint(observed.Sequence, 10),
+			StateHash:       observed.StateHash,
+		},
+		TransportEvidence: &tradingv1.RecoveryTransportEvidence{
+			SampleCount:    recovery.MinimumTransportSamples,
+			FirstSampleAt:  last.Add(-recovery.MinimumTransportWindow).Format(time.RFC3339Nano),
+			LastSampleAt:   last.Format(time.RFC3339Nano),
+			MaximumGapMs:   strconv.FormatInt(recovery.MaximumTransportGap.Milliseconds(), 10),
+			EvidenceSha256: strings.Repeat("b", 64),
+		},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("runtime divergence promotion error = %v", err)
+	}
+	after, err := coordinator.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Phase != recovery.PhaseTransportWarmup || after.WritesEnabled {
+		t.Fatalf("runtime divergence changed recovery state = %+v", after)
+	}
+}
 
 func TestTradingGRPCDecimalContractAndOwnership(t *testing.T) {
 	client, runner := newTestClient(t, nil)

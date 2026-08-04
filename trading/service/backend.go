@@ -50,19 +50,25 @@ type Backend struct {
 	config   Config
 	shutdown context.CancelCauseFunc
 
-	pool            *pgxpool.Pool
-	runner          *tradingruntime.MarketRunner
-	grpcServer      *grpc.Server
-	listener        net.Listener
-	maker           *marketmaker.Maker
-	makerCancel     context.CancelFunc
-	makerDone       chan struct{}
-	publisher       *outbox.Publisher
-	publisherCancel context.CancelFunc
-	publisherDone   chan struct{}
-	recovery        *recovery.Coordinator
-	recoveryProof   recovery.Proof
-	recoveryHead    postgresstore.Cursor
+	pool               *pgxpool.Pool
+	runner             *tradingruntime.MarketRunner
+	grpcServer         *grpc.Server
+	listener           net.Listener
+	maker              *marketmaker.Maker
+	makerEnabled       bool
+	makerSource        marketmaker.ReferenceSource
+	makerConfig        marketmaker.Config
+	makerMu            sync.Mutex
+	makerCancel        context.CancelFunc
+	makerDone          chan struct{}
+	publisher          *outbox.Publisher
+	publisherCancel    context.CancelFunc
+	publisherDone      chan struct{}
+	recovery           *recovery.Coordinator
+	recoveryProof      recovery.Proof
+	recoveryHead       postgresstore.Cursor
+	recoveryIncidentMu sync.Mutex
+	recoveryIncident   error
 
 	started  atomic.Bool
 	stopped  atomic.Bool
@@ -97,6 +103,7 @@ func New(
 
 	market := domain.DefaultBTCUSDTMarket()
 	var recoveryCoordinator *recovery.Coordinator
+	var recoveryEpochID string
 	if config.RecoveryGate {
 		recoveryStore, recoveryErr := recovery.NewPostgresStore(pool)
 		if recoveryErr != nil {
@@ -106,9 +113,12 @@ func New(
 		if recoveryErr != nil {
 			return nil, recoveryErr
 		}
-		if _, recoveryErr = recoveryCoordinator.Begin(ctx); recoveryErr != nil {
+		started, beginErr := recoveryCoordinator.Begin(ctx)
+		if beginErr != nil {
+			recoveryErr = beginErr
 			return nil, fmt.Errorf("begin fail-closed trading recovery: %w", recoveryErr)
 		}
+		recoveryEpochID = started.EpochID
 		if _, recoveryErr = recoveryCoordinator.Advance(
 			ctx,
 			recovery.PhaseDependenciesReady,
@@ -144,6 +154,28 @@ func New(
 			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, err)
 		}
 		return nil, err
+	}
+	cleanupRunner := true
+	defer func() {
+		if cleanupRunner {
+			closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = runner.Close(closeContext)
+			cancel()
+		}
+	}()
+	if recoveryCoordinator != nil && config.DemoMakerEnabled {
+		if err := bootstrapDemoMaker(ctx, runner, market, true, recoveryEpochID); err != nil {
+			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, err)
+			return nil, err
+		}
+		if err := cancelRecoveredDemoMakerOrders(
+			ctx,
+			runner,
+			recoveryCoordinator,
+		); err != nil {
+			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, err)
+			return nil, err
+		}
 	}
 	var (
 		recoveryProof recovery.Proof
@@ -198,19 +230,12 @@ func New(
 	if err != nil {
 		return nil, err
 	}
-	cleanupRunner := true
-	defer func() {
-		if cleanupRunner {
-			closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = runner.Close(closeContext)
-			cancel()
-		}
-	}()
-
+	rpcConfig := tradingserver.DefaultConfig()
+	rpcConfig.Recovery = recoveryCoordinator
 	rpcService, err := tradingserver.New(
 		runner,
 		tradingserver.NewPostgresEventSource(persistence),
-		tradingserver.DefaultConfig(),
+		rpcConfig,
 		publisher,
 	)
 	if err != nil {
@@ -229,16 +254,26 @@ func New(
 	grpcServer := grpc.NewServer()
 	tradingv1.RegisterTradingServiceServer(grpcServer, rpcService)
 
-	var maker *marketmaker.Maker
-	if config.DemoMakerEnabled && recoveryCoordinator == nil {
-		if err := bootstrapDemoMaker(ctx, runner, market); err != nil {
-			return nil, err
+	var (
+		maker       *marketmaker.Maker
+		makerSource marketmaker.ReferenceSource
+		makerConfig marketmaker.Config
+	)
+	if config.DemoMakerEnabled {
+		requestPrefix, prefixErr := randomRequestPrefix()
+		if prefixErr != nil {
+			return nil, prefixErr
+		}
+		if recoveryCoordinator == nil {
+			if err := bootstrapDemoMaker(ctx, runner, market, false, requestPrefix); err != nil {
+				return nil, err
+			}
 		}
 		source, err := reference.NewPostgresSource(pool, market.QuoteScale)
 		if err != nil {
 			return nil, err
 		}
-		var makerSource marketmaker.ReferenceSource = source
+		makerSource = source
 		if config.MinWriteBytes > 0 {
 			makerSource = diskAwareReferenceSource{
 				next:    source,
@@ -246,15 +281,14 @@ func New(
 				minimum: config.MinWriteBytes,
 			}
 		}
-		makerConfig := marketmaker.DefaultConfig()
+		makerConfig = marketmaker.DefaultConfig()
 		makerConfig.AccountID = demoMakerAccount
-		makerConfig.RequestPrefix, err = randomRequestPrefix()
-		if err != nil {
-			return nil, err
-		}
-		maker, err = marketmaker.New(market, runner, makerSource, makerConfig)
-		if err != nil {
-			return nil, err
+		makerConfig.RequestPrefix = requestPrefix
+		if recoveryCoordinator == nil {
+			maker, err = marketmaker.New(market, runner, makerSource, makerConfig)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -269,6 +303,9 @@ func New(
 		grpcServer:    grpcServer,
 		listener:      listener,
 		maker:         maker,
+		makerEnabled:  config.DemoMakerEnabled,
+		makerSource:   makerSource,
+		makerConfig:   makerConfig,
 		publisher:     publisher,
 		recovery:      recoveryCoordinator,
 		recoveryProof: recoveryProof,
@@ -323,9 +360,6 @@ func (b *Backend) Start(ctx context.Context) error {
 		defer close(b.publisherDone)
 		b.publisher.Run(publisherContext)
 	}()
-	if b.recovery != nil {
-		go b.completeLocalRecovery(publisherContext)
-	}
 	go func() {
 		err := b.grpcServer.Serve(b.listener)
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) && !b.stopped.Load() {
@@ -336,24 +370,20 @@ func (b *Backend) Start(ctx context.Context) error {
 			}
 		}
 	}()
-	if b.maker != nil {
-		makerContext, makerCancel := context.WithCancel(ctx)
-		b.makerCancel = makerCancel
-		b.makerDone = make(chan struct{})
-		go func() {
-			defer close(b.makerDone)
-			if err := b.maker.Run(makerContext); err != nil && !errors.Is(err, context.Canceled) {
-				// Unsafe references pause and recover inside the maker. Only
-				// an infrastructure error can terminate this goroutine.
-				log.Warn("virtual demo maker terminated after infrastructure failure", "err", err)
-			}
-		}()
+	if b.recovery == nil && b.makerConfigured() {
+		if err := b.startMaker(ctx); err != nil {
+			return err
+		}
+	}
+	if b.recovery != nil {
+		go b.completeLocalRecovery(publisherContext)
+		go b.monitorRecoveryLifecycle(publisherContext)
 	}
 	log.Info(
 		"virtual trading backend ready",
 		"grpc", b.listener.Addr().String(),
 		"market", domain.DefaultBTCUSDTMarket().ID,
-		"demo_maker", b.maker != nil,
+		"demo_maker", b.makerRunning(),
 	)
 	return nil
 }
@@ -392,18 +422,250 @@ func (b *Backend) completeLocalRecovery(ctx context.Context) {
 	}
 }
 
+func (b *Backend) monitorRecoveryLifecycle(ctx context.Context) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := b.reconcileRecoveryLifecycle(ctx); err != nil && ctx.Err() == nil {
+			log.Warn("trading recovery lifecycle remains fail-closed", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (b *Backend) reconcileRecoveryLifecycle(ctx context.Context) error {
+	if b.recovery == nil {
+		return nil
+	}
+	current, err := b.recovery.Status(ctx)
+	if err != nil {
+		b.markRecoveryIncident(fmt.Errorf("recovery status unavailable: %w", err))
+		_ = b.stopMaker(ctx, true)
+		return fmt.Errorf("read recovery lifecycle: %w", err)
+	}
+	if current.ContinuityUncertain {
+		b.markRecoveryIncident(errors.New(
+			"recovery store continuity is uncertain; current epoch is invalid",
+		))
+	}
+	if incident := b.currentRecoveryIncident(); incident != nil &&
+		current.Phase == recovery.PhaseWritable {
+		if _, failErr := b.recovery.Fail(ctx, recovery.PhaseOffline, incident); failErr != nil {
+			return errors.Join(incident, failErr)
+		}
+		_ = b.stopMaker(ctx, true)
+		return incident
+	}
+	if current.Phase != recovery.PhaseWritable || !current.WritesEnabled {
+		if current.Phase == recovery.PhaseTransportWarmup &&
+			!current.ContinuityUncertain {
+			b.clearRecoveryIncident()
+		}
+		return b.stopMaker(ctx, true)
+	}
+	runnerStatus := b.runner.Status()
+	delivery := b.publisher.Status()
+	if incidentAfter(runnerStatus.LastIncidentAt, current.UpdatedAt) ||
+		delivery.LastIncidentAt.After(current.UpdatedAt) {
+		b.markRecoveryIncident(fmt.Errorf(
+			"writable dependency reported an incident after promotion: runner_at=%s outbox_at=%s",
+			runnerStatus.LastIncidentAt,
+			delivery.LastIncidentAt.UTC().Format(time.RFC3339Nano),
+		))
+		return b.reconcileRecoveryLifecycle(ctx)
+	}
+	if runnerStatus.State != tradingruntime.StateReady || runnerStatus.LastError != "" ||
+		delivery.State != "ready" || delivery.LastError != "" {
+		cause := fmt.Errorf(
+			"writable dependency regressed: runner=%s runner_error=%q outbox=%s outbox_error=%q",
+			runnerStatus.State,
+			runnerStatus.LastError,
+			delivery.State,
+			delivery.LastError,
+		)
+		b.markRecoveryIncident(cause)
+		_, _ = b.recovery.Fail(ctx, recovery.PhaseOffline, cause)
+		_ = b.stopMaker(ctx, true)
+		return cause
+	}
+	if b.makerEnabled {
+		return b.startMaker(ctx)
+	}
+	return nil
+}
+
+func (b *Backend) markRecoveryIncident(err error) {
+	if err == nil {
+		return
+	}
+	b.recoveryIncidentMu.Lock()
+	if b.recoveryIncident == nil {
+		b.recoveryIncident = err
+	}
+	b.recoveryIncidentMu.Unlock()
+}
+
+func (b *Backend) currentRecoveryIncident() error {
+	b.recoveryIncidentMu.Lock()
+	defer b.recoveryIncidentMu.Unlock()
+	return b.recoveryIncident
+}
+
+func (b *Backend) clearRecoveryIncident() {
+	b.recoveryIncidentMu.Lock()
+	b.recoveryIncident = nil
+	b.recoveryIncidentMu.Unlock()
+}
+
+func incidentAfter(value string, threshold time.Time) bool {
+	if value == "" {
+		return false
+	}
+	observed, err := time.Parse(time.RFC3339Nano, value)
+	return err != nil || observed.After(threshold)
+}
+
+func (b *Backend) startMaker(ctx context.Context) error {
+	b.makerMu.Lock()
+	defer b.makerMu.Unlock()
+	if b.makerDone != nil {
+		select {
+		case <-b.makerDone:
+			b.makerDone = nil
+			b.makerCancel = nil
+			b.maker = nil
+		default:
+			return nil
+		}
+	}
+	if !b.makerEnabled && b.maker == nil {
+		return nil
+	}
+	if b.maker == nil {
+		maker, err := marketmaker.New(
+			domain.DefaultBTCUSDTMarket(),
+			b.runner,
+			b.makerSource,
+			b.makerConfig,
+		)
+		if err != nil {
+			return err
+		}
+		b.maker = maker
+	}
+	makerContext, makerCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	maker := b.maker
+	b.makerCancel = makerCancel
+	b.makerDone = done
+	go func() {
+		defer close(done)
+		if err := maker.Run(makerContext); err != nil && !errors.Is(err, context.Canceled) {
+			log.Warn("virtual demo maker terminated after infrastructure failure", "err", err)
+			if b.recovery != nil {
+				failureContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, _ = b.recovery.Fail(failureContext, recovery.PhaseOffline, err)
+				cancel()
+			}
+		}
+	}()
+	return nil
+}
+
+func (b *Backend) stopMaker(ctx context.Context, safety bool) error {
+	if !b.makerEnabled && !b.makerConfigured() {
+		return nil
+	}
+	b.makerMu.Lock()
+	cancel := b.makerCancel
+	done := b.makerDone
+	b.makerCancel = nil
+	b.makerDone = nil
+	b.maker = nil
+	b.makerMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	var result error
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			result = errors.Join(result, fmt.Errorf("stop demo maker: %w", ctx.Err()))
+		}
+	}
+	if safety && b.makerEnabled {
+		if err := b.cancelDemoMakerOrders(ctx); err != nil {
+			result = errors.Join(result, fmt.Errorf("safety cancel demo maker: %w", err))
+		}
+	}
+	return result
+}
+
+func (b *Backend) makerConfigured() bool {
+	b.makerMu.Lock()
+	defer b.makerMu.Unlock()
+	return b.maker != nil || b.makerEnabled
+}
+
+func (b *Backend) makerRunning() bool {
+	b.makerMu.Lock()
+	defer b.makerMu.Unlock()
+	if b.makerDone == nil {
+		return false
+	}
+	select {
+	case <-b.makerDone:
+		return false
+	default:
+		return true
+	}
+}
+
+func (b *Backend) cancelDemoMakerOrders(ctx context.Context) error {
+	return cancelRecoveredDemoMakerOrders(ctx, b.runner, b.recovery)
+}
+
+func cancelRecoveredDemoMakerOrders(
+	ctx context.Context,
+	runner *tradingruntime.MarketRunner,
+	coordinator *recovery.Coordinator,
+) error {
+	current, err := coordinator.Status(ctx)
+	if err != nil {
+		return err
+	}
+	orders, err := runner.Orders(demoMakerAccount, true)
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, order := range orders {
+		_, cancelErr := runner.CancelSafety(ctx, domain.CancelOrder{
+			RequestID: fmt.Sprintf(
+				"recovery-%s-cancel-%s",
+				current.EpochID,
+				order.ID,
+			),
+			AccountID: demoMakerAccount,
+			OrderID:   order.ID,
+		})
+		if cancelErr != nil {
+			result = errors.Join(result, cancelErr)
+		}
+	}
+	return result
+}
+
 func (b *Backend) Stop(ctx context.Context) error {
 	b.stopOnce.Do(func() {
 		b.stopped.Store(true)
-		if b.makerCancel != nil {
-			b.makerCancel()
-		}
-		if b.makerDone != nil {
-			select {
-			case <-b.makerDone:
-			case <-ctx.Done():
-				b.stopErr = errors.Join(b.stopErr, fmt.Errorf("stop demo maker: %w", ctx.Err()))
-			}
+		if err := b.stopMaker(ctx, b.recovery != nil); err != nil {
+			b.stopErr = errors.Join(b.stopErr, err)
 		}
 
 		grpcStopped := make(chan struct{})
@@ -458,16 +720,21 @@ func bootstrapDemoMaker(
 	ctx context.Context,
 	runner *tradingruntime.MarketRunner,
 	market domain.Market,
+	safety bool,
+	requestScope string,
 ) error {
+	if requestScope == "" {
+		return errors.New("demo maker bootstrap request scope is required")
+	}
 	requests := []domain.FundRequest{
 		{
-			RequestID: "demo-maker-bootstrap-btc-v1",
+			RequestID: "demo-maker-bootstrap-btc-" + requestScope,
 			AccountID: demoMakerAccount,
 			Asset:     market.BaseAsset,
 			Amount:    demoMakerBTC,
 		},
 		{
-			RequestID: "demo-maker-bootstrap-usdt-v1",
+			RequestID: "demo-maker-bootstrap-usdt-" + requestScope,
 			AccountID: demoMakerAccount,
 			Asset:     market.QuoteAsset,
 			Amount:    demoMakerUSDT,
@@ -481,8 +748,21 @@ func bootstrapDemoMaker(
 		if balance.Available > 0 || balance.Held > 0 {
 			continue
 		}
-		if _, err := runner.Fund(ctx, request); err != nil {
-			return fmt.Errorf("fund virtual demo maker asset %s: %w", request.Asset, err)
+		var fundErr error
+		if safety {
+			_, fundErr = runner.FundSafety(ctx, request)
+		} else {
+			_, fundErr = runner.Fund(ctx, request)
+		}
+		if fundErr != nil {
+			return fmt.Errorf("fund virtual demo maker asset %s: %w", request.Asset, fundErr)
+		}
+		funded, balanceErr := runner.Balance(request.AccountID, request.Asset)
+		if balanceErr != nil {
+			return fmt.Errorf("re-read virtual demo maker asset %s: %w", request.Asset, balanceErr)
+		}
+		if funded.Available <= 0 && funded.Held <= 0 {
+			return fmt.Errorf("virtual demo maker asset %s remains depleted", request.Asset)
 		}
 	}
 	return nil

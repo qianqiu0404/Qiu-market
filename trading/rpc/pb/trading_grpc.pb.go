@@ -19,16 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	TradingService_SubmitOrder_FullMethodName      = "/s78.trading.v1.TradingService/SubmitOrder"
-	TradingService_CancelOrder_FullMethodName      = "/s78.trading.v1.TradingService/CancelOrder"
-	TradingService_GetOrder_FullMethodName         = "/s78.trading.v1.TradingService/GetOrder"
-	TradingService_ListOrders_FullMethodName       = "/s78.trading.v1.TradingService/ListOrders"
-	TradingService_ListTrades_FullMethodName       = "/s78.trading.v1.TradingService/ListTrades"
-	TradingService_GetBalances_FullMethodName      = "/s78.trading.v1.TradingService/GetBalances"
-	TradingService_GetOrderBook_FullMethodName     = "/s78.trading.v1.TradingService/GetOrderBook"
-	TradingService_GetStatus_FullMethodName        = "/s78.trading.v1.TradingService/GetStatus"
-	TradingService_AdminFundVirtual_FullMethodName = "/s78.trading.v1.TradingService/AdminFundVirtual"
-	TradingService_SubscribeEvents_FullMethodName  = "/s78.trading.v1.TradingService/SubscribeEvents"
+	TradingService_SubmitOrder_FullMethodName       = "/s78.trading.v1.TradingService/SubmitOrder"
+	TradingService_CancelOrder_FullMethodName       = "/s78.trading.v1.TradingService/CancelOrder"
+	TradingService_GetOrder_FullMethodName          = "/s78.trading.v1.TradingService/GetOrder"
+	TradingService_ListOrders_FullMethodName        = "/s78.trading.v1.TradingService/ListOrders"
+	TradingService_ListTrades_FullMethodName        = "/s78.trading.v1.TradingService/ListTrades"
+	TradingService_GetBalances_FullMethodName       = "/s78.trading.v1.TradingService/GetBalances"
+	TradingService_GetOrderBook_FullMethodName      = "/s78.trading.v1.TradingService/GetOrderBook"
+	TradingService_GetStatus_FullMethodName         = "/s78.trading.v1.TradingService/GetStatus"
+	TradingService_GetRecoveryStatus_FullMethodName = "/s78.trading.v1.TradingService/GetRecoveryStatus"
+	TradingService_PromoteRecovery_FullMethodName   = "/s78.trading.v1.TradingService/PromoteRecovery"
+	TradingService_AdminFundVirtual_FullMethodName  = "/s78.trading.v1.TradingService/AdminFundVirtual"
+	TradingService_SubscribeEvents_FullMethodName   = "/s78.trading.v1.TradingService/SubscribeEvents"
 )
 
 // TradingServiceClient is the client API for TradingService service.
@@ -43,6 +45,8 @@ type TradingServiceClient interface {
 	GetBalances(ctx context.Context, in *GetBalancesRequest, opts ...grpc.CallOption) (*GetBalancesResponse, error)
 	GetOrderBook(ctx context.Context, in *GetOrderBookRequest, opts ...grpc.CallOption) (*OrderBook, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	GetRecoveryStatus(ctx context.Context, in *GetRecoveryStatusRequest, opts ...grpc.CallOption) (*RecoveryStatusResponse, error)
+	PromoteRecovery(ctx context.Context, in *PromoteRecoveryRequest, opts ...grpc.CallOption) (*RecoveryStatusResponse, error)
 	AdminFundVirtual(ctx context.Context, in *AdminFundVirtualRequest, opts ...grpc.CallOption) (*CommandResult, error)
 	SubscribeEvents(ctx context.Context, in *SubscribeEventsRequest, opts ...grpc.CallOption) (TradingService_SubscribeEventsClient, error)
 }
@@ -127,6 +131,24 @@ func (c *tradingServiceClient) GetStatus(ctx context.Context, in *GetStatusReque
 	return out, nil
 }
 
+func (c *tradingServiceClient) GetRecoveryStatus(ctx context.Context, in *GetRecoveryStatusRequest, opts ...grpc.CallOption) (*RecoveryStatusResponse, error) {
+	out := new(RecoveryStatusResponse)
+	err := c.cc.Invoke(ctx, TradingService_GetRecoveryStatus_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tradingServiceClient) PromoteRecovery(ctx context.Context, in *PromoteRecoveryRequest, opts ...grpc.CallOption) (*RecoveryStatusResponse, error) {
+	out := new(RecoveryStatusResponse)
+	err := c.cc.Invoke(ctx, TradingService_PromoteRecovery_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *tradingServiceClient) AdminFundVirtual(ctx context.Context, in *AdminFundVirtualRequest, opts ...grpc.CallOption) (*CommandResult, error) {
 	out := new(CommandResult)
 	err := c.cc.Invoke(ctx, TradingService_AdminFundVirtual_FullMethodName, in, out, opts...)
@@ -180,6 +202,8 @@ type TradingServiceServer interface {
 	GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error)
 	GetOrderBook(context.Context, *GetOrderBookRequest) (*OrderBook, error)
 	GetStatus(context.Context, *GetStatusRequest) (*StatusResponse, error)
+	GetRecoveryStatus(context.Context, *GetRecoveryStatusRequest) (*RecoveryStatusResponse, error)
+	PromoteRecovery(context.Context, *PromoteRecoveryRequest) (*RecoveryStatusResponse, error)
 	AdminFundVirtual(context.Context, *AdminFundVirtualRequest) (*CommandResult, error)
 	SubscribeEvents(*SubscribeEventsRequest, TradingService_SubscribeEventsServer) error
 	mustEmbedUnimplementedTradingServiceServer()
@@ -212,6 +236,12 @@ func (UnimplementedTradingServiceServer) GetOrderBook(context.Context, *GetOrder
 }
 func (UnimplementedTradingServiceServer) GetStatus(context.Context, *GetStatusRequest) (*StatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetStatus not implemented")
+}
+func (UnimplementedTradingServiceServer) GetRecoveryStatus(context.Context, *GetRecoveryStatusRequest) (*RecoveryStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetRecoveryStatus not implemented")
+}
+func (UnimplementedTradingServiceServer) PromoteRecovery(context.Context, *PromoteRecoveryRequest) (*RecoveryStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PromoteRecovery not implemented")
 }
 func (UnimplementedTradingServiceServer) AdminFundVirtual(context.Context, *AdminFundVirtualRequest) (*CommandResult, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AdminFundVirtual not implemented")
@@ -376,6 +406,42 @@ func _TradingService_GetStatus_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TradingService_GetRecoveryStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRecoveryStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TradingServiceServer).GetRecoveryStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TradingService_GetRecoveryStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TradingServiceServer).GetRecoveryStatus(ctx, req.(*GetRecoveryStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TradingService_PromoteRecovery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PromoteRecoveryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TradingServiceServer).PromoteRecovery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TradingService_PromoteRecovery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TradingServiceServer).PromoteRecovery(ctx, req.(*PromoteRecoveryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TradingService_AdminFundVirtual_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AdminFundVirtualRequest)
 	if err := dec(in); err != nil {
@@ -453,6 +519,14 @@ var TradingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetStatus",
 			Handler:    _TradingService_GetStatus_Handler,
+		},
+		{
+			MethodName: "GetRecoveryStatus",
+			Handler:    _TradingService_GetRecoveryStatus_Handler,
+		},
+		{
+			MethodName: "PromoteRecovery",
+			Handler:    _TradingService_PromoteRecovery_Handler,
 		},
 		{
 			MethodName: "AdminFundVirtual",

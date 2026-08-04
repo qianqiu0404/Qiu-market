@@ -293,7 +293,7 @@ property test 只能证明覆盖到的状态空间；长期 soak、跨进程 Pos
 ## Recovery Coordinator 与写入开放
 
 `MarketRunner=ready` 只证明撮合内存完成 snapshot + tail 恢复，不能单独证明
-projection、outbox、公网链路和浏览器 cursor 都已追平。为此新增持久化 Recovery
+projection、outbox、指定 HTTPS endpoint 或浏览器 cursor 都已追平。为此新增持久化 Recovery
 Coordinator。启用后可见结果是：Fund、Submit、Cancel 在 runner 唯一命令入口
 统一 fail closed；HTTP gateway 返回 503 `recovery_in_progress`；订单簿、状态、
 订单、成交和余额等只读查询继续可用。
@@ -304,7 +304,7 @@ bootstrap -> dependencies_ready -> trading_replay -> reconciling
                          \-> offline / manual_review
 ```
 
-`trading_recovery_epoch` 保存 phase、proof 摘要、错误和 CAS version，
+`trading_recovery_epoch` 保存 phase、proof 摘要、连续 transport 样本摘要、错误和 CAS version，
 `trading_recovery_current` 原子选择当前 epoch。它们只是写入准入控制平面，不保存
 订单、余额、账本或撮合状态；`trading_event_batch` 仍是最终真值。启动新 epoch 会
 插入新的历史行并以事务切换 current，旧 version 不能覆盖新 epoch。
@@ -312,31 +312,78 @@ bootstrap -> dependencies_ready -> trading_replay -> reconciling
 本地调用链依次为：`trading/recovery/coordinator.go` 定义 phase 与 proof；
 `postgres_store.go` 持久化 epoch；`trading/service/backend.go` 启动 epoch 并复用
 现有 restore/audit；`trading/runtime/runner.go` 在 Fund/Submit/Cancel 前执行权威
-门禁；`trading/gateway/gateway.go` 提供友好 503 和只读 recovery status。
+门禁；`trading/operator/transport.go` 连续核对运维者指定的 HTTPS REST、权威 recovery gRPC、runner
+sequence/hash 和 outbox；`cmd/market-services/trading_recovery.go` 提供 loopback-only
+status/promote；`trading/gateway/gateway.go` 提供友好 503 和只读 recovery status。
 
 选择 runner 门禁而不是只禁用 Vue 按钮，是因为 loopback gRPC 和 demo-maker 也
 必须服从同一边界。拒绝用固定 sleep 自动开放，因为时间经过不是账本、cursor 或
-公网健康证明。代价是启用时增加一次完整 immutable history 审计。
+传输健康证明。每条命令入队时记录 recovery market/epoch/version/phase 准入票据，
+到达单写者时重新读取权威 recovery row；票据陈旧就返回 `recovery_in_progress`，不得
+进入 Exchange。已经通过二次校验并开始提交 event batch 的命令按 existing
+submitted/unknown 语义完成或恢复，phase 回退不会假装撤销一个结果未知的提交；其后
+仍在队列中的旧票据命令全部失败关闭。代价是启用时增加一次完整 immutable history
+审计；隔离本地 PostgreSQL 的 CAS/fault 已验证，Mac mini production PostgreSQL 上的
+故障注入仍需验证 recovery row 与 event transaction 的跨事务边界。
+
+operator 必须先从 `trading-recovery status` 抄下精确 market、epoch、version、runtime
+sequence 和 state hash。`promote` 至少采集 7 个连续健康样本、覆盖 30 秒，任意间隔
+不得超过 8 秒；每个样本同时校验指定 HTTPS endpoint 的 JSON 正文、交易进程中的权威 recovery 状态、
+runner ready/hash/sequence/空队列和 outbox checkpoint，而不是只看 HTTP 200 或固定
+sleep。样本摘要和 SHA-256 随 CAS 写入；最终 promote 通过交易进程自身的 loopback
+gRPC 执行，CLI 禁止直接 SQL。任一绑定变化、样本失败或 CAS 冲突都不自动重试。
+当前 operator 只要求精确 recovery path 和 HTTPS，没有把 status URL 锁定到 Production
+origin，也没有验证 deployment provenance；所以 30 秒证据只能称为“指定 HTTPS endpoint
+观察”，不能称为 Production 公网证明。它同样不证明浏览器 cursor 已追平；Trade 页面
+仍须在 cursor reconcile 完成前独立 fail closed。
+该 operator gRPC 只绑定显式 IP loopback，信任边界是本机 `xiuqiu` 用户、受管 release
+目录和 LaunchDaemon 配置；浏览器与公网无法直接调用，因此当前不另设一套共享 secret。
+若未来监听非 loopback、引入多用户运维或远程控制，必须先增加 mTLS 或等价的强认证。
 
 失败语义固定为：recovery row 缺失、数据库失败或 proof 不完整时关闭写入；
 snapshot/event/hash/ledger/projection 不一致进入 `manual_review`；outbox 未追平停在
-`reconciling`；本地证明完成只到 `transport_warmup`。当前 operator transport
-proof/promote 尚未实现，所以 `MARKET_TRADING_RECOVERY_GATE_ENABLED` 默认 false，
-避免现有环境静默锁死；生产暂不得开启，证据为
-`implemented / activation-pending`，不是全自动恢复或 production-verified。
+`reconciling`；本地证明完成只到 `transport_warmup`。Coordinator 一旦观察到 recovery
+store 读写连续性不确定，会对同一 epoch 粘性关闭写入；数据库恢复也不会重新放行，
+只能由新进程 `Begin` 新 epoch 后重新证明。Demo Maker 的旧挂单在恢复期通过 runner
+的专用 safety-cancel 逐笔撤销，只有 writable 后才启动；phase 进入 offline/manual
+review 或 runner/outbox 退化时先停 maker，再沿同一顺序写入口撤单。它没有第二条撮合
+写路径。旧挂单必须在进入 `transport_warmup` 前撤完；该 phase 内普通写、bootstrap
+和 safety-cancel 全部被拒绝，从而保证连续样本绑定的 sequence/hash 不会被内部改写。
+
+受管命令已经 `implemented / build-verified`；隔离本地 PostgreSQL + loopback gRPC 的
+30 秒 TransportProbe 已达到 `integration-verified`。但开关仍默认 false，Mac mini
+production PostgreSQL/epoch、实际外部 HTTPS、Production origin/provenance 绑定、断电
+注入和生产启用仍是 `environment-pending`，所以不得
+把本切片称为 production-verified。
+
+```bash
+market-services trading-recovery status --grpc-address 127.0.0.1:9094
+market-services trading-recovery promote \
+  --grpc-address 127.0.0.1:9094 \
+  --status-url https://<operator-specified-https-origin>/api/v1/trading/recovery/status \
+  --epoch '<status epoch>' --version '<status version>' \
+  --runtime-sequence '<status sequence>' --state-hash '<status hash>'
+```
 
 术语：admission gate 是命令进入唯一 writer 前的准入判断；recovery epoch 是一次
 启动恢复的持久化验收身份；control plane 是决定能否写的红绿灯，不是交易事实；
 CAS 表示只有持有预期旧 version 的 actor 才能更新。
 
-60 秒复述：runner ready 不等于系统可交易。Recovery Coordinator 每次从关闭写入
-开始，复用原事件恢复和账本审计，等 projection/outbox 追到 event head 后只进入
-transport warmup。权威门禁在 runner，gateway 只翻译错误。当前缺 operator 的公网
-证明与 promote，所以开关保持关闭，不能宣称生产自动恢复已经完成。
+60 秒复述：runner ready 只证明撮合恢复，不代表指定 HTTPS endpoint、Production 来源或
+浏览器 cursor 可用。Coordinator 从
+关闭写入开始，审计事件、账本、hash、projection 和 outbox 后停在 transport warmup。
+operator 绑定精确 epoch/version/sequence/hash，连续 30 秒同时检查指定 HTTPS endpoint
+正文、权威 gRPC、runner 和 outbox，再让交易进程自身做一次 CAS promote；CLI 不碰 SQL。
+这不代替 Production origin/provenance 绑定或浏览器 cursor reconcile。恢复库一旦断过，
+同一 epoch 永久熔断，必须新 epoch 重证。Demo Maker 只在 writable 后启动，退化时经
+runner safety-cancel 撤单。当前默认仍关闭，等待 Mac mini production PostgreSQL/epoch、
+实际外部 HTTPS、Production 来源绑定和断电验收。
 
 闭卷自检：为什么 ready 不能直接开放？为什么门禁不能只放在 Vue？recovery epoch
 为什么不是第二套交易状态？为什么本地证明后只到 transport_warmup？新 epoch 如何
-阻止旧 version 覆盖 current？
+阻止旧 version 覆盖 current？为什么 promote 必须由 trading 进程执行而不是 CLI 直写
+数据库？为什么 store 恢复后旧 writable epoch 仍不能自动恢复？safety-cancel 为什么
+不是绕过 runner？
 
 ## 接口与鉴权
 
@@ -350,6 +397,8 @@ transport warmup。权威门禁在 runner，gateway 只翻译错误。当前缺 
 - `GetBalances`
 - `GetOrderBook`
 - `GetStatus`
+- `GetRecoveryStatus`（loopback operator）
+- `PromoteRecovery`（loopback operator，精确 binding + transport evidence）
 - `AdminFundVirtual`
 - `SubscribeEvents`
 
@@ -513,13 +562,22 @@ make verify-local
 git diff --check
 ```
 
-证据必须分开描述：
+证据必须按能力分开描述，不能把核心交易证据外溢到 Recovery Admission：
 
-- `implemented`：代码、迁移、接口、共享页面和启动器已经存在；
+Core virtual trading：
+
+- `implemented`：撮合、账本、事件/快照、接口、共享页面和启动器已经存在；
 - `build-verified`：全仓 Go、race/vet/fuzz/benchmark、前端单测/构建/E2E 与 audit 已运行；
-- `integration-verified`：一次性 PostgreSQL 中真实 migration + gRPC + REST + session + restart hash E2E 已通过；
+- `integration-verified`：历史的一次性 PostgreSQL 中真实 migration + gRPC + REST + session + restart hash E2E 已通过；
 - `local-runtime-verified`：2026-07-26 在本机 S78 数据库完成真实参考、reviewed venue K 线、六档 maker、虚拟入金、挂单、成交、费用、撤单和浏览器 WebSocket；优雅退出的 event/snapshot 同为 sequence `619` 且 hash 完全一致，重启后余额与交易记录恢复，BTC/USDT 分资产账本净额均为零；
-- `production-pending`：HTTPS/OAuth 实际回调、容量/延迟、备份恢复演练、监控告警和长期 soak 不属于本地完成证据。
+- `production-pending`：HTTPS/OAuth 实际回调、容量/延迟、备份恢复演练、监控告警和长期 soak 不属于上述核心证据。
+
+Recovery admission：
+
+- `implemented / build-verified`：Coordinator、runner/gateway 权威门禁、operator、连续性熔断、前端 fail-closed 与 mock 回归已落地并通过构建级验证；
+- `integration-verified (isolated local PostgreSQL + loopback gRPC)`：随机隔离数据库中的 migration/CAS/fault 测试与真实 loopback gRPC TransportProbe 30 秒集成已通过；
+- `activation-pending / environment-pending`：Mac mini production PostgreSQL/epoch、实际外部 HTTPS、Production origin/provenance 绑定、断电故障注入和生产启用尚未完成；
+- mock 前端、单元测试和既有核心交易 PostgreSQL 证据都不能升级为 Recovery 的 `integration-verified` 或 Production 结论。
 
 ## Owner 60 秒解释
 

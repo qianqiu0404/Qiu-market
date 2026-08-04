@@ -454,6 +454,15 @@ func (e *Exchange) StateHash() (string, error) {
 	return e.state.hash()
 }
 
+// StateFingerprint returns the sequence and hash under one exchange lock so
+// recovery observers never bind a sequence from one state to another hash.
+func (e *Exchange) StateFingerprint() (uint64, string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	hash, err := e.state.hash()
+	return e.state.sequence, hash, err
+}
+
 func (e *Exchange) Balance(accountID domain.AccountID, asset domain.Asset) BalanceView {
 	e.mu.Lock()
 	defer e.mu.Unlock()

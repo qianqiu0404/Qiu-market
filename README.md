@@ -96,7 +96,7 @@ K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 s
 - `build-verified`：2026-07-26 的全仓 Go test/vet、交易 race、10 秒 fuzz、benchmark、一次性 PostgreSQL 测试、前端 8 个 Vitest、production build、npm audit 0 和 16 个 Playwright 回归通过。
 - `integration-verified`：一次性真实 PostgreSQL 上执行正式 migration，启动真实 gRPC + REST，完成虚拟入金、挂单、撤单、优雅快照、整套重启、session 延续、跨重启幂等，并确认 snapshot/event state hash 完全一致。
 - `production-pending`：真实资金、充值提现、私钥、实盘下单不在目标内；生产 HTTPS/OAuth 回调、容量压测、备份恢复演练、监控告警和长期 soak 仍未验收。
-- `implemented / activation-pending`：持久化 Recovery Coordinator、runner 权威写门禁和 gateway `recovery_in_progress` 已落地；兼容开关默认关闭，受管 transport proof/promote 命令和断电故障注入完成前不得在生产启用。
+- `implemented / build-verified / integration-verified (isolated local PostgreSQL + loopback gRPC) / activation-pending`：持久化 Recovery Coordinator、runner 权威写门禁、30 秒 TransportProbe、loopback gRPC status/promote、store 连续性粘性熔断和 demo-maker 受控恢复已落地，且随机隔离数据库中的 migration/CAS/fault 与真实 loopback gRPC 集成已通过。兼容开关默认关闭；Mac mini production PostgreSQL/epoch、实际外部 HTTPS、Production origin/deployment provenance、浏览器 cursor 和断电故障注入完成前不得在生产启用。
 
 ### 价格精度
 

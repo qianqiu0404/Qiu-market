@@ -15,6 +15,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/exchange"
 	"github.com/the-web3/s78-market-services/trading/ledger"
 	"github.com/the-web3/s78-market-services/trading/outbox"
+	"github.com/the-web3/s78-market-services/trading/recovery"
 	"github.com/the-web3/s78-market-services/trading/reliability"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
@@ -57,6 +58,125 @@ type DeliveryStatusSource interface {
 type Config struct {
 	EventBatchSize int
 	EventPollEvery time.Duration
+	Recovery       interface {
+		Status(context.Context) (recovery.Status, error)
+		Promote(context.Context, recovery.Binding, recovery.TransportEvidence) (recovery.Status, error)
+	}
+}
+
+func (s *Server) GetRecoveryStatus(
+	ctx context.Context,
+	request *tradingv1.GetRecoveryStatusRequest,
+) (*tradingv1.RecoveryStatusResponse, error) {
+	if _, err := s.market(request.GetMarketId()); err != nil {
+		return nil, err
+	}
+	if s.config.Recovery == nil {
+		return nil, status.Error(codes.FailedPrecondition, "recovery gate is not enabled")
+	}
+	current, err := s.config.Recovery.Status(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "recovery status is unavailable")
+	}
+	return toRecoveryStatus(current), nil
+}
+
+func (s *Server) PromoteRecovery(
+	ctx context.Context,
+	request *tradingv1.PromoteRecoveryRequest,
+) (*tradingv1.RecoveryStatusResponse, error) {
+	if s.config.Recovery == nil {
+		return nil, status.Error(codes.FailedPrecondition, "recovery gate is not enabled")
+	}
+	bindingRequest := request.GetBinding()
+	evidenceRequest := request.GetTransportEvidence()
+	if bindingRequest == nil || evidenceRequest == nil {
+		return nil, status.Error(codes.InvalidArgument, "binding and transport evidence are required")
+	}
+	if _, err := s.market(bindingRequest.GetMarketId()); err != nil {
+		return nil, err
+	}
+	version, err := strconv.ParseUint(bindingRequest.GetVersion(), 10, 64)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid recovery version")
+	}
+	sequence, err := strconv.ParseUint(bindingRequest.GetRuntimeSequence(), 10, 64)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid runtime sequence")
+	}
+	maximumGap, err := strconv.ParseInt(evidenceRequest.GetMaximumGapMs(), 10, 64)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid maximum sample gap")
+	}
+	firstSample, err := time.Parse(time.RFC3339Nano, evidenceRequest.GetFirstSampleAt())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid first sample timestamp")
+	}
+	lastSample, err := time.Parse(time.RFC3339Nano, evidenceRequest.GetLastSampleAt())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid last sample timestamp")
+	}
+	runtimeStatus := s.engine.Status()
+	if runtimeStatus.State != tradingruntime.StateReady ||
+		runtimeStatus.Sequence != sequence ||
+		runtimeStatus.StateHash != bindingRequest.GetStateHash() ||
+		runtimeStatus.QueueDepth != 0 || runtimeStatus.LastError != "" {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"runtime changed after transport observation",
+		)
+	}
+	if s.delivery != nil {
+		deliveryStatus := s.delivery.Status()
+		if deliveryStatus.State != "ready" || deliveryStatus.LastError != "" ||
+			deliveryStatus.Checkpoint.Sequence != sequence {
+			return nil, status.Error(
+				codes.FailedPrecondition,
+				"outbox changed after transport observation",
+			)
+		}
+	}
+	promoted, err := s.config.Recovery.Promote(ctx, recovery.Binding{
+		MarketID:        domain.MarketID(bindingRequest.GetMarketId()),
+		EpochID:         bindingRequest.GetEpochId(),
+		Version:         version,
+		RuntimeSequence: sequence,
+		StateHash:       bindingRequest.GetStateHash(),
+	}, recovery.TransportEvidence{
+		SampleCount:    int(evidenceRequest.GetSampleCount()),
+		FirstSampleAt:  firstSample,
+		LastSampleAt:   lastSample,
+		MaximumGapMS:   maximumGap,
+		EvidenceSHA256: evidenceRequest.GetEvidenceSha256(),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, recovery.ErrVersionConflict):
+			return nil, status.Error(codes.Aborted, "recovery promotion CAS failed")
+		case errors.Is(err, recovery.ErrBindingMismatch),
+			errors.Is(err, recovery.ErrTransportEvidence),
+			errors.Is(err, recovery.ErrWriteBlocked):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		default:
+			return nil, status.Error(codes.Unavailable, "recovery promotion is unavailable")
+		}
+	}
+	return toRecoveryStatus(promoted), nil
+}
+
+func toRecoveryStatus(current recovery.Status) *tradingv1.RecoveryStatusResponse {
+	return &tradingv1.RecoveryStatusResponse{
+		MarketId:            string(current.MarketID),
+		EpochId:             current.EpochID,
+		Phase:               string(current.Phase),
+		Version:             strconv.FormatUint(current.Version, 10),
+		RuntimeSequence:     strconv.FormatUint(current.Proof.RuntimeSequence, 10),
+		StateHash:           current.Proof.StateHash,
+		WritesEnabled:       current.WritesEnabled,
+		ContinuityUncertain: current.ContinuityUncertain,
+		ContinuityError:     current.ContinuityError,
+		UpdatedAt:           current.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
 }
 
 func DefaultConfig() Config {
@@ -331,6 +451,7 @@ func (s *Server) GetStatus(
 		LastIncident:    current.LastIncident,
 		LastIncidentAt:  current.LastIncidentAt,
 		LastRecoveredAt: current.LastRecoveredAt,
+		StateHash:       current.StateHash,
 	}
 	if s.delivery != nil {
 		delivery := s.delivery.Status()

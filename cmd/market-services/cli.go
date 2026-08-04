@@ -198,6 +198,7 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 		EnableBashCompletion: true,
 		Commands: []*cli.Command{
 			catalogCommand(),
+			tradingRecoveryCommand(),
 			{
 				Name:        "migrate",
 				Flags:       flags,

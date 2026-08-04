@@ -823,6 +823,370 @@ func (x *GetStatusRequest) GetMarketId() string {
 	return ""
 }
 
+type GetRecoveryStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRecoveryStatusRequest) Reset() {
+	*x = GetRecoveryStatusRequest{}
+	mi := &file_trading_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRecoveryStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRecoveryStatusRequest) ProtoMessage() {}
+
+func (x *GetRecoveryStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRecoveryStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetRecoveryStatusRequest) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GetRecoveryStatusRequest) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+type RecoveryBinding struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	MarketId        string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	EpochId         string                 `protobuf:"bytes,2,opt,name=epoch_id,json=epochId,proto3" json:"epoch_id,omitempty"`
+	Version         string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	RuntimeSequence string                 `protobuf:"bytes,4,opt,name=runtime_sequence,json=runtimeSequence,proto3" json:"runtime_sequence,omitempty"`
+	StateHash       string                 `protobuf:"bytes,5,opt,name=state_hash,json=stateHash,proto3" json:"state_hash,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RecoveryBinding) Reset() {
+	*x = RecoveryBinding{}
+	mi := &file_trading_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecoveryBinding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecoveryBinding) ProtoMessage() {}
+
+func (x *RecoveryBinding) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecoveryBinding.ProtoReflect.Descriptor instead.
+func (*RecoveryBinding) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RecoveryBinding) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *RecoveryBinding) GetEpochId() string {
+	if x != nil {
+		return x.EpochId
+	}
+	return ""
+}
+
+func (x *RecoveryBinding) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *RecoveryBinding) GetRuntimeSequence() string {
+	if x != nil {
+		return x.RuntimeSequence
+	}
+	return ""
+}
+
+func (x *RecoveryBinding) GetStateHash() string {
+	if x != nil {
+		return x.StateHash
+	}
+	return ""
+}
+
+type RecoveryTransportEvidence struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SampleCount    uint32                 `protobuf:"varint,1,opt,name=sample_count,json=sampleCount,proto3" json:"sample_count,omitempty"`
+	FirstSampleAt  string                 `protobuf:"bytes,2,opt,name=first_sample_at,json=firstSampleAt,proto3" json:"first_sample_at,omitempty"`
+	LastSampleAt   string                 `protobuf:"bytes,3,opt,name=last_sample_at,json=lastSampleAt,proto3" json:"last_sample_at,omitempty"`
+	MaximumGapMs   string                 `protobuf:"bytes,4,opt,name=maximum_gap_ms,json=maximumGapMs,proto3" json:"maximum_gap_ms,omitempty"`
+	EvidenceSha256 string                 `protobuf:"bytes,5,opt,name=evidence_sha256,json=evidenceSha256,proto3" json:"evidence_sha256,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RecoveryTransportEvidence) Reset() {
+	*x = RecoveryTransportEvidence{}
+	mi := &file_trading_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecoveryTransportEvidence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecoveryTransportEvidence) ProtoMessage() {}
+
+func (x *RecoveryTransportEvidence) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecoveryTransportEvidence.ProtoReflect.Descriptor instead.
+func (*RecoveryTransportEvidence) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *RecoveryTransportEvidence) GetSampleCount() uint32 {
+	if x != nil {
+		return x.SampleCount
+	}
+	return 0
+}
+
+func (x *RecoveryTransportEvidence) GetFirstSampleAt() string {
+	if x != nil {
+		return x.FirstSampleAt
+	}
+	return ""
+}
+
+func (x *RecoveryTransportEvidence) GetLastSampleAt() string {
+	if x != nil {
+		return x.LastSampleAt
+	}
+	return ""
+}
+
+func (x *RecoveryTransportEvidence) GetMaximumGapMs() string {
+	if x != nil {
+		return x.MaximumGapMs
+	}
+	return ""
+}
+
+func (x *RecoveryTransportEvidence) GetEvidenceSha256() string {
+	if x != nil {
+		return x.EvidenceSha256
+	}
+	return ""
+}
+
+type PromoteRecoveryRequest struct {
+	state             protoimpl.MessageState     `protogen:"open.v1"`
+	Binding           *RecoveryBinding           `protobuf:"bytes,1,opt,name=binding,proto3" json:"binding,omitempty"`
+	TransportEvidence *RecoveryTransportEvidence `protobuf:"bytes,2,opt,name=transport_evidence,json=transportEvidence,proto3" json:"transport_evidence,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *PromoteRecoveryRequest) Reset() {
+	*x = PromoteRecoveryRequest{}
+	mi := &file_trading_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PromoteRecoveryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PromoteRecoveryRequest) ProtoMessage() {}
+
+func (x *PromoteRecoveryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PromoteRecoveryRequest.ProtoReflect.Descriptor instead.
+func (*PromoteRecoveryRequest) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *PromoteRecoveryRequest) GetBinding() *RecoveryBinding {
+	if x != nil {
+		return x.Binding
+	}
+	return nil
+}
+
+func (x *PromoteRecoveryRequest) GetTransportEvidence() *RecoveryTransportEvidence {
+	if x != nil {
+		return x.TransportEvidence
+	}
+	return nil
+}
+
+type RecoveryStatusResponse struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	MarketId            string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	EpochId             string                 `protobuf:"bytes,2,opt,name=epoch_id,json=epochId,proto3" json:"epoch_id,omitempty"`
+	Phase               string                 `protobuf:"bytes,3,opt,name=phase,proto3" json:"phase,omitempty"`
+	Version             string                 `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
+	RuntimeSequence     string                 `protobuf:"bytes,5,opt,name=runtime_sequence,json=runtimeSequence,proto3" json:"runtime_sequence,omitempty"`
+	StateHash           string                 `protobuf:"bytes,6,opt,name=state_hash,json=stateHash,proto3" json:"state_hash,omitempty"`
+	WritesEnabled       bool                   `protobuf:"varint,7,opt,name=writes_enabled,json=writesEnabled,proto3" json:"writes_enabled,omitempty"`
+	ContinuityUncertain bool                   `protobuf:"varint,8,opt,name=continuity_uncertain,json=continuityUncertain,proto3" json:"continuity_uncertain,omitempty"`
+	ContinuityError     string                 `protobuf:"bytes,9,opt,name=continuity_error,json=continuityError,proto3" json:"continuity_error,omitempty"`
+	UpdatedAt           string                 `protobuf:"bytes,10,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *RecoveryStatusResponse) Reset() {
+	*x = RecoveryStatusResponse{}
+	mi := &file_trading_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecoveryStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecoveryStatusResponse) ProtoMessage() {}
+
+func (x *RecoveryStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecoveryStatusResponse.ProtoReflect.Descriptor instead.
+func (*RecoveryStatusResponse) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RecoveryStatusResponse) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *RecoveryStatusResponse) GetEpochId() string {
+	if x != nil {
+		return x.EpochId
+	}
+	return ""
+}
+
+func (x *RecoveryStatusResponse) GetPhase() string {
+	if x != nil {
+		return x.Phase
+	}
+	return ""
+}
+
+func (x *RecoveryStatusResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *RecoveryStatusResponse) GetRuntimeSequence() string {
+	if x != nil {
+		return x.RuntimeSequence
+	}
+	return ""
+}
+
+func (x *RecoveryStatusResponse) GetStateHash() string {
+	if x != nil {
+		return x.StateHash
+	}
+	return ""
+}
+
+func (x *RecoveryStatusResponse) GetWritesEnabled() bool {
+	if x != nil {
+		return x.WritesEnabled
+	}
+	return false
+}
+
+func (x *RecoveryStatusResponse) GetContinuityUncertain() bool {
+	if x != nil {
+		return x.ContinuityUncertain
+	}
+	return false
+}
+
+func (x *RecoveryStatusResponse) GetContinuityError() string {
+	if x != nil {
+		return x.ContinuityError
+	}
+	return ""
+}
+
+func (x *RecoveryStatusResponse) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
 type AdminFundVirtualRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
@@ -836,7 +1200,7 @@ type AdminFundVirtualRequest struct {
 
 func (x *AdminFundVirtualRequest) Reset() {
 	*x = AdminFundVirtualRequest{}
-	mi := &file_trading_proto_msgTypes[11]
+	mi := &file_trading_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -848,7 +1212,7 @@ func (x *AdminFundVirtualRequest) String() string {
 func (*AdminFundVirtualRequest) ProtoMessage() {}
 
 func (x *AdminFundVirtualRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[11]
+	mi := &file_trading_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -861,7 +1225,7 @@ func (x *AdminFundVirtualRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdminFundVirtualRequest.ProtoReflect.Descriptor instead.
 func (*AdminFundVirtualRequest) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{11}
+	return file_trading_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AdminFundVirtualRequest) GetMarketId() string {
@@ -910,7 +1274,7 @@ type SubscribeEventsRequest struct {
 
 func (x *SubscribeEventsRequest) Reset() {
 	*x = SubscribeEventsRequest{}
-	mi := &file_trading_proto_msgTypes[12]
+	mi := &file_trading_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -922,7 +1286,7 @@ func (x *SubscribeEventsRequest) String() string {
 func (*SubscribeEventsRequest) ProtoMessage() {}
 
 func (x *SubscribeEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[12]
+	mi := &file_trading_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -935,7 +1299,7 @@ func (x *SubscribeEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeEventsRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeEventsRequest) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{12}
+	return file_trading_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SubscribeEventsRequest) GetMarketId() string {
@@ -971,7 +1335,7 @@ type CommandResult struct {
 
 func (x *CommandResult) Reset() {
 	*x = CommandResult{}
-	mi := &file_trading_proto_msgTypes[13]
+	mi := &file_trading_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -983,7 +1347,7 @@ func (x *CommandResult) String() string {
 func (*CommandResult) ProtoMessage() {}
 
 func (x *CommandResult) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[13]
+	mi := &file_trading_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -996,7 +1360,7 @@ func (x *CommandResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandResult.ProtoReflect.Descriptor instead.
 func (*CommandResult) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{13}
+	return file_trading_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CommandResult) GetSequence() string {
@@ -1056,7 +1420,7 @@ type Order struct {
 
 func (x *Order) Reset() {
 	*x = Order{}
-	mi := &file_trading_proto_msgTypes[14]
+	mi := &file_trading_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1068,7 +1432,7 @@ func (x *Order) String() string {
 func (*Order) ProtoMessage() {}
 
 func (x *Order) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[14]
+	mi := &file_trading_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1081,7 +1445,7 @@ func (x *Order) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Order.ProtoReflect.Descriptor instead.
 func (*Order) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{14}
+	return file_trading_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Order) GetId() string {
@@ -1244,7 +1608,7 @@ type Fee struct {
 
 func (x *Fee) Reset() {
 	*x = Fee{}
-	mi := &file_trading_proto_msgTypes[15]
+	mi := &file_trading_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1256,7 +1620,7 @@ func (x *Fee) String() string {
 func (*Fee) ProtoMessage() {}
 
 func (x *Fee) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[15]
+	mi := &file_trading_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1269,7 +1633,7 @@ func (x *Fee) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Fee.ProtoReflect.Descriptor instead.
 func (*Fee) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{15}
+	return file_trading_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Fee) GetAccountId() string {
@@ -1328,7 +1692,7 @@ type Trade struct {
 
 func (x *Trade) Reset() {
 	*x = Trade{}
-	mi := &file_trading_proto_msgTypes[16]
+	mi := &file_trading_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1340,7 +1704,7 @@ func (x *Trade) String() string {
 func (*Trade) ProtoMessage() {}
 
 func (x *Trade) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[16]
+	mi := &file_trading_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1353,7 +1717,7 @@ func (x *Trade) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Trade.ProtoReflect.Descriptor instead.
 func (*Trade) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{16}
+	return file_trading_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Trade) GetId() string {
@@ -1471,7 +1835,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_trading_proto_msgTypes[17]
+	mi := &file_trading_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1483,7 +1847,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[17]
+	mi := &file_trading_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1496,7 +1860,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{17}
+	return file_trading_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *Event) GetSequence() string {
@@ -1622,7 +1986,7 @@ type Balance struct {
 
 func (x *Balance) Reset() {
 	*x = Balance{}
-	mi := &file_trading_proto_msgTypes[18]
+	mi := &file_trading_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1634,7 +1998,7 @@ func (x *Balance) String() string {
 func (*Balance) ProtoMessage() {}
 
 func (x *Balance) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[18]
+	mi := &file_trading_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1647,7 +2011,7 @@ func (x *Balance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Balance.ProtoReflect.Descriptor instead.
 func (*Balance) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{18}
+	return file_trading_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Balance) GetAsset() string {
@@ -1682,7 +2046,7 @@ type PriceLevel struct {
 
 func (x *PriceLevel) Reset() {
 	*x = PriceLevel{}
-	mi := &file_trading_proto_msgTypes[19]
+	mi := &file_trading_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1694,7 +2058,7 @@ func (x *PriceLevel) String() string {
 func (*PriceLevel) ProtoMessage() {}
 
 func (x *PriceLevel) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[19]
+	mi := &file_trading_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1707,7 +2071,7 @@ func (x *PriceLevel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PriceLevel.ProtoReflect.Descriptor instead.
 func (*PriceLevel) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{19}
+	return file_trading_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *PriceLevel) GetPrice() string {
@@ -1743,7 +2107,7 @@ type OrderBook struct {
 
 func (x *OrderBook) Reset() {
 	*x = OrderBook{}
-	mi := &file_trading_proto_msgTypes[20]
+	mi := &file_trading_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1755,7 +2119,7 @@ func (x *OrderBook) String() string {
 func (*OrderBook) ProtoMessage() {}
 
 func (x *OrderBook) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[20]
+	mi := &file_trading_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1768,7 +2132,7 @@ func (x *OrderBook) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OrderBook.ProtoReflect.Descriptor instead.
 func (*OrderBook) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{20}
+	return file_trading_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *OrderBook) GetMarketId() string {
@@ -1816,13 +2180,14 @@ type StatusResponse struct {
 	OutboxLastError            string                 `protobuf:"bytes,13,opt,name=outbox_last_error,json=outboxLastError,proto3" json:"outbox_last_error,omitempty"`
 	OutboxLastPublishedAt      string                 `protobuf:"bytes,14,opt,name=outbox_last_published_at,json=outboxLastPublishedAt,proto3" json:"outbox_last_published_at,omitempty"`
 	OutboxLastCleanupAt        string                 `protobuf:"bytes,15,opt,name=outbox_last_cleanup_at,json=outboxLastCleanupAt,proto3" json:"outbox_last_cleanup_at,omitempty"`
+	StateHash                  string                 `protobuf:"bytes,16,opt,name=state_hash,json=stateHash,proto3" json:"state_hash,omitempty"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *StatusResponse) Reset() {
 	*x = StatusResponse{}
-	mi := &file_trading_proto_msgTypes[21]
+	mi := &file_trading_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1834,7 +2199,7 @@ func (x *StatusResponse) String() string {
 func (*StatusResponse) ProtoMessage() {}
 
 func (x *StatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[21]
+	mi := &file_trading_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1847,7 +2212,7 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
 func (*StatusResponse) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{21}
+	return file_trading_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *StatusResponse) GetMarketId() string {
@@ -1955,6 +2320,13 @@ func (x *StatusResponse) GetOutboxLastCleanupAt() string {
 	return ""
 }
 
+func (x *StatusResponse) GetStateHash() string {
+	if x != nil {
+		return x.StateHash
+	}
+	return ""
+}
+
 type EventEnvelope struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
@@ -1967,7 +2339,7 @@ type EventEnvelope struct {
 
 func (x *EventEnvelope) Reset() {
 	*x = EventEnvelope{}
-	mi := &file_trading_proto_msgTypes[22]
+	mi := &file_trading_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1979,7 +2351,7 @@ func (x *EventEnvelope) String() string {
 func (*EventEnvelope) ProtoMessage() {}
 
 func (x *EventEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_trading_proto_msgTypes[22]
+	mi := &file_trading_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1992,7 +2364,7 @@ func (x *EventEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventEnvelope.ProtoReflect.Descriptor instead.
 func (*EventEnvelope) Descriptor() ([]byte, []int) {
-	return file_trading_proto_rawDescGZIP(), []int{22}
+	return file_trading_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *EventEnvelope) GetMarketId() string {
@@ -2078,7 +2450,39 @@ const file_trading_proto_rawDesc = "" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x16\n" +
 	"\x06levels\x18\x02 \x01(\rR\x06levels\"/\n" +
 	"\x10GetStatusRequest\x12\x1b\n" +
-	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\"\xa2\x01\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\"7\n" +
+	"\x18GetRecoveryStatusRequest\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\"\xad\x01\n" +
+	"\x0fRecoveryBinding\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x19\n" +
+	"\bepoch_id\x18\x02 \x01(\tR\aepochId\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\tR\aversion\x12)\n" +
+	"\x10runtime_sequence\x18\x04 \x01(\tR\x0fruntimeSequence\x12\x1d\n" +
+	"\n" +
+	"state_hash\x18\x05 \x01(\tR\tstateHash\"\xdb\x01\n" +
+	"\x19RecoveryTransportEvidence\x12!\n" +
+	"\fsample_count\x18\x01 \x01(\rR\vsampleCount\x12&\n" +
+	"\x0ffirst_sample_at\x18\x02 \x01(\tR\rfirstSampleAt\x12$\n" +
+	"\x0elast_sample_at\x18\x03 \x01(\tR\flastSampleAt\x12$\n" +
+	"\x0emaximum_gap_ms\x18\x04 \x01(\tR\fmaximumGapMs\x12'\n" +
+	"\x0fevidence_sha256\x18\x05 \x01(\tR\x0eevidenceSha256\"\xad\x01\n" +
+	"\x16PromoteRecoveryRequest\x129\n" +
+	"\abinding\x18\x01 \x01(\v2\x1f.s78.trading.v1.RecoveryBindingR\abinding\x12X\n" +
+	"\x12transport_evidence\x18\x02 \x01(\v2).s78.trading.v1.RecoveryTransportEvidenceR\x11transportEvidence\"\xee\x02\n" +
+	"\x16RecoveryStatusResponse\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x19\n" +
+	"\bepoch_id\x18\x02 \x01(\tR\aepochId\x12\x14\n" +
+	"\x05phase\x18\x03 \x01(\tR\x05phase\x12\x18\n" +
+	"\aversion\x18\x04 \x01(\tR\aversion\x12)\n" +
+	"\x10runtime_sequence\x18\x05 \x01(\tR\x0fruntimeSequence\x12\x1d\n" +
+	"\n" +
+	"state_hash\x18\x06 \x01(\tR\tstateHash\x12%\n" +
+	"\x0ewrites_enabled\x18\a \x01(\bR\rwritesEnabled\x121\n" +
+	"\x14continuity_uncertain\x18\b \x01(\bR\x13continuityUncertain\x12)\n" +
+	"\x10continuity_error\x18\t \x01(\tR\x0fcontinuityError\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\n" +
+	" \x01(\tR\tupdatedAt\"\xa2\x01\n" +
 	"\x17AdminFundVirtualRequest\x12\x1b\n" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1d\n" +
 	"\n" +
@@ -2179,7 +2583,7 @@ const file_trading_proto_rawDesc = "" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\tR\bsequence\x12.\n" +
 	"\x04bids\x18\x03 \x03(\v2\x1a.s78.trading.v1.PriceLevelR\x04bids\x12.\n" +
-	"\x04asks\x18\x04 \x03(\v2\x1a.s78.trading.v1.PriceLevelR\x04asks\"\xff\x04\n" +
+	"\x04asks\x18\x04 \x03(\v2\x1a.s78.trading.v1.PriceLevelR\x04asks\"\x9e\x05\n" +
 	"\x0eStatusResponse\x12\x1b\n" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12\x1a\n" +
@@ -2198,7 +2602,9 @@ const file_trading_proto_rawDesc = "" +
 	"\x1doutbox_checkpoint_event_index\x18\f \x01(\rR\x1aoutboxCheckpointEventIndex\x12*\n" +
 	"\x11outbox_last_error\x18\r \x01(\tR\x0foutboxLastError\x127\n" +
 	"\x18outbox_last_published_at\x18\x0e \x01(\tR\x15outboxLastPublishedAt\x123\n" +
-	"\x16outbox_last_cleanup_at\x18\x0f \x01(\tR\x13outboxLastCleanupAt\"\x96\x01\n" +
+	"\x16outbox_last_cleanup_at\x18\x0f \x01(\tR\x13outboxLastCleanupAt\x12\x1d\n" +
+	"\n" +
+	"state_hash\x18\x10 \x01(\tR\tstateHash\"\x96\x01\n" +
 	"\rEventEnvelope\x12\x1b\n" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\tR\bsequence\x12\x1f\n" +
@@ -2217,7 +2623,7 @@ const file_trading_proto_rawDesc = "" +
 	"\x19TIME_IN_FORCE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11TIME_IN_FORCE_GTC\x10\x01\x12\x15\n" +
 	"\x11TIME_IN_FORCE_IOC\x10\x02\x12\x15\n" +
-	"\x11TIME_IN_FORCE_FOK\x10\x032\xd1\x06\n" +
+	"\x11TIME_IN_FORCE_FOK\x10\x032\x9b\b\n" +
 	"\x0eTradingService\x12P\n" +
 	"\vSubmitOrder\x12\".s78.trading.v1.SubmitOrderRequest\x1a\x1d.s78.trading.v1.CommandResult\x12P\n" +
 	"\vCancelOrder\x12\".s78.trading.v1.CancelOrderRequest\x1a\x1d.s78.trading.v1.CommandResult\x12B\n" +
@@ -2228,7 +2634,9 @@ const file_trading_proto_rawDesc = "" +
 	"ListTrades\x12!.s78.trading.v1.ListTradesRequest\x1a\".s78.trading.v1.ListTradesResponse\x12V\n" +
 	"\vGetBalances\x12\".s78.trading.v1.GetBalancesRequest\x1a#.s78.trading.v1.GetBalancesResponse\x12N\n" +
 	"\fGetOrderBook\x12#.s78.trading.v1.GetOrderBookRequest\x1a\x19.s78.trading.v1.OrderBook\x12M\n" +
-	"\tGetStatus\x12 .s78.trading.v1.GetStatusRequest\x1a\x1e.s78.trading.v1.StatusResponse\x12Z\n" +
+	"\tGetStatus\x12 .s78.trading.v1.GetStatusRequest\x1a\x1e.s78.trading.v1.StatusResponse\x12e\n" +
+	"\x11GetRecoveryStatus\x12(.s78.trading.v1.GetRecoveryStatusRequest\x1a&.s78.trading.v1.RecoveryStatusResponse\x12a\n" +
+	"\x0fPromoteRecovery\x12&.s78.trading.v1.PromoteRecoveryRequest\x1a&.s78.trading.v1.RecoveryStatusResponse\x12Z\n" +
 	"\x10AdminFundVirtual\x12'.s78.trading.v1.AdminFundVirtualRequest\x1a\x1d.s78.trading.v1.CommandResult\x12Z\n" +
 	"\x0fSubscribeEvents\x12&.s78.trading.v1.SubscribeEventsRequest\x1a\x1d.s78.trading.v1.EventEnvelope0\x01BBZ@github.com/the-web3/s78-market-services/trading/rpc/pb;tradingv1b\x06proto3"
 
@@ -2245,74 +2653,85 @@ func file_trading_proto_rawDescGZIP() []byte {
 }
 
 var file_trading_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_trading_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_trading_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_trading_proto_goTypes = []any{
-	(Side)(0),                       // 0: s78.trading.v1.Side
-	(OrderType)(0),                  // 1: s78.trading.v1.OrderType
-	(TimeInForce)(0),                // 2: s78.trading.v1.TimeInForce
-	(*SubmitOrderRequest)(nil),      // 3: s78.trading.v1.SubmitOrderRequest
-	(*CancelOrderRequest)(nil),      // 4: s78.trading.v1.CancelOrderRequest
-	(*GetOrderRequest)(nil),         // 5: s78.trading.v1.GetOrderRequest
-	(*ListOrdersRequest)(nil),       // 6: s78.trading.v1.ListOrdersRequest
-	(*ListOrdersResponse)(nil),      // 7: s78.trading.v1.ListOrdersResponse
-	(*ListTradesRequest)(nil),       // 8: s78.trading.v1.ListTradesRequest
-	(*ListTradesResponse)(nil),      // 9: s78.trading.v1.ListTradesResponse
-	(*GetBalancesRequest)(nil),      // 10: s78.trading.v1.GetBalancesRequest
-	(*GetBalancesResponse)(nil),     // 11: s78.trading.v1.GetBalancesResponse
-	(*GetOrderBookRequest)(nil),     // 12: s78.trading.v1.GetOrderBookRequest
-	(*GetStatusRequest)(nil),        // 13: s78.trading.v1.GetStatusRequest
-	(*AdminFundVirtualRequest)(nil), // 14: s78.trading.v1.AdminFundVirtualRequest
-	(*SubscribeEventsRequest)(nil),  // 15: s78.trading.v1.SubscribeEventsRequest
-	(*CommandResult)(nil),           // 16: s78.trading.v1.CommandResult
-	(*Order)(nil),                   // 17: s78.trading.v1.Order
-	(*Fee)(nil),                     // 18: s78.trading.v1.Fee
-	(*Trade)(nil),                   // 19: s78.trading.v1.Trade
-	(*Event)(nil),                   // 20: s78.trading.v1.Event
-	(*Balance)(nil),                 // 21: s78.trading.v1.Balance
-	(*PriceLevel)(nil),              // 22: s78.trading.v1.PriceLevel
-	(*OrderBook)(nil),               // 23: s78.trading.v1.OrderBook
-	(*StatusResponse)(nil),          // 24: s78.trading.v1.StatusResponse
-	(*EventEnvelope)(nil),           // 25: s78.trading.v1.EventEnvelope
+	(Side)(0),                         // 0: s78.trading.v1.Side
+	(OrderType)(0),                    // 1: s78.trading.v1.OrderType
+	(TimeInForce)(0),                  // 2: s78.trading.v1.TimeInForce
+	(*SubmitOrderRequest)(nil),        // 3: s78.trading.v1.SubmitOrderRequest
+	(*CancelOrderRequest)(nil),        // 4: s78.trading.v1.CancelOrderRequest
+	(*GetOrderRequest)(nil),           // 5: s78.trading.v1.GetOrderRequest
+	(*ListOrdersRequest)(nil),         // 6: s78.trading.v1.ListOrdersRequest
+	(*ListOrdersResponse)(nil),        // 7: s78.trading.v1.ListOrdersResponse
+	(*ListTradesRequest)(nil),         // 8: s78.trading.v1.ListTradesRequest
+	(*ListTradesResponse)(nil),        // 9: s78.trading.v1.ListTradesResponse
+	(*GetBalancesRequest)(nil),        // 10: s78.trading.v1.GetBalancesRequest
+	(*GetBalancesResponse)(nil),       // 11: s78.trading.v1.GetBalancesResponse
+	(*GetOrderBookRequest)(nil),       // 12: s78.trading.v1.GetOrderBookRequest
+	(*GetStatusRequest)(nil),          // 13: s78.trading.v1.GetStatusRequest
+	(*GetRecoveryStatusRequest)(nil),  // 14: s78.trading.v1.GetRecoveryStatusRequest
+	(*RecoveryBinding)(nil),           // 15: s78.trading.v1.RecoveryBinding
+	(*RecoveryTransportEvidence)(nil), // 16: s78.trading.v1.RecoveryTransportEvidence
+	(*PromoteRecoveryRequest)(nil),    // 17: s78.trading.v1.PromoteRecoveryRequest
+	(*RecoveryStatusResponse)(nil),    // 18: s78.trading.v1.RecoveryStatusResponse
+	(*AdminFundVirtualRequest)(nil),   // 19: s78.trading.v1.AdminFundVirtualRequest
+	(*SubscribeEventsRequest)(nil),    // 20: s78.trading.v1.SubscribeEventsRequest
+	(*CommandResult)(nil),             // 21: s78.trading.v1.CommandResult
+	(*Order)(nil),                     // 22: s78.trading.v1.Order
+	(*Fee)(nil),                       // 23: s78.trading.v1.Fee
+	(*Trade)(nil),                     // 24: s78.trading.v1.Trade
+	(*Event)(nil),                     // 25: s78.trading.v1.Event
+	(*Balance)(nil),                   // 26: s78.trading.v1.Balance
+	(*PriceLevel)(nil),                // 27: s78.trading.v1.PriceLevel
+	(*OrderBook)(nil),                 // 28: s78.trading.v1.OrderBook
+	(*StatusResponse)(nil),            // 29: s78.trading.v1.StatusResponse
+	(*EventEnvelope)(nil),             // 30: s78.trading.v1.EventEnvelope
 }
 var file_trading_proto_depIdxs = []int32{
 	0,  // 0: s78.trading.v1.SubmitOrderRequest.side:type_name -> s78.trading.v1.Side
 	1,  // 1: s78.trading.v1.SubmitOrderRequest.type:type_name -> s78.trading.v1.OrderType
 	2,  // 2: s78.trading.v1.SubmitOrderRequest.time_in_force:type_name -> s78.trading.v1.TimeInForce
-	17, // 3: s78.trading.v1.ListOrdersResponse.orders:type_name -> s78.trading.v1.Order
-	19, // 4: s78.trading.v1.ListTradesResponse.trades:type_name -> s78.trading.v1.Trade
-	21, // 5: s78.trading.v1.GetBalancesResponse.balances:type_name -> s78.trading.v1.Balance
-	20, // 6: s78.trading.v1.CommandResult.events:type_name -> s78.trading.v1.Event
-	18, // 7: s78.trading.v1.Trade.buyer_fee:type_name -> s78.trading.v1.Fee
-	18, // 8: s78.trading.v1.Trade.seller_fee:type_name -> s78.trading.v1.Fee
-	19, // 9: s78.trading.v1.Event.trade:type_name -> s78.trading.v1.Trade
-	22, // 10: s78.trading.v1.OrderBook.bids:type_name -> s78.trading.v1.PriceLevel
-	22, // 11: s78.trading.v1.OrderBook.asks:type_name -> s78.trading.v1.PriceLevel
-	20, // 12: s78.trading.v1.EventEnvelope.event:type_name -> s78.trading.v1.Event
-	3,  // 13: s78.trading.v1.TradingService.SubmitOrder:input_type -> s78.trading.v1.SubmitOrderRequest
-	4,  // 14: s78.trading.v1.TradingService.CancelOrder:input_type -> s78.trading.v1.CancelOrderRequest
-	5,  // 15: s78.trading.v1.TradingService.GetOrder:input_type -> s78.trading.v1.GetOrderRequest
-	6,  // 16: s78.trading.v1.TradingService.ListOrders:input_type -> s78.trading.v1.ListOrdersRequest
-	8,  // 17: s78.trading.v1.TradingService.ListTrades:input_type -> s78.trading.v1.ListTradesRequest
-	10, // 18: s78.trading.v1.TradingService.GetBalances:input_type -> s78.trading.v1.GetBalancesRequest
-	12, // 19: s78.trading.v1.TradingService.GetOrderBook:input_type -> s78.trading.v1.GetOrderBookRequest
-	13, // 20: s78.trading.v1.TradingService.GetStatus:input_type -> s78.trading.v1.GetStatusRequest
-	14, // 21: s78.trading.v1.TradingService.AdminFundVirtual:input_type -> s78.trading.v1.AdminFundVirtualRequest
-	15, // 22: s78.trading.v1.TradingService.SubscribeEvents:input_type -> s78.trading.v1.SubscribeEventsRequest
-	16, // 23: s78.trading.v1.TradingService.SubmitOrder:output_type -> s78.trading.v1.CommandResult
-	16, // 24: s78.trading.v1.TradingService.CancelOrder:output_type -> s78.trading.v1.CommandResult
-	17, // 25: s78.trading.v1.TradingService.GetOrder:output_type -> s78.trading.v1.Order
-	7,  // 26: s78.trading.v1.TradingService.ListOrders:output_type -> s78.trading.v1.ListOrdersResponse
-	9,  // 27: s78.trading.v1.TradingService.ListTrades:output_type -> s78.trading.v1.ListTradesResponse
-	11, // 28: s78.trading.v1.TradingService.GetBalances:output_type -> s78.trading.v1.GetBalancesResponse
-	23, // 29: s78.trading.v1.TradingService.GetOrderBook:output_type -> s78.trading.v1.OrderBook
-	24, // 30: s78.trading.v1.TradingService.GetStatus:output_type -> s78.trading.v1.StatusResponse
-	16, // 31: s78.trading.v1.TradingService.AdminFundVirtual:output_type -> s78.trading.v1.CommandResult
-	25, // 32: s78.trading.v1.TradingService.SubscribeEvents:output_type -> s78.trading.v1.EventEnvelope
-	23, // [23:33] is the sub-list for method output_type
-	13, // [13:23] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	22, // 3: s78.trading.v1.ListOrdersResponse.orders:type_name -> s78.trading.v1.Order
+	24, // 4: s78.trading.v1.ListTradesResponse.trades:type_name -> s78.trading.v1.Trade
+	26, // 5: s78.trading.v1.GetBalancesResponse.balances:type_name -> s78.trading.v1.Balance
+	15, // 6: s78.trading.v1.PromoteRecoveryRequest.binding:type_name -> s78.trading.v1.RecoveryBinding
+	16, // 7: s78.trading.v1.PromoteRecoveryRequest.transport_evidence:type_name -> s78.trading.v1.RecoveryTransportEvidence
+	25, // 8: s78.trading.v1.CommandResult.events:type_name -> s78.trading.v1.Event
+	23, // 9: s78.trading.v1.Trade.buyer_fee:type_name -> s78.trading.v1.Fee
+	23, // 10: s78.trading.v1.Trade.seller_fee:type_name -> s78.trading.v1.Fee
+	24, // 11: s78.trading.v1.Event.trade:type_name -> s78.trading.v1.Trade
+	27, // 12: s78.trading.v1.OrderBook.bids:type_name -> s78.trading.v1.PriceLevel
+	27, // 13: s78.trading.v1.OrderBook.asks:type_name -> s78.trading.v1.PriceLevel
+	25, // 14: s78.trading.v1.EventEnvelope.event:type_name -> s78.trading.v1.Event
+	3,  // 15: s78.trading.v1.TradingService.SubmitOrder:input_type -> s78.trading.v1.SubmitOrderRequest
+	4,  // 16: s78.trading.v1.TradingService.CancelOrder:input_type -> s78.trading.v1.CancelOrderRequest
+	5,  // 17: s78.trading.v1.TradingService.GetOrder:input_type -> s78.trading.v1.GetOrderRequest
+	6,  // 18: s78.trading.v1.TradingService.ListOrders:input_type -> s78.trading.v1.ListOrdersRequest
+	8,  // 19: s78.trading.v1.TradingService.ListTrades:input_type -> s78.trading.v1.ListTradesRequest
+	10, // 20: s78.trading.v1.TradingService.GetBalances:input_type -> s78.trading.v1.GetBalancesRequest
+	12, // 21: s78.trading.v1.TradingService.GetOrderBook:input_type -> s78.trading.v1.GetOrderBookRequest
+	13, // 22: s78.trading.v1.TradingService.GetStatus:input_type -> s78.trading.v1.GetStatusRequest
+	14, // 23: s78.trading.v1.TradingService.GetRecoveryStatus:input_type -> s78.trading.v1.GetRecoveryStatusRequest
+	17, // 24: s78.trading.v1.TradingService.PromoteRecovery:input_type -> s78.trading.v1.PromoteRecoveryRequest
+	19, // 25: s78.trading.v1.TradingService.AdminFundVirtual:input_type -> s78.trading.v1.AdminFundVirtualRequest
+	20, // 26: s78.trading.v1.TradingService.SubscribeEvents:input_type -> s78.trading.v1.SubscribeEventsRequest
+	21, // 27: s78.trading.v1.TradingService.SubmitOrder:output_type -> s78.trading.v1.CommandResult
+	21, // 28: s78.trading.v1.TradingService.CancelOrder:output_type -> s78.trading.v1.CommandResult
+	22, // 29: s78.trading.v1.TradingService.GetOrder:output_type -> s78.trading.v1.Order
+	7,  // 30: s78.trading.v1.TradingService.ListOrders:output_type -> s78.trading.v1.ListOrdersResponse
+	9,  // 31: s78.trading.v1.TradingService.ListTrades:output_type -> s78.trading.v1.ListTradesResponse
+	11, // 32: s78.trading.v1.TradingService.GetBalances:output_type -> s78.trading.v1.GetBalancesResponse
+	28, // 33: s78.trading.v1.TradingService.GetOrderBook:output_type -> s78.trading.v1.OrderBook
+	29, // 34: s78.trading.v1.TradingService.GetStatus:output_type -> s78.trading.v1.StatusResponse
+	18, // 35: s78.trading.v1.TradingService.GetRecoveryStatus:output_type -> s78.trading.v1.RecoveryStatusResponse
+	18, // 36: s78.trading.v1.TradingService.PromoteRecovery:output_type -> s78.trading.v1.RecoveryStatusResponse
+	21, // 37: s78.trading.v1.TradingService.AdminFundVirtual:output_type -> s78.trading.v1.CommandResult
+	30, // 38: s78.trading.v1.TradingService.SubscribeEvents:output_type -> s78.trading.v1.EventEnvelope
+	27, // [27:39] is the sub-list for method output_type
+	15, // [15:27] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_trading_proto_init() }
@@ -2326,7 +2745,7 @@ func file_trading_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_trading_proto_rawDesc), len(file_trading_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   23,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

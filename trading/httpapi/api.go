@@ -42,6 +42,7 @@ type Config struct {
 	LocalMode        bool
 	LocalAccountID   string
 	SecureCookies    bool
+	RecoveryGate     bool
 	SessionCookie    string
 	CSRFCookie       string
 	SessionTTL       time.Duration
@@ -166,8 +167,9 @@ func (s *Server) routes() {
 
 func (s *Server) authCapabilities(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]bool{
-		"github_oauth_enabled": s.github != nil,
-		"local_login_enabled":  s.config.LocalMode,
+		"github_oauth_enabled":  s.github != nil,
+		"local_login_enabled":   s.config.LocalMode,
+		"recovery_gate_enabled": s.config.RecoveryGate,
 	})
 }
 
