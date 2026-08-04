@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   eventSocketURL,
+  normalizeRecoveryStatus,
   TRADING_WRITE_TIMEOUT_MS,
   tradingAPI,
   tradingEventMode,
@@ -106,5 +107,144 @@ describe('trading API', () => {
   it('supports explicit same-origin polling fallback', () => {
     vi.stubEnv('VITE_TRADING_EVENT_MODE', 'polling')
     expect(tradingEventMode()).toBe('polling')
+  })
+
+  it('normalizes public recovery proof without treating numeric sequences as arithmetic', () => {
+    const status = normalizeRecoveryStatus({
+      schema_version: 1,
+      market_id: 'BTC-USDT',
+      epoch_id: 'epoch-1',
+      phase: 'transport_warmup',
+      runtime_sequence: '9007199254740993',
+      state_hash: 'a'.repeat(64),
+      ledger_balanced: true,
+      event_continuous: true,
+      projection_caught_up: true,
+      outbox_caught_up: true,
+      transport_healthy: false,
+      writes_enabled: false,
+      continuity_uncertain: true,
+      continuity_error: 'store save result is uncertain',
+      version: '7',
+    })
+    expect(status.proof.runtime_sequence).toBe('9007199254740993')
+    expect(status.phase).toBe('transport_warmup')
+    expect(status.writes_enabled).toBe(false)
+    expect(status.continuity_uncertain).toBe(true)
+    expect(status.continuity_error).toBe('store save result is uncertain')
+  })
+
+  it('rejects an already unsafe numeric recovery sequence instead of stringifying it', () => {
+    expect(() => normalizeRecoveryStatus({
+      schema_version: 1,
+      market_id: 'BTC-USDT',
+      epoch_id: 'epoch-unsafe',
+      phase: 'read_only',
+      runtime_sequence: 9_007_199_254_740_993,
+      writes_enabled: false,
+      continuity_uncertain: false,
+      version: 1,
+    })).toThrow('runtime_sequence is not a safe decimal value')
+  })
+
+  it('binds recovery evidence to schema one, BTC-USDT and a positive version', () => {
+    const valid = {
+      schema_version: 1,
+      market_id: 'BTC-USDT',
+      epoch_id: 'epoch-bound',
+      phase: 'read_only',
+      runtime_sequence: '0',
+      state_hash: 'a'.repeat(64),
+      ledger_balanced: true,
+      event_continuous: true,
+      projection_caught_up: true,
+      outbox_caught_up: true,
+      transport_healthy: false,
+      writes_enabled: false,
+      continuity_uncertain: false,
+      version: '1',
+    }
+    expect(() => normalizeRecoveryStatus({ ...valid, schema_version: 2 }))
+      .toThrow('status is malformed')
+    expect(() => normalizeRecoveryStatus({ ...valid, market_id: 'ETH-USDT' }))
+      .toThrow('status is malformed')
+    expect(() => normalizeRecoveryStatus({ ...valid, version: '0' }))
+      .toThrow('version must be a positive decimal value')
+    expect(() => normalizeRecoveryStatus({ ...valid, version: undefined }))
+      .toThrow('version is not a safe decimal value')
+    expect(() => normalizeRecoveryStatus({ ...valid, runtime_sequence: undefined }))
+      .toThrow('runtime_sequence is not a safe decimal value')
+    expect(() => normalizeRecoveryStatus({ ...valid, continuity_uncertain: undefined }))
+      .toThrow('status is malformed')
+  })
+
+  it('rejects an unsafe numeric recovery version symmetrically', () => {
+    expect(() => normalizeRecoveryStatus({
+      schema_version: 1,
+      market_id: 'BTC-USDT',
+      epoch_id: 'epoch-unsafe-version',
+      phase: 'read_only',
+      runtime_sequence: '1',
+      writes_enabled: false,
+      continuity_uncertain: false,
+      version: 9_007_199_254_740_993,
+    })).toThrow('version is not a safe decimal value')
+  })
+
+  it('allows recovery 404 compatibility only after a trusted disabled capability', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 'not_found',
+        message: 'not found',
+      }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        github_oauth_enabled: true,
+        local_login_enabled: false,
+        recovery_gate_enabled: false,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(tradingAPI.recoveryStatus()).resolves.toMatchObject({
+      supported: false,
+      phase: 'not_enabled',
+      writes_enabled: false,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails closed when recovery 404 has no explicit disabled capability', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        github_oauth_enabled: true,
+        local_login_enabled: false,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(tradingAPI.recoveryStatus()).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('treats recovery_in_progress as a definite server rejection, not unknown', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: 'recovery_in_progress',
+      message: 'writes are blocked',
+    }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    await expect(tradingAPI.submit({ client_order_id: 'stable-id' })).rejects.toMatchObject({
+      code: 'recovery_in_progress',
+      uncertain: false,
+    })
   })
 })

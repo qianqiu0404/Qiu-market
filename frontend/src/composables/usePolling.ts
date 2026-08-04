@@ -70,15 +70,21 @@ export function usePolling<T>(
     void run(false)
   }
 
+  const handleVisibilityChange = (): void => {
+    if (!document.hidden) void refresh()
+  }
+
   onMounted(() => {
     if (immediate) void refresh()
     timer = window.setInterval(tick, interval)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
   })
 
   onUnmounted(() => {
     stopped = true
     rerunRequested = false
     if (timer !== undefined) window.clearInterval(timer)
+    document.removeEventListener('visibilitychange', handleVisibilityChange)
   })
 
   return { data, loading, error, lastUpdated, refresh }

@@ -20,6 +20,7 @@ import {
   TradingRequestError,
   tradingEventMode,
   tradingAPI,
+  recoveryNotEnabled,
   type AuthCapabilities,
   type Balance,
   type EventEnvelope,
@@ -28,6 +29,8 @@ import {
   type Principal,
   type Trade,
   type TradingStatus,
+  type TradingRecoveryPhase,
+  type TradingRecoveryStatus,
 } from '../api/trading'
 import PageHeader from '../components/PageHeader.vue'
 import {
@@ -58,6 +61,11 @@ import {
   normalizeTradingEventCursor,
   type TradingEventCursor,
 } from '../trading/event-cursor'
+import {
+  deriveRecoveryAdmission,
+  recoveryStatusRegression,
+} from '../trading/recovery-admission'
+import { useI18n } from '../i18n'
 
 echarts.use([
   CandlestickChart,
@@ -68,6 +76,7 @@ echarts.use([
 ])
 
 const MARKET_ID = 'BTC-USDT'
+const RECOVERY_EVIDENCE_MAX_AGE_MS = 10_000
 const EVENT_CURSOR_STORAGE_KEY = `qiu-market.trading-event-cursor.${MARKET_ID}.v1`
 const KLINE_INTERVALS: KlineInterval[] = ['1m', '15m', '1h', '1d']
 const PANEL_NAMES = [
@@ -76,6 +85,7 @@ const PANEL_NAMES = [
   'orderbook',
   'publicTrades',
   'status',
+  'recovery',
   'balances',
   'orders',
   'privateTrades',
@@ -83,6 +93,11 @@ const PANEL_NAMES = [
 type PanelName = typeof PANEL_NAMES[number]
 
 const principal = ref<Principal | null>(null)
+const { locale } = useI18n()
+
+function t(en: string, zh: string): string {
+  return locale.value === 'zh-CN' ? zh : en
+}
 const authCapabilities = ref<AuthCapabilities>({
   github_oauth_enabled: false,
   local_login_enabled: false,
@@ -100,6 +115,7 @@ const status = ref<TradingStatus>({
   recovery_count: '0',
   last_error: '',
 })
+const recoveryStatus = ref<TradingRecoveryStatus>(recoveryNotEnabled())
 const errorMessage = ref('')
 const notice = ref('')
 const busy = ref(false)
@@ -182,6 +198,29 @@ const terminalHealth = computed(() => deriveTerminalHealth({
     pendingWrite.value === null &&
     !eventReconcilePending.value,
 }))
+const pendingReplayHealth = computed(() => deriveTerminalHealth({
+  now: nowMs.value,
+  loggedIn: principal.value !== null,
+  matchingStatus: status.value.state,
+  statusRead: panels.status,
+  orderbookRead: panels.orderbook,
+  hasBids: book.value.bids.length > 0,
+  hasAsks: book.value.asks.length > 0,
+  eventTransport: wsState.value,
+  privateDataAt: lastPrivateAt.value,
+  // The pending operation itself is the item being reconciled. Ignore only
+  // that journal lock here; an event-cursor reconciliation still blocks replay.
+  reconcileComplete: !eventReconcilePending.value,
+}))
+const recoveryAdmission = computed(() => deriveRecoveryAdmission(
+  recoveryStatus.value,
+  panels.recovery.error,
+  {
+    lastSuccessAt: panels.recovery.lastSuccessAt,
+    now: nowMs.value,
+    maximumAgeMs: RECOVERY_EVIDENCE_MAX_AGE_MS,
+  },
+))
 const unknownClientOrderID = computed(() =>
   pendingWrite.value?.operation === 'submit'
     ? pendingWrite.value.request_id
@@ -202,16 +241,47 @@ const canReconcilePending = computed(() =>
   pendingWrite.value.account_id === principal.value.account_id &&
   !busy.value,
 )
+const canReplayPending = computed(() =>
+  !busy.value &&
+  pendingReplayHealth.value.writesAllowed &&
+  recoveryAdmission.value.writesAllowed,
+)
 const writesEnabled = computed(() => {
-  return !busy.value && terminalHealth.value.writesAllowed
+  return !busy.value && terminalHealth.value.writesAllowed &&
+    recoveryAdmission.value.writesAllowed
 })
 const writeGateReason = computed(() => {
   if (busy.value) return 'request_in_flight'
   if (!principal.value) return 'login_required'
   if (pendingWrite.value) return 'reconcile_pending'
   if (eventReconcilePending.value) return 'transport_reconcile_pending'
+  if (!recoveryAdmission.value.writesAllowed) return recoveryAdmission.value.reason
   return terminalHealth.value.writeBlockReason || 'ready'
 })
+
+const recoveryEpochLabel = computed(() => shortID(recoveryStatus.value.epoch_id))
+
+function recoveryPhaseLabel(phase: TradingRecoveryPhase): string {
+  const labels: Record<TradingRecoveryPhase, [string, string]> = {
+    not_enabled: ['Not enabled', '未启用'],
+    uninitialized: ['Uninitialized', '未初始化'],
+    bootstrap: ['Bootstrap', '启动准备'],
+    dependencies_ready: ['Dependencies ready', '依赖已就绪'],
+    trading_replay: ['Trading replay', '交易事件重放'],
+    reconciling: ['Reconciling', '正在对账'],
+    read_only: ['Read only', '只读'],
+    transport_warmup: ['Transport warmup', '传输预热'],
+    writable: ['Writable', '可写'],
+    offline: ['Offline', '离线'],
+    manual_review: ['Manual review', '人工检查'],
+  }
+  const label = labels[phase]
+  return t(label[0], label[1])
+}
+
+function proofLabel(value: boolean): string {
+  return value ? t('passed', '通过') : t('pending', '待完成')
+}
 
 function randomID(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`
@@ -502,10 +572,12 @@ async function loadPublicOnce(): Promise<void> {
   beginPanel('orderbook')
   beginPanel('publicTrades')
   beginPanel('status')
-  const [bookResult, tradesResult, statusResult] = await Promise.allSettled([
+  beginPanel('recovery')
+  const [bookResult, tradesResult, statusResult, recoveryResult] = await Promise.allSettled([
     tradingAPI.orderBook(),
     tradingAPI.publicTrades(),
     tradingAPI.status(),
+    tradingAPI.recoveryStatus(),
   ])
   if (bookResult.status === 'fulfilled') {
     const nextBook = bookResult.value
@@ -529,6 +601,20 @@ async function loadPublicOnce(): Promise<void> {
     completePanel('status')
   } else {
     failPanel('status', statusResult.reason)
+  }
+  if (recoveryResult.status === 'fulfilled') {
+    const regression = recoveryStatusRegression(
+      recoveryStatus.value,
+      recoveryResult.value,
+    )
+    if (regression) {
+      failPanel('recovery', regression)
+    } else {
+      recoveryStatus.value = recoveryResult.value
+      completePanel('recovery')
+    }
+  } else {
+    failPanel('recovery', recoveryResult.reason)
   }
 }
 
@@ -764,15 +850,39 @@ async function reconcilePendingWrite(): Promise<void> {
       orders.value = authoritative.orders ?? []
       completePanel('orders')
       if (!pendingTradingWriteResolvedByOrders(current, orders.value)) {
+        if (!canReplayPending.value) {
+          transitionPendingWrite(current, 'unknown')
+          notice.value = t(
+            `Request ${current.request_id} was queried only; exact-ID replay remains blocked by ${recoveryAdmission.value.reason || pendingReplayHealth.value.writeBlockReason}.`,
+            `请求 ${current.request_id} 仅完成权威查询；恢复门禁尚未开放，不会重放原 ID 写请求。`,
+          )
+          return
+        }
         await tradingAPI.submit(current.payload)
       }
     } else if (current.operation === 'cancel') {
       const orderID = current.order_id ?? ''
       const authoritative = await tradingAPI.order(orderID)
       if (authoritative.status === 'open' || authoritative.status === 'partially_filled') {
+        if (!canReplayPending.value) {
+          transitionPendingWrite(current, 'unknown')
+          notice.value = t(
+            `Cancel ${current.request_id} was queried only; exact-ID replay remains blocked.`,
+            `撤单 ${current.request_id} 仅完成权威查询；恢复门禁尚未开放，不会重放原 ID。`,
+          )
+          return
+        }
         await tradingAPI.cancel(orderID, current.request_id)
       }
     } else {
+      if (!canReplayPending.value) {
+        transitionPendingWrite(current, 'unknown')
+        notice.value = t(
+          `Virtual funding ${current.request_id} remains unknown; exact-ID replay is blocked.`,
+          `虚拟入金 ${current.request_id} 仍为 unknown；恢复门禁尚未开放，不会重放原 ID。`,
+        )
+        return
+      }
       await tradingAPI.fund(
         current.request_id,
         String(current.payload.asset ?? ''),
@@ -1214,6 +1324,77 @@ onBeforeUnmount(() => {
         </em>
       </article>
     </section>
+    <section
+      class="card recovery-admission"
+      :class="`recovery-admission--${recoveryAdmission.mode}`"
+      :data-recovery-mode="recoveryAdmission.mode"
+      data-testid="recovery-admission"
+    >
+      <div class="recovery-admission__summary">
+        <div>
+          <span>{{ t('Recovery admission', '恢复准入') }}</span>
+          <strong data-testid="recovery-phase">{{ recoveryPhaseLabel(recoveryStatus.phase) }}</strong>
+        </div>
+        <div>
+          <span>{{ t('Epoch', '恢复批次') }}</span>
+          <strong class="mono" data-testid="recovery-epoch">{{ recoveryEpochLabel }}</strong>
+        </div>
+        <div>
+          <span>{{ t('Server flag', '服务端标志') }}</span>
+          <strong data-testid="recovery-server-flag">
+            {{ !recoveryStatus.supported
+              ? t('Not reported', '未报告')
+              : recoveryStatus.writes_enabled
+                ? t('Enabled', '已开放')
+                : t('Blocked', '已禁止') }}
+          </strong>
+        </div>
+        <div>
+          <span>{{ t('Effective admission', '当前有效准入') }}</span>
+          <strong data-testid="recovery-effective-admission">
+            {{ recoveryAdmission.mode === 'unavailable'
+              ? t('Unavailable', '不可用')
+              : !recoveryStatus.supported
+                ? t('Legacy gate', '兼容旧门禁')
+                : recoveryAdmission.mode === 'writable'
+                  ? t('Enabled', '已开放')
+                  : t('Blocked', '已禁止') }}
+          </strong>
+        </div>
+        <div v-if="recoveryStatus.supported">
+          <span>{{ t('Proof summary', '证明摘要') }}</span>
+          <strong data-testid="recovery-proof-count">
+            {{ recoveryAdmission.completedProofs }} / {{ recoveryAdmission.totalProofs }}
+          </strong>
+        </div>
+      </div>
+      <div v-if="recoveryStatus.supported" class="recovery-proof-grid">
+        <span>{{ t('State hash', '状态哈希') }} <b>{{ recoveryStatus.proof.state_hash ? shortID(recoveryStatus.proof.state_hash) : '—' }}</b></span>
+        <span>{{ t('Ledger', '账本') }} <b>{{ proofLabel(recoveryStatus.proof.ledger_balanced) }}</b></span>
+        <span>{{ t('Events', '事件连续性') }} <b>{{ proofLabel(recoveryStatus.proof.event_continuous) }}</b></span>
+        <span>{{ t('Projection', '查询投影') }} <b>{{ proofLabel(recoveryStatus.proof.projection_caught_up) }}</b></span>
+        <span>{{ t('Outbox', '事件发件箱') }} <b>{{ proofLabel(recoveryStatus.proof.outbox_caught_up) }}</b></span>
+        <span>{{ t('HTTPS transport', 'HTTPS 传输') }} <b>{{ proofLabel(recoveryStatus.proof.transport_healthy) }}</b></span>
+        <span>{{ t('Continuity', '存储连续性') }} <b>{{ recoveryStatus.continuity_uncertain ? t('uncertain', '不确定') : t('verified', '已确认') }}</b></span>
+        <span>{{ t('Sequence', '运行序列') }} <b>{{ recoveryStatus.proof.runtime_sequence }}</b></span>
+      </div>
+      <p v-if="recoveryStatus.supported && recoveryStatus.continuity_uncertain" class="recovery-admission__warning">
+        {{ t('Recovery store continuity is uncertain; a new epoch is required.', '恢复存储连续性不确定；必须启动新的恢复批次。') }}
+        <span v-if="recoveryStatus.continuity_error"> {{ recoveryStatus.continuity_error }}</span>
+      </p>
+      <p v-if="recoveryAdmission.mode === 'unavailable'" class="recovery-admission__warning">
+        {{ t('Recovery status is unavailable or stale; this browser blocks new writes until a current public proof can be read.', '恢复状态不可用或已经过龄；浏览器在重新读到当前公开证明前会禁止新的写操作。') }}
+      </p>
+      <p v-else-if="!recoveryStatus.supported" class="recovery-admission__note">
+        {{ t('The endpoint returned 404 and the trusted capability explicitly reports recovery_gate_enabled=false. This is legacy UI compatibility only; existing server gates remain authoritative.', '该接口返回 404，且可信 capability 明确报告 recovery_gate_enabled=false。这只是旧版界面兼容；现有服务端门禁仍然具有权威性。') }}
+      </p>
+      <p v-else-if="!recoveryAdmission.writesAllowed" class="recovery-admission__warning">
+        {{ t('Recovery proof is incomplete. Submit, cancel, and virtual funding are disabled.', '恢复证明尚未完成；下单、撤单和虚拟入金均已禁用。') }}
+      </p>
+      <p class="recovery-admission__authority">
+        {{ t('This panel mirrors evidence only. The server-side runner and gateway are the authoritative admission gate.', '本面板只镜像展示证据；服务端 runner 与 gateway 才是权威准入门禁。') }}
+      </p>
+    </section>
     <div
       v-if="eventReconcilePending || cursorError"
       class="transport-reconcile"
@@ -1601,6 +1782,62 @@ onBeforeUnmount(() => {
   font: 11px var(--font-mono);
 }
 
+.recovery-admission {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.recovery-admission--writable { border-color: #b7e3d2; }
+.recovery-admission--blocked,
+.recovery-admission--unavailable { border-color: #f0d58a; }
+
+.recovery-admission__summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.recovery-admission__summary > div,
+.recovery-proof-grid span {
+  display: grid;
+  gap: 3px;
+}
+
+.recovery-admission__summary span,
+.recovery-proof-grid span {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.recovery-admission__summary strong { overflow-wrap: anywhere; }
+
+.recovery-proof-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.recovery-proof-grid b {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recovery-admission__warning,
+.recovery-admission__note,
+.recovery-admission__authority {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.recovery-admission__warning { color: var(--warn); }
+.recovery-admission__note,
+.recovery-admission__authority { color: var(--text-3); }
+
 .trade-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1918,6 +2155,8 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1280px) {
   .trade-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recovery-admission__summary,
+  .recovery-proof-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .account-workspace { grid-template-columns: 1fr 1fr; }
   .recent-card { grid-column: 1 / -1; }
 }
@@ -1930,6 +2169,8 @@ onBeforeUnmount(() => {
 
 @media (max-width: 700px) {
   .trade-metrics { grid-template-columns: 1fr; }
+  .recovery-admission__summary,
+  .recovery-proof-grid { grid-template-columns: 1fr; }
   .trade-card-head { align-items: flex-start; flex-direction: column; }
   .panel-head-actions { justify-content: flex-start; }
   .fund-grid,

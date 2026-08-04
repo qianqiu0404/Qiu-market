@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -18,8 +18,18 @@ import type {
   SystemState,
 } from '../api/system'
 import { useI18n } from '../i18n'
+import {
+  tradingAPI,
+  type TradingRecoveryPhase,
+  type TradingRecoveryStatus,
+} from '../api/trading'
+import {
+  deriveRecoveryAdmission,
+  recoveryStatusRegression,
+} from '../trading/recovery-admission'
 
 type SystemTab = 'status' | 'audit' | 'assets' | 'exchanges' | 'symbols'
+const RECOVERY_EVIDENCE_MAX_AGE_MS = 30_000
 
 const SYSTEM_TABS: Array<{ value: SystemTab; en: string; zh: string }> = [
   { value: 'status', en: 'Status', zh: '状态' },
@@ -93,6 +103,38 @@ const pageSubtitle = computed(() => {
 
 /* 15s poll for the read-only observability view. */
 const system = usePolling(getSystemStatus, { interval: 15_000 })
+let acceptedRecoveryStatus: TradingRecoveryStatus | null = null
+async function fetchRecoveryStatus(): Promise<TradingRecoveryStatus> {
+  const candidate = await tradingAPI.recoveryStatus()
+  if (acceptedRecoveryStatus) {
+    const regression = recoveryStatusRegression(acceptedRecoveryStatus, candidate)
+    if (regression) throw new Error(regression)
+  }
+  acceptedRecoveryStatus = candidate
+  return candidate
+}
+const recovery = usePolling(fetchRecoveryStatus, { interval: 15_000 })
+const recoveryNowMs = ref(Date.now())
+let recoveryClock: number | undefined
+onMounted(() => {
+  recoveryClock = window.setInterval(() => {
+    recoveryNowMs.value = Date.now()
+  }, 1_000)
+})
+onUnmounted(() => {
+  if (recoveryClock !== undefined) window.clearInterval(recoveryClock)
+})
+const recoveryAdmission = computed(() => recovery.data.value
+  ? deriveRecoveryAdmission(
+      recovery.data.value,
+      recovery.error.value ?? '',
+      {
+        lastSuccessAt: recovery.lastUpdated.value?.getTime() ?? 0,
+        now: recoveryNowMs.value,
+        maximumAgeMs: RECOVERY_EVIDENCE_MAX_AGE_MS,
+      },
+    )
+  : null)
 
 const componentLabels = computed<Record<string, string>>(() => ({
   matching: t('Matching', '撮合'),
@@ -300,6 +342,35 @@ function priceSourceLabel(key: string, fallback: string): string {
   if (key === 'reference_display_price') return t('Reference display price', '参考展示价')
   return contractText(fallback)
 }
+
+function recoveryPhaseLabel(phase: TradingRecoveryPhase): string {
+  const labels: Record<TradingRecoveryPhase, [string, string]> = {
+    not_enabled: ['Not enabled', '未启用'],
+    uninitialized: ['Uninitialized', '未初始化'],
+    bootstrap: ['Bootstrap', '启动准备'],
+    dependencies_ready: ['Dependencies ready', '依赖已就绪'],
+    trading_replay: ['Trading replay', '交易事件重放'],
+    reconciling: ['Reconciling', '正在对账'],
+    read_only: ['Read only', '只读'],
+    transport_warmup: ['Transport warmup', '传输预热'],
+    writable: ['Writable', '可写'],
+    offline: ['Offline', '离线'],
+    manual_review: ['Manual review', '人工检查'],
+  }
+  const label = labels[phase]
+  return t(label[0], label[1])
+}
+
+function shortRecoveryID(value: string): string {
+  if (!value) return '—'
+  return value.length > 18 ? `${value.slice(0, 9)}…${value.slice(-6)}` : value
+}
+
+function recoveryVariant(): BadgeVariant {
+  if (recoveryAdmission.value?.mode === 'unavailable') return 'error'
+  if (!recovery.data.value?.supported) return 'accent'
+  return recoveryAdmission.value?.writesAllowed ? 'live' : 'error'
+}
 </script>
 
 <template>
@@ -358,6 +429,66 @@ function priceSourceLabel(key: string, fallback: string): string {
             <span>{{ t('DEMO SNAPSHOT requires an explicit source flag; missing fields become DEGRADED, never LIVE.', 'DEMO SNAPSHOT 必须有明确来源标记；缺失字段只能降级为 DEGRADED，不能变成 LIVE。') }}</span>
             <span>{{ t('OFFLINE means both trading transport and the database-backed market view are unavailable.', 'OFFLINE 表示交易传输和数据库支持的行情视图都不可用。') }}</span>
           </div>
+        </div>
+
+        <div class="section-heading provider-heading">
+          <div>
+            <h2>{{ t('Recovery admission', '恢复准入') }}</h2>
+            <p>{{ t('Independent write-admission evidence; it is not a ninth input to the existing eight-probe display formula.', '独立的写入准入证据；它不会成为现有八探针总状态公式的第九项输入。') }}</p>
+          </div>
+        </div>
+        <div
+          class="card recovery-evidence"
+          :data-recovery-mode="recoveryAdmission?.mode || 'loading'"
+          data-testid="system-recovery-admission"
+        >
+          <template v-if="recovery.data.value">
+            <div class="component-title">
+              <h3>{{ t('Virtual trading write gate', '虚拟交易写门禁') }}</h3>
+              <StatusBadge
+                :variant="recoveryVariant()"
+                :label="recovery.data.value.supported
+                  ? recoveryPhaseLabel(recovery.data.value.phase)
+                  : t('NOT ENABLED', '未启用')"
+              />
+            </div>
+            <div class="recovery-evidence-grid">
+              <span>{{ t('Epoch', '恢复批次') }} <b class="mono">{{ shortRecoveryID(recovery.data.value.epoch_id) }}</b></span>
+              <span>{{ t('Server flag', '服务端标志') }} <b data-testid="system-recovery-server-flag">{{ recovery.data.value.supported
+                ? recovery.data.value.writes_enabled
+                  ? t('Enabled', '已开放')
+                  : t('Blocked', '已禁止')
+                : t('Not reported', '未报告') }}</b></span>
+              <span>{{ t('Effective admission', '当前有效准入') }} <b data-testid="system-recovery-effective-admission">{{ recoveryAdmission?.mode === 'unavailable'
+                ? t('Unavailable', '不可用')
+                : !recovery.data.value.supported
+                  ? t('Legacy gate', '兼容旧门禁')
+                  : recoveryAdmission?.mode === 'writable'
+                    ? t('Enabled', '已开放')
+                    : t('Blocked', '已禁止') }}</b></span>
+            </div>
+            <div v-if="recovery.data.value.supported" class="recovery-evidence-grid">
+              <span>{{ t('Proofs passed', '已通过证明') }} <b>{{ recoveryAdmission?.completedProofs ?? 0 }} / {{ recoveryAdmission?.totalProofs ?? 6 }}</b></span>
+              <span>{{ t('Runtime sequence', '运行序列') }} <b>{{ recovery.data.value.proof.runtime_sequence }}</b></span>
+              <span>{{ t('State hash', '状态哈希') }} <b class="mono">{{ shortRecoveryID(recovery.data.value.proof.state_hash) }}</b></span>
+              <span>{{ t('Continuity', '存储连续性') }} <b>{{ recovery.data.value.continuity_uncertain ? t('Uncertain', '不确定') : t('Verified', '已确认') }}</b></span>
+              <span>{{ t('Last error', '最近错误') }} <b>{{ recovery.data.value.last_error || '—' }}</b></span>
+              <span>{{ t('Continuity error', '连续性错误') }} <b>{{ recovery.data.value.continuity_error || '—' }}</b></span>
+            </div>
+            <p v-if="recoveryAdmission?.mode === 'unavailable'">
+              {{ t('The latest public recovery read failed or became stale. Last-good fields remain visible for diagnosis, but write admission is unavailable.', '最近一次公开恢复状态读取失败或已经过龄。为便于诊断仍展示 last-good 字段，但写入准入当前不可用。') }}
+            </p>
+            <p v-else-if="!recovery.data.value.supported">
+              {{ t('The endpoint returned 404 and the trusted capability explicitly reports recovery_gate_enabled=false. This is legacy UI compatibility only, not a writable proof; existing server gates remain authoritative.', '该接口返回 404，且可信 capability 明确报告 recovery_gate_enabled=false。这只是旧版界面兼容，不是“可写”证明；现有服务端门禁仍然具有权威性。') }}
+            </p>
+            <p v-else>
+              {{ t('The server-side runner and gateway enforce this decision. System only displays the public proof and cannot promote an epoch.', '服务端 runner 与 gateway 强制执行该决定；System 只展示公开证明，不能推进恢复批次。') }}
+            </p>
+          </template>
+          <template v-else>
+            <StatusBadge :variant="recovery.error.value ? 'error' : 'stale'" :label="recovery.error.value ? t('UNAVAILABLE', '不可用') : t('LOADING', '加载中')" />
+            <p>{{ recovery.error.value || t('Reading the public recovery status.', '正在读取公开恢复状态。') }}</p>
+          </template>
         </div>
 
         <div class="section-heading provider-heading">
@@ -705,9 +836,34 @@ function priceSourceLabel(key: string, fallback: string): string {
 }
 
 .component-card,
-.price-source-card {
+.price-source-card,
+.recovery-evidence {
   min-width: 0;
   padding: 16px;
+}
+
+.recovery-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.recovery-evidence-grid span {
+  display: grid;
+  gap: 3px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.recovery-evidence-grid b {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.recovery-evidence > p {
+  margin: 12px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
 }
 
 .component-title {
@@ -917,6 +1073,10 @@ function priceSourceLabel(key: string, fallback: string): string {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .recovery-evidence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .detail-row,
   .provider-row {
     grid-template-columns: minmax(160px, 1fr) auto minmax(160px, auto);
@@ -934,6 +1094,10 @@ function priceSourceLabel(key: string, fallback: string): string {
   .status-summary,
   .component-grid,
   .price-source-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .recovery-evidence-grid {
     grid-template-columns: 1fr;
   }
 

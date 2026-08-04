@@ -12,6 +12,31 @@ const principal = {
   admin: true,
 }
 
+function writableRecoveryStatus(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    market_id: 'BTC-USDT',
+    epoch_id: '0123456789abcdef0123456789abcdef',
+    phase: 'writable',
+    runtime_sequence: '10',
+    state_hash: 'a'.repeat(64),
+    ledger_balanced: true,
+    event_continuous: true,
+    projection_caught_up: true,
+    outbox_caught_up: true,
+    transport_healthy: true,
+    writes_enabled: true,
+    continuity_uncertain: false,
+    continuity_error: '',
+    version: '6',
+    started_at: '2026-08-05T00:00:00Z',
+    updated_at: '2026-08-05T00:01:00Z',
+    ...overrides,
+  }
+}
+
 const btcAsset = {
   rank: 1,
   selection_version: 4,
@@ -92,6 +117,10 @@ interface HarnessOptions {
   cancelCommittedButResponseLostOnce?: boolean
   cancelResponseLostBeforeCommitOnce?: boolean
   fundCommittedButResponseLostOnce?: boolean
+  recoveryStatus?: Record<string, unknown>
+  recoveryUnavailable?: boolean
+  recoveryLegacy404?: boolean
+  recoveryGateEnabled?: boolean
 }
 
 type HarnessPanel =
@@ -113,6 +142,8 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
   let activePublicReads = 0
   let maximumConcurrentPublicReads = 0
   let publicReadDelayMs = options.publicReadDelayMs ?? 0
+  let recoveryStatus = options.recoveryStatus ?? writableRecoveryStatus()
+  let recoveryUnavailable = options.recoveryUnavailable === true
   let loseSubmitBeforeCommit = options.submitResponseLostBeforeCommitOnce === true
   let loseSubmitAfterCommit = options.submitCommittedButResponseLostOnce === true
   let loseCancelBeforeCommit = options.cancelResponseLostBeforeCommitOnce === true
@@ -221,6 +252,7 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
       await json(200, {
         github_oauth_enabled: false,
         local_login_enabled: !options.authDisabled,
+        recovery_gate_enabled: options.recoveryGateEnabled ?? !options.recoveryLegacy404,
       })
       return
     }
@@ -262,6 +294,19 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
         outbox_checkpoint_sequence: String(sequence),
         outbox_checkpoint_event_index: 1,
       })
+      return
+    }
+    if (path === '/api/v1/trading/recovery/status') {
+      if (recoveryUnavailable) {
+        await json(503, {
+          code: 'recovery_in_progress',
+          message: 'recovery evidence unavailable',
+        })
+      } else if (options.recoveryLegacy404) {
+        await json(404, { code: 'not_found', message: 'recovery gate not enabled' })
+      } else {
+        await json(200, recoveryStatus)
+      }
       return
     }
     if (path === '/api/v1/trading/markets/BTC-USDT/trades') {
@@ -512,6 +557,13 @@ async function installHarness(page: Page, options: HarnessOptions = {}) {
     setPublicReadDelay(delayMs: number) {
       publicReadDelayMs = delayMs
     },
+    setRecoveryStatus(next: Record<string, unknown>) {
+      recoveryStatus = next
+      recoveryUnavailable = false
+    },
+    setRecoveryUnavailable(unavailable = true) {
+      recoveryUnavailable = unavailable
+    },
     expireSession() {
       loggedIn = false
     },
@@ -546,6 +598,121 @@ test('trade page does not probe a session when every login method is disabled', 
   await expect(page.getByTestId('terminal-availability')).toHaveText('LIVE')
   await expect(page.getByTestId('transport-state')).toHaveText('polling')
   expect(sessionRequests).toBe(0)
+})
+
+test('recovery admission exposes proof, blocks writes and switches to Chinese', async ({ page }) => {
+  await installHarness(page, {
+    recoveryStatus: {
+      schema_version: 1,
+      market_id: 'BTC-USDT',
+      epoch_id: '0123456789abcdef0123456789abcdef',
+      phase: 'transport_warmup',
+      runtime_sequence: '42',
+      state_hash: 'a'.repeat(64),
+      ledger_balanced: true,
+      event_continuous: true,
+      projection_caught_up: true,
+      outbox_caught_up: true,
+      transport_healthy: false,
+      writes_enabled: false,
+      continuity_uncertain: false,
+      continuity_error: '',
+      version: '6',
+      started_at: '2026-08-05T00:00:00Z',
+      updated_at: '2026-08-05T00:01:00Z',
+    },
+  })
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+
+  await expect(page.getByTestId('recovery-phase')).toHaveText('Transport warmup')
+  await expect(page.getByTestId('recovery-epoch')).toContainText('012345678')
+  await expect(page.getByTestId('recovery-server-flag')).toHaveText('Blocked')
+  await expect(page.getByTestId('recovery-effective-admission')).toHaveText('Blocked')
+  await expect(page.getByTestId('recovery-proof-count')).toHaveText('5 / 6')
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=recovery_transport_warmup',
+  )
+  await expect(page.getByRole('button', { name: '买入 BTC' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '发放虚拟资金' })).toBeDisabled()
+
+  await page.getByRole('button', { name: '中文' }).click()
+  await expect(page.getByTestId('recovery-phase')).toHaveText('传输预热')
+  await expect(page.getByTestId('recovery-server-flag')).toHaveText('已禁止')
+  await expect(page.getByTestId('recovery-effective-admission')).toHaveText('已禁止')
+  await expect(page.getByText('本面板只镜像展示证据；服务端 runner 与 gateway 才是权威准入门禁。')).toBeVisible()
+})
+
+test('recovery 404 remains explicit compatibility without claiming writable proof', async ({ page }) => {
+  await installHarness(page, {
+    recoveryLegacy404: true,
+    recoveryGateEnabled: false,
+  })
+  await page.goto('/trade/BTC-USDT')
+  await expect(page.getByTestId('recovery-admission')).toHaveAttribute(
+    'data-recovery-mode',
+    'not_enabled',
+  )
+  await expect(page.getByTestId('recovery-server-flag')).toHaveText('Not reported')
+  await expect(page.getByTestId('recovery-effective-admission')).toHaveText('Legacy gate')
+  await expect(page.getByText(/trusted capability explicitly reports/)).toBeVisible()
+  await expect(page.getByTestId('recovery-proof-count')).toHaveCount(0)
+  await expect(page.getByText('Continuity', { exact: true })).toHaveCount(0)
+})
+
+test('blocked recovery reconciles pending submit by query only and never replays POST', async ({ page }) => {
+  const harness = await installHarness(page, {
+    submitResponseLostBeforeCommitOnce: true,
+  })
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+  await page.getByLabel('价格 · USDT').fill('64900')
+  await page.getByLabel('数量 · BTC').fill('0.001')
+  await page.getByRole('button', { name: '买入 BTC' }).click()
+  await expect(page.getByRole('button', { name: '使用原 ID 核对' })).toBeVisible()
+  expect(harness.submitAttempts).toBe(1)
+
+  harness.setRecoveryStatus(writableRecoveryStatus({
+    phase: 'writable',
+    writes_enabled: true,
+    transport_healthy: false,
+    continuity_uncertain: true,
+    continuity_error: 'store save result is uncertain',
+    last_error: 'continuity probe failed',
+    version: '7',
+  }))
+  await page.getByRole('button', { name: '刷新' }).click()
+  await expect(page.getByTestId('recovery-admission')).toHaveAttribute(
+    'data-recovery-mode',
+    'blocked',
+  )
+  await expect(page.getByTestId('recovery-phase')).toHaveText('Writable')
+  await expect(page.getByTestId('recovery-server-flag')).toHaveText('Enabled')
+  await expect(page.getByTestId('recovery-effective-admission')).toHaveText('Blocked')
+  await expect(page.getByTestId('recovery-admission')).toContainText(
+    'store save result is uncertain',
+  )
+
+  await page.getByRole('button', { name: '使用原 ID 核对' }).click()
+  await expect(page.getByText(/queried only/)).toBeVisible()
+  expect(harness.submitAttempts).toBe(1)
+  expect(JSON.parse(await page.evaluate(() =>
+    window.localStorage.getItem('qiu-market.pending-trading-write.v2') ?? '{}',
+  )).state).toBe('unknown')
+})
+
+test('same-epoch recovery version rollback fails closed', async ({ page }) => {
+  const harness = await installHarness(page)
+  await page.goto('/trade/BTC-USDT')
+  await page.getByRole('button', { name: '本地登录' }).click()
+  await expect(page.getByTestId('write-gate-reason')).toContainText('write_gate=ready')
+
+  harness.setRecoveryStatus(writableRecoveryStatus({ version: '5' }))
+  await page.getByRole('button', { name: '刷新' }).click()
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'write_gate=recovery_status_unavailable',
+  )
+  await expect(page.getByRole('button', { name: '买入 BTC' })).toBeDisabled()
 })
 
 test('status older than ten seconds degrades the terminal and closes every write gate', async ({ page }) => {
@@ -630,7 +797,7 @@ test('slow public polling reuses one in-flight refresh batch', async ({ page }) 
   })
   await page.goto('/trade/BTC-USDT')
 
-  await expect(page.getByText('sequence 10', { exact: false })).toBeVisible()
+  await expect(page.getByTestId('matching-state')).toHaveText('ready')
   await page.waitForTimeout(7_000)
 
   expect(harness.maximumConcurrentPublicReads).toBe(3)

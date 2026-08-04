@@ -12,6 +12,11 @@ export interface SessionResponse {
 export interface AuthCapabilities {
   github_oauth_enabled: boolean
   local_login_enabled: boolean
+  /**
+   * Explicit server-owned compatibility signal. Missing means unknown and must
+   * never turn a recovery endpoint 404 into writable legacy mode.
+   */
+  recovery_gate_enabled?: boolean
 }
 
 export interface PriceLevel {
@@ -99,6 +104,45 @@ export interface TradingStatus {
   outbox_last_cleanup_at?: string
 }
 
+export type TradingRecoveryPhase =
+  | 'not_enabled'
+  | 'uninitialized'
+  | 'bootstrap'
+  | 'dependencies_ready'
+  | 'trading_replay'
+  | 'reconciling'
+  | 'read_only'
+  | 'transport_warmup'
+  | 'writable'
+  | 'offline'
+  | 'manual_review'
+
+export interface TradingRecoveryProof {
+  runtime_sequence: string
+  state_hash: string
+  ledger_balanced: boolean
+  event_continuous: boolean
+  projection_caught_up: boolean
+  outbox_caught_up: boolean
+  transport_healthy: boolean
+}
+
+export interface TradingRecoveryStatus {
+  supported: boolean
+  schema_version: number | null
+  market_id: string
+  epoch_id: string
+  phase: TradingRecoveryPhase
+  proof: TradingRecoveryProof
+  writes_enabled: boolean
+  last_error: string
+  continuity_uncertain: boolean
+  continuity_error: string
+  version: string
+  started_at: string
+  updated_at: string
+}
+
 export interface EventEnvelope {
   market_id: string
   sequence: string
@@ -109,6 +153,111 @@ export interface EventEnvelope {
 interface APIError {
   code: string
   message: string
+}
+
+const EMPTY_RECOVERY_PROOF: TradingRecoveryProof = {
+  runtime_sequence: '0',
+  state_hash: '',
+  ledger_balanced: false,
+  event_continuous: false,
+  projection_caught_up: false,
+  outbox_caught_up: false,
+  transport_healthy: false,
+}
+
+export function recoveryNotEnabled(): TradingRecoveryStatus {
+  return {
+    supported: false,
+    schema_version: null,
+    market_id: '',
+    epoch_id: '',
+    phase: 'not_enabled',
+    proof: { ...EMPTY_RECOVERY_PROOF },
+    writes_enabled: false,
+    last_error: '',
+    continuity_uncertain: false,
+    continuity_error: '',
+    version: '0',
+    started_at: '',
+    updated_at: '',
+  }
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function text(value: unknown): string {
+  return value == null ? '' : String(value)
+}
+
+function bool(value: unknown): boolean {
+  return value === true
+}
+
+function decimalText(value: unknown, field: string): string {
+  if (typeof value === 'string' && /^\d+$/.test(value)) return value
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return String(value)
+  }
+  throw new Error(`Trading recovery ${field} is not a safe decimal value`)
+}
+
+const RECOVERY_PHASES = new Set<TradingRecoveryPhase>([
+  'bootstrap',
+  'dependencies_ready',
+  'trading_replay',
+  'reconciling',
+  'read_only',
+  'transport_warmup',
+  'writable',
+  'offline',
+  'manual_review',
+])
+
+export function normalizeRecoveryStatus(value: unknown): TradingRecoveryStatus {
+  const raw = record(value)
+  const nestedProof = record(raw.proof)
+  const proof = Object.keys(nestedProof).length ? nestedProof : raw
+  const phase = text(raw.phase) as TradingRecoveryPhase
+  if (
+    raw.schema_version !== 1 ||
+    text(raw.market_id) !== 'BTC-USDT' ||
+    !RECOVERY_PHASES.has(phase) ||
+    !text(raw.epoch_id) ||
+    typeof raw.continuity_uncertain !== 'boolean'
+  ) {
+    throw new Error('Trading recovery status is malformed')
+  }
+  const version = decimalText(raw.version, 'version')
+  if (!/^[1-9]\d*$/.test(version)) {
+    throw new Error('Trading recovery version must be a positive decimal value')
+  }
+  return {
+    supported: true,
+    schema_version: 1,
+    market_id: text(raw.market_id),
+    epoch_id: text(raw.epoch_id),
+    phase,
+    proof: {
+      runtime_sequence: decimalText(proof.runtime_sequence, 'runtime_sequence'),
+      state_hash: text(proof.state_hash),
+      ledger_balanced: bool(proof.ledger_balanced),
+      event_continuous: bool(proof.event_continuous),
+      projection_caught_up: bool(proof.projection_caught_up),
+      outbox_caught_up: bool(proof.outbox_caught_up),
+      transport_healthy: bool(proof.transport_healthy),
+    },
+    writes_enabled: bool(raw.writes_enabled),
+    last_error: text(raw.last_error),
+    continuity_uncertain: bool(raw.continuity_uncertain),
+    continuity_error: text(raw.continuity_error),
+    version,
+    started_at: text(raw.started_at),
+    updated_at: text(raw.updated_at),
+  }
 }
 
 export class TradingRequestError extends Error {
@@ -199,7 +348,8 @@ async function request<T>(
       failure.message,
       failure.code,
       response.status,
-      write && (
+      write && failure.code !== 'recovery_in_progress' &&
+      failure.code !== 'trading_write_paused' && (
         response.status === 502 ||
         response.status === 503 ||
         response.status === 504 ||
@@ -223,6 +373,24 @@ export const tradingAPI = {
   orderBook: () => request<OrderBook>('/markets/BTC-USDT/orderbook?levels=20'),
   publicTrades: () => request<{ trades: Trade[] }>('/markets/BTC-USDT/trades?limit=40'),
   status: () => request<TradingStatus>('/markets/BTC-USDT/status'),
+  recoveryStatus: async (): Promise<TradingRecoveryStatus> => {
+    try {
+      return normalizeRecoveryStatus(await request<unknown>('/recovery/status'))
+    } catch (error) {
+      if (error instanceof TradingRequestError && error.status === 404) {
+        try {
+          const capabilities = await request<AuthCapabilities>('/auth/capabilities')
+          if (capabilities.recovery_gate_enabled === false) {
+            return recoveryNotEnabled()
+          }
+        } catch {
+          // Preserve the recovery 404 below. A missing/unreachable capability
+          // contract is not trusted legacy evidence.
+        }
+      }
+      throw error
+    }
+  },
   balances: () => request<{ balances: Balance[] }>('/balances'),
   orders: (openOnly = false) => request<{ orders: Order[] }>(
     `/orders?limit=100&open_only=${openOnly}`,

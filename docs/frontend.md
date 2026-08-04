@@ -108,6 +108,60 @@ rejected / older tick rejected`。超过五分钟就 Unavailable。
 
 WebSocket 连接前先领取一次性 ticket，并携带最后 cursor 重连。连接状态、撮合恢复状态和重试原因必须可见。可信参考或 K 线缺失时显示 unavailable；不得用静态 BTC、随机蜡烛或过期响应填图。
 
+### Recovery 准入证据
+
+Trade 与 System 都读取匿名只读的
+`GET /api/v1/trading/recovery/status`。启用 Recovery Coordinator 时，响应携带
+`phase / epoch_id / writes_enabled`、扁平 proof、`continuity_uncertain / continuity_error`
+与 `last_error`；Trade 展示短 epoch、当前
+phase 和六项 proof 摘要，并把非 `writable + writes_enabled=true` 叠加到现有终端
+写入条件。Submit、Cancel、虚拟 Fund 三类按钮都会关闭，但这只是浏览器的保守镜像；
+权威门禁仍位于服务端 runner 和 gateway，绕过 Vue 也不能写入。
+
+```text
+public recovery status
+  -> strict DTO normalization
+  -> 404 + trusted capability recovery_gate_enabled=false ? legacy UI compatibility
+  -> other failure ? fail-closed browser mirror
+  -> supported status ? phase + writes_enabled admission
+  -> Trade buttons / System independent evidence card
+```
+
+HTTP 404 本身不再表示新 recovery endpoint 未启用。前端只有在同一受信后端的
+`/auth/capabilities` 明确返回 `recovery_gate_enabled=false` 时，才显示
+`Not enabled / 未启用` 并继续使用原有 terminal consistency 条件；capability 缺失、读取失败
+或为 true 时，404 一律 fail closed。网络错误、5xx、非 schema 1、非 BTC-USDT、畸形 phase、
+缺少 epoch/version/sequence 或不安全的 JavaScript 数值全部视为 recovery evidence
+unavailable 并禁写。后端内部的
+`runtime_sequence/version` 保持 `uint64`，公共 HTTP DTO 则输出十进制字符串；前端同时兼容
+旧接口可能返回的 JS 安全整数，并拒绝
+已经可能发生舍入的不安全 number，不能把错误数字再字符串化。
+
+Recovery `version` 在所有 epoch 间全局单调：较低 version 被拒绝；相同 version 只能
+重复完全相同的事实，不能更换 epoch 或 phase；只有更高 version 才能进入新 epoch。
+Trade 的成功 HTTP 观察超过 10 秒、System 超过 30 秒都会显示 unavailable 并 fail closed；
+页面从后台恢复可见时立即刷新。`continuity_uncertain=true` 即使 phase 仍为 writable，
+也必须显示存储连续性不确定、保留 continuity error 并禁止写入，直到服务端建立新 epoch。
+
+pending unknown 的“核对”与“重放”分开：blocked 状态仍可查询订单权威事实，但查询不到
+终态时只保留原 operation/request ID，不发送第二次 Submit/Cancel/Fund。只有当前 Recovery
+和 terminal 两道门都开放，才允许 exact-ID replay；最终权威门禁仍在服务端。
+
+System 把 Recovery Admission 放在八探针总状态之外：它解释交易写入能否进入权威
+writer，但不改变既有 `system-display.v1` 的 LIVE/CACHED/DEGRADED/OFFLINE 公式。
+System 没有 promote、启动或重试写按钮。中英文切换会翻译 phase、proof 和边界说明，
+不会翻译或修改 epoch、hash、sequence 与服务端错误事实。
+
+被拒绝的方案包括：只在 Vue 禁用按钮、把 runner `ready` 当成可写、404 默认
+`writes_enabled=true`、以及把 Recovery 加成第九个 System 总状态探针。当前方案的
+代价是 Trade 每个公共刷新批次多一个轻量 `no-store` GET，System 每 15 秒多一个
+独立 GET；legacy 404 还会额外验证一次 capability。换来的是恢复阶段可见、兼容授权可审计，
+且浏览器不会在证据读取失败、过龄、回退或 continuity 不确定时乐观写入。
+
+当前证据仍是 `implemented / build-verified`；生产环境默认开关和 operator transport
+promotion 是否启用必须以真实 Mac mini 配置和公开响应为准，mock Playwright 只证明
+页面契约，不能升级为 `integration-verified` 或生产结论。
+
 ### Insights / System 双语展示契约
 
 侧栏提供 `中文 / EN` 展示语言切换。选择保存在浏览器
@@ -182,10 +236,13 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal、三类 `MarketPriceFact`、DEX identity/时间窗校验与类型归一。
 3. `frontend/src/views/Markets.vue`：概览条、Route/Reference 双栏、tick generation、last-good 降级、URL 抽屉和 venue K 线入口。
 4. `frontend/src/api/trading.ts`：十进制字符串 REST、CSRF 和 WebSocket cursor。
-5. `frontend/src/views/Trade.vue`：参考/K 线、订单簿、下单、余额、订单与成交。
-6. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
-7. `frontend/src/composables/usePolling.ts`：可见性暂停、恢复刷新和卸载清理。
-8. `frontend/src/i18n.ts`：语言规范化、浏览器回退、持久化和 `<html lang>` 同步。
+5. `frontend/src/trading/recovery-admission.ts`：把 404、读取失败和权威 recovery
+   status 派生成保守的前端准入镜像。
+6. `frontend/src/views/Trade.vue`：参考/K 线、订单簿、Recovery 证明、下单、余额、订单与成交。
+7. `frontend/src/views/System.vue`：八探针总状态与独立 Recovery Admission 证据。
+8. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
+9. `frontend/src/composables/usePolling.ts`：可见性暂停、恢复刷新和卸载清理。
+10. `frontend/src/i18n.ts`：语言规范化、浏览器回退、持久化和 `<html lang>` 同步。
 
 ## 术语
 
@@ -204,6 +261,9 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | Market breadth | 指定 universe 中涨/跌/平/未知的横截面；Insights 完整目录与首页 selection 并集会明确分开 | 今天这张名单里大多数币在涨还是跌 | overview/Insights |
 | Catalog Audit | 发现市场的身份解析与启用状态 | 新市场待审清单 | System tab |
 | Provider union | 七家当前 selection 按 canonical identity 去重后的集合 | 合并七张菜单，同一道菜只留一行 | All |
+| Recovery admission | 服务端基于 epoch 和 proof 决定交易写命令能否进入唯一 writer | 复电后先验账、验事件、验传输，再打开闸门 | recovery status / runner gate |
+| Recovery epoch | 一次启动恢复流程的持久化身份 | 本次开机体检的编号 | `epoch_id` |
+| Proof summary | 状态哈希、账本、事件、投影、outbox、transport 的完成证据 | 六项体检清单，不是一个绿色按钮 | `TradingRecoveryProof` |
 
 ## 失败、降级与恢复
 
@@ -225,6 +285,15 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | Trading gRPC 不可用 | Trade 显示服务 unavailable；Markets/Insights 正常 | trading 恢复后刷新/WS 重连 |
 | 可信 BTC 参考或 K 线缺失 | 对应卡片显示 unavailable，不生成假图 | 行情源产生新鲜可信数据 |
 | WebSocket 断开 | 显示重连状态并保留 cursor | 新 ticket 建连后补发 |
+| Recovery phase 非 writable | 展示 phase/epoch/proof，Submit/Cancel/Fund 全部禁用；只读视图保留 | 服务端完成证明并权威推进到 writable |
+| Recovery status 404 + capability 明确关闭 | 显示新协调器未启用，仅作为旧版 UI 兼容；不声称 writable | 后端启用版本化 recovery endpoint 后自动读取 |
+| Recovery status 404 但 capability 缺失/开启 | fail closed，不把部署偏差或路由 404 当成 legacy | 修复路由或返回受信 capability |
+| Recovery status 网络错误/5xx/畸形 | 前端镜像 fail closed，显示证据不可用并禁写 | 下一轮成功读取公开状态 |
+| Recovery version 回退/同 version 冲突 | 拒绝新响应，保留 last-good 供诊断并禁写 | 更高 version 的单调事实到达 |
+| Recovery 观察超过 10s/30s | Trade/System 分别标记证据过龄并禁写/标红 | 当前公开状态刷新成功 |
+| `continuity_uncertain=true` | 即使 phase=writable 也显示 continuity error 并禁写 | 服务端创建并验证新 epoch |
+| pending unknown 遇到 blocked | 只查询权威事实，不重放任何 POST，保留原 ID | 两道门开放后 exact-ID replay |
+| `runtime_sequence/version` 为不安全 number | DTO 解析失败，不展示已舍入的伪证明 | 后端改传十进制字符串或值回到 JS 安全范围 |
 | session/CSRF 失效 | 清除私有视图并要求重新登录 | 重新建立合法会话 |
 | localStorage 不可用 | 当前标签页仍可切换语言，但不承诺刷新后保留 | 浏览器存储恢复后下次选择重新持久化 |
 | 后端返回未知状态原因 | 中文界面保留原始 reason/source，不猜测翻译 | 后端契约新增固定枚举后补充显式映射 |
@@ -284,11 +353,21 @@ build、System Playwright 8/8、Insights Playwright 1/1 与 `git diff --check` �
 overlay。开发服务器直连受保护的本地 API 会按预期得到 trusted-proxy 401；这不是
 Production BFF 的集成证据，因此本轮双语仍是 `build-verified`，尚未部署 Production。
 
+2026-08-05 的 Recovery 前端专项执行：Vitest 13 files / 94 tests、Trading + System
+Playwright 31/31、Vue production build 与 `git diff --check` 通过。测试覆盖受信 capability
+协商后的 404 兼容、`transport_warmup` 禁写、六项 proof、continuity latch、全局 version
+单调、blocked pending query-only、System 独立证据、中文切换、`recovery_in_progress`
+明确拒绝和 unsafe uint64 number 拒绝。Playwright 使用路由
+fixture，只属于 `build-verified`；本轮没有开启 Mac mini recovery gate、没有推进真实
+epoch，也没有新增 `integration-verified` 或 Production 结论。
+
 ## Owner 60 秒解释
 
 > 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact。DEX 的 Route 和 Reference 永远分栏，route 最多读 60 秒，过期会同时失去链上价格、涨跌、成交额、来源和质量；reference 只保留自己的标签。3 秒 CEX tick 绑定 query generation，再检查 venue identity、version 和 observed time；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。
 
 > Insights 用来研究市场宽度、跨场所比较和历史动量；System 用来只读解释撮合、流动性、传输、存储和来源健康，不执行启停或切流。中文/英文只是展示层状态，保存在浏览器本地；它不会改变 API 契约、价格来源或状态公式，未知运维原因也不会被猜测翻译。
+
+> Recovery 面板读取服务端公开状态，展示 phase、短 epoch、写入标志、六项证明与 continuity latch。只有服务端明确返回 writable、writes_enabled=true、continuity 确定且当前观察未过龄，前端镜像才放行；读取失败、版本回退都会保守禁写。404 只有在受信 capability 明确关闭 recovery gate 时才进入旧版兼容。pending unknown 在 blocked 时只查询、不重放。按钮不是权威门禁，真正拦截仍在 runner/gateway。System 只把它作为独立准入证据，不修改原来的八探针总状态公式。
 
 ## 闭卷自检
 
@@ -314,3 +393,7 @@ Production BFF 的集成证据，因此本轮双语仍是 `build-verified`，尚
 19. 为什么旧缓存里的 `display_price_usd` 不能覆盖一个更新的 `dex_route_price.version`？
 20. A→B→A 时 query key 最终相同，为什么 generation 仍必须不同？
 21. 为什么同价、同 version、但更新的 observed time 应当被接受？
+22. 为什么 Recovery 404 alone 不能解释为 legacy，必须再有可信 capability 明确报告 `recovery_gate_enabled=false`？
+23. 为什么 Trade 禁用按钮仍不能替代 runner/gateway 的权威写门禁？
+24. 为什么 Recovery Admission 不进入 System 原有八探针总状态公式？
+25. 为什么前端必须拒绝超过 JS 安全整数范围的 `runtime_sequence/version` number？

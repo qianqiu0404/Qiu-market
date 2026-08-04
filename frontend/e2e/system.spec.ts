@@ -29,6 +29,28 @@ function metric(value: number) {
   return { available: true, value, reason: '' }
 }
 
+function writableRecoveryStatus(): Record<string, unknown> {
+  return {
+    schema_version: 1,
+    market_id: 'BTC-USDT',
+    epoch_id: '0123456789abcdef0123456789abcdef',
+    phase: 'writable',
+    runtime_sequence: '42',
+    state_hash: 'a'.repeat(64),
+    ledger_balanced: true,
+    event_continuous: true,
+    projection_caught_up: true,
+    outbox_caught_up: true,
+    transport_healthy: true,
+    writes_enabled: true,
+    continuity_uncertain: false,
+    continuity_error: '',
+    version: '6',
+    started_at: '2026-08-05T00:00:00Z',
+    updated_at: '2026-08-05T00:01:00Z',
+  }
+}
+
 function healthySnapshot(now: number) {
   const components = {
     matching: evidence('live', 'Matching engine explicitly reports ready.', 'trading GetStatus', now),
@@ -123,11 +145,32 @@ async function fulfillJSON(route: Route, status: number, body: unknown) {
 async function installNativeStatus(
   page: Page,
   snapshot: ReturnType<typeof healthySnapshot>,
+  recoveryStatus?: Record<string, unknown>,
+  recoveryGateEnabled = true,
 ) {
+  const effectiveRecoveryStatus = recoveryStatus ?? writableRecoveryStatus()
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/v1/get_system_status') {
       await fulfillJSON(route, 200, { code: 2000, result: snapshot })
+      return
+    }
+    if (path === '/api/v1/trading/recovery/status') {
+      await fulfillJSON(
+        route,
+        recoveryGateEnabled ? 200 : 404,
+        recoveryGateEnabled
+          ? effectiveRecoveryStatus
+          : { code: 'not_found', message: 'recovery gate not enabled' },
+      )
+      return
+    }
+    if (path === '/api/v1/trading/auth/capabilities') {
+      await fulfillJSON(route, 200, {
+        github_oauth_enabled: true,
+        local_login_enabled: false,
+        recovery_gate_enabled: recoveryGateEnabled,
+      })
       return
     }
     if (path === '/api/v1/get_system_overview') {
@@ -164,6 +207,59 @@ test('renders a healthy evidence contract with separate price-source columns', a
   await expect(page.getByText('DB 8.0 GB')).toBeVisible()
   await expect(page.getByText(/1m 0 ·/)).toBeVisible()
   await expect(page.getByText('1m candles')).toBeVisible()
+})
+
+test('shows recovery admission separately from the eight-probe formula', async ({ page }) => {
+  const snapshot = healthySnapshot(Date.now())
+  await installNativeStatus(page, snapshot, {
+    schema_version: 1,
+    market_id: 'BTC-USDT',
+    epoch_id: '0123456789abcdef0123456789abcdef',
+    phase: 'read_only',
+    runtime_sequence: '42',
+    state_hash: 'a'.repeat(64),
+    ledger_balanced: true,
+    event_continuous: true,
+    projection_caught_up: true,
+    outbox_caught_up: true,
+    transport_healthy: false,
+    writes_enabled: false,
+    continuity_uncertain: false,
+    continuity_error: '',
+    version: '5',
+  })
+
+  await page.goto('/system')
+  await expect(page.locator('.status-summary')).toContainText('LIVE')
+  await expect(page.getByTestId('system-recovery-admission')).toHaveAttribute(
+    'data-recovery-mode',
+    'blocked',
+  )
+  await expect(page.getByTestId('system-recovery-admission')).toContainText('Read only')
+  await expect(page.getByTestId('system-recovery-server-flag')).toHaveText('Blocked')
+  await expect(page.getByTestId('system-recovery-effective-admission')).toHaveText('Blocked')
+  await expect(page.getByText(/not a ninth input/)).toBeVisible()
+
+  await page.getByRole('button', { name: '中文' }).click()
+  await expect(page.getByTestId('system-recovery-admission')).toContainText('只读')
+  await expect(page.getByTestId('system-recovery-server-flag')).toHaveText('已禁止')
+  await expect(page.getByTestId('system-recovery-effective-admission')).toHaveText('已禁止')
+  await expect(page.getByText(/不会成为现有八探针总状态公式的第九项输入/)).toBeVisible()
+})
+
+test('legacy recovery capability hides unsupported proof and continuity fields', async ({ page }) => {
+  await installNativeStatus(page, healthySnapshot(Date.now()), undefined, false)
+
+  await page.goto('/system')
+  await expect(page.getByTestId('system-recovery-admission')).toHaveAttribute(
+    'data-recovery-mode',
+    'not_enabled',
+  )
+  await expect(page.getByTestId('system-recovery-server-flag')).toHaveText('Not reported')
+  await expect(page.getByTestId('system-recovery-effective-admission')).toHaveText('Legacy gate')
+  await expect(page.getByText('Proofs passed', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Continuity', { exact: true })).toHaveCount(0)
+  await expect(page.getByText(/trusted capability explicitly reports/)).toBeVisible()
 })
 
 const degradedScenarios = [

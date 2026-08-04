@@ -4,6 +4,7 @@ import { usePolling, type PollingResult } from './usePolling'
 
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
   document.body.innerHTML = ''
 })
 
@@ -72,6 +73,30 @@ describe('usePolling', () => {
     await first
     await Promise.resolve()
     expect(fetcher).toHaveBeenCalledOnce()
+    app.unmount()
+  })
+
+  it('refreshes immediately when a hidden document becomes visible', async () => {
+    let hidden = true
+    vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden)
+    const fetcher = vi.fn().mockResolvedValue('visible')
+    let polling: PollingResult<string> | undefined
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp({
+      setup() {
+        polling = usePolling(fetcher, { immediate: false, interval: 60_000 })
+        return () => h('div')
+      },
+    })
+    app.mount(host)
+
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(fetcher).not.toHaveBeenCalled()
+    hidden = false
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+    expect(polling?.data.value).toBe('visible')
     app.unmount()
   })
 })
