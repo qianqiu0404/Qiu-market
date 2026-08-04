@@ -7,6 +7,7 @@ state_dir="$support_dir/guardian"
 log_dir="$support_dir/logs"
 incident_log="$state_dir/incidents.log"
 production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
+database_env="${QIU_MARKET_DATABASE_ENV_FILE:-$support_dir/database.env}"
 
 # shellcheck disable=SC1091
 source "$repo_root/ops/macos/proxy-env.sh"
@@ -16,10 +17,10 @@ install -d -m 700 "$state_dir" "$log_dir"
 touch "$incident_log"
 chmod 600 "$incident_log"
 
-if [ -f "$repo_root/.env" ]; then
+if [ -f "$database_env" ]; then
   set -a
   # shellcheck disable=SC1091
-  source "$repo_root/.env"
+  source "$database_env"
   set +a
 fi
 if [ -f "$production_env" ]; then
@@ -193,25 +194,70 @@ if ! pg_isready -q \
 fi
 
 funnel_origin="${MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
-funnel_cooldown="$state_dir/funnel-restart-at"
+tailscale_socket="$support_dir/tailscale/tailscaled.sock"
+tailscale_cli="/opt/homebrew/bin/tailscale"
+funnel_restart="$state_dir/funnel-restart-at"
+funnel_stable_since="$state_dir/funnel-stable-since"
 funnel_failures_file="$state_dir/funnel-failures"
+funnel_health_error="$state_dir/funnel-health-error"
 funnel_failures="$(cat "$funnel_failures_file" 2>/dev/null || echo 0)"
-if curl --fail --silent --max-time 8 "$funnel_origin/healthz" >/dev/null; then
+if curl --fail --silent --show-error --max-time 8 \
+  "$funnel_origin/healthz" >/dev/null 2>"$funnel_health_error"; then
   echo 0 > "$funnel_failures_file"
+  : > "$funnel_health_error"
+  if [ ! -f "$funnel_stable_since" ]; then
+    date '+%s' > "$funnel_stable_since"
+  fi
+  funnel_stable_at="$(cat "$funnel_stable_since")"
+  if [ -f "$funnel_restart" ] &&
+    [ "$(($(date '+%s') - funnel_stable_at))" -ge 900 ]; then
+    find "$funnel_restart" -maxdepth 0 -type f -delete
+    record "Funnel remained healthy for 15 minutes; automatic restart budget reset"
+  fi
 elif [ "$api_healthy" = true ]; then
+  find "$funnel_stable_since" -maxdepth 0 -type f -delete 2>/dev/null || true
   funnel_failures=$((funnel_failures + 1))
   echo "$funnel_failures" > "$funnel_failures_file"
-  last_restart="$(cat "$funnel_cooldown" 2>/dev/null || echo 0)"
   if [ "$funnel_failures" -ge 3 ] &&
-    [ "$(($(date '+%s') - last_restart))" -ge 900 ]; then
-    date '+%s' > "$funnel_cooldown"
+    [ ! -f "$funnel_restart" ]; then
+    date '+%s' > "$funnel_restart"
     echo 0 > "$funnel_failures_file"
-    record "Funnel failed three checks while local API is healthy; restarting only Qiu Market tailscaled"
+    record "Funnel failed three checks while local API is healthy; using its single automatic tailscaled restart"
     launchctl kickstart -k "$launch_domain/com.qiumarket.tailscaled" || true
-    sleep 3
-    /opt/homebrew/bin/tailscale \
-      --socket="/Users/xiuqiu/Library/Application Support/Qiu Market/tailscale/tailscaled.sock" \
-      funnel --bg --yes --https=443 http://127.0.0.1:9092 || true
+    tailscale_state="NoState"
+    for _ in $(seq 1 20); do
+      tailscale_state="$(
+        "$tailscale_cli" --socket="$tailscale_socket" status --json 2>/dev/null |
+          jq -r '.BackendState // "NoState"' 2>/dev/null || echo NoState
+      )"
+      if [ "$tailscale_state" = Running ]; then
+        break
+      fi
+      sleep 1
+    done
+    if [ "$tailscale_state" = Running ]; then
+      if ! "$tailscale_cli" --socket="$tailscale_socket" \
+        funnel --bg --yes --https=443 http://127.0.0.1:9092; then
+        record_throttled \
+          "funnel-reconfigure-failed" \
+          900 \
+          "tailscaled restarted but Funnel reconfiguration failed; restart budget remains consumed"
+      fi
+    else
+      record_throttled \
+        "tailscale-not-running-after-restart" \
+        900 \
+        "tailscaled did not reach Running after its single restart; restart budget remains consumed"
+    fi
+  elif [ -f "$funnel_restart" ]; then
+    restarted_at="$(cat "$funnel_restart")"
+    if [ "$(($(date '+%s') - restarted_at))" -ge 120 ]; then
+      funnel_error="$(tr '\n' ' ' < "$funnel_health_error" | cut -c 1-300)"
+      record_throttled \
+        "funnel-still-unavailable" \
+        900 \
+        "Funnel remains unavailable after its restart; leaving tailscaled running for inspection; error=$funnel_error"
+    fi
   fi
 fi
 

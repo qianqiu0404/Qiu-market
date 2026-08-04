@@ -10,6 +10,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 support_dir="$HOME/Library/Application Support/Qiu Market"
 observation_dir="${QIU_MARKET_OBSERVATION_DIR:-$support_dir/observations}"
 production_env="${QIU_MARKET_ENV_FILE:-$support_dir/production.env}"
+database_env="${QIU_MARKET_DATABASE_ENV_FILE:-$support_dir/database.env}"
 epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoch.json}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
 funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
@@ -42,13 +43,13 @@ for command in curl jq psql; do
 done
 started_at="$(jq -nr --argjson epoch "$started_epoch" '$epoch | todateiso8601')"
 scheduled_at="$(jq -nr --argjson epoch "$scheduled_epoch" '$epoch | todateiso8601')"
-if [ ! -f "$repo_root/.env" ] || [ ! -f "$production_env" ]; then
+if [ ! -f "$database_env" ] || [ ! -f "$production_env" ]; then
   echo "Qiu Market private database or production environment is unavailable." >&2
   exit 1
 fi
 
 # shellcheck disable=SC1091
-source "$repo_root/.env"
+source "$database_env"
 # shellcheck disable=SC1091
 source "$production_env"
 
@@ -61,7 +62,7 @@ curl_code() {
   result="$(curl --silent --show-error --max-time 20 \
     --dump-header "$output.headers" \
     --output "$output" --write-out '%{http_code} %{time_total}' "$@" \
-    2>>"$temp_dir/curl-errors.log" || true)"
+    2>"$output.error" || true)"
   code="${result%% *}"
   duration="${result#* }"
   if [[ "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -75,6 +76,16 @@ curl_code() {
   else
     printf '000'
   fi
+}
+
+error_summary() {
+  local error_file="$1"
+  if [ ! -s "$error_file" ]; then
+    return 0
+  fi
+  tr '\r\n\t' '   ' < "$error_file" |
+    sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' |
+    cut -c 1-512
 }
 
 header_value() {
@@ -602,6 +613,34 @@ trading_latency_ms="$(cat "$temp_dir/trading.json.latency-ms")"
 system_latency_ms="$(cat "$temp_dir/system.json.latency-ms")"
 uniswap_latency_ms="$(cat "$temp_dir/uniswap.json.latency-ms")"
 pancake_latency_ms="$(cat "$temp_dir/pancakeswap.json.latency-ms")"
+site_transport_error="$(error_summary "$temp_dir/site.html.error")"
+funnel_transport_error="$(error_summary "$temp_dir/funnel-health.txt.error")"
+unsigned_transport_error="$(error_summary "$temp_dir/unsigned.json.error")"
+trading_transport_error="$(error_summary "$temp_dir/trading.json.error")"
+system_transport_error="$(error_summary "$temp_dir/system.json.error")"
+uniswap_transport_error="$(error_summary "$temp_dir/uniswap.json.error")"
+pancake_transport_error="$(error_summary "$temp_dir/pancakeswap.json.error")"
+failure_scope="none"
+if [ "$sample_ok" != true ]; then
+  if [ "$site_http" = 000 ] &&
+    [ "$funnel_health_http" = 000 ] &&
+    [ "$trading_http" = 000 ] &&
+    [ "$system_http" = 000 ] &&
+    [ "$uniswap_http" = 000 ] &&
+    [ "$pancake_http" = 000 ]; then
+    failure_scope="observer_network"
+  elif [ "$site_http" = 200 ] && {
+    [ "$funnel_health_http" != 200 ] ||
+      [ "$trading_http" = 502 ] || [ "$trading_http" = 504 ] ||
+      [ "$system_http" = 502 ] || [ "$system_http" = 504 ] ||
+      [ "$uniswap_http" = 502 ] || [ "$uniswap_http" = 504 ] ||
+      [ "$pancake_http" = 502 ] || [ "$pancake_http" = 504 ];
+  }; then
+    failure_scope="backend_transport"
+  else
+    failure_scope="service_or_dependency"
+  fi
+fi
 latest_report="$observation_dir/latest.json"
 history_file="$observation_dir/production-soak.jsonl"
 jq -n \
@@ -661,6 +700,14 @@ jq -n \
   --arg system_latency_ms "$system_latency_ms" \
   --arg uniswap_latency_ms "$uniswap_latency_ms" \
   --arg pancake_latency_ms "$pancake_latency_ms" \
+  --arg failure_scope "$failure_scope" \
+  --arg site_transport_error "$site_transport_error" \
+  --arg funnel_transport_error "$funnel_transport_error" \
+  --arg unsigned_transport_error "$unsigned_transport_error" \
+  --arg trading_transport_error "$trading_transport_error" \
+  --arg system_transport_error "$system_transport_error" \
+  --arg uniswap_transport_error "$uniswap_transport_error" \
+  --arg pancake_transport_error "$pancake_transport_error" \
   --argjson uniswap "$uniswap_summary" \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
@@ -697,6 +744,16 @@ jq -n \
     current_checks_status: (
       if $sample_ok == "true" then "passed" else "failed" end
     ),
+    failure_scope: $failure_scope,
+    transport_errors: {
+      production_page: (if $site_transport_error == "" then null else $site_transport_error end),
+      funnel_health: (if $funnel_transport_error == "" then null else $funnel_transport_error end),
+      unsigned_funnel_rest: (if $unsigned_transport_error == "" then null else $unsigned_transport_error end),
+      trading_bff: (if $trading_transport_error == "" then null else $trading_transport_error end),
+      system_bff: (if $system_transport_error == "" then null else $system_transport_error end),
+      uniswap_bff: (if $uniswap_transport_error == "" then null else $uniswap_transport_error end),
+      pancakeswap_bff: (if $pancake_transport_error == "" then null else $pancake_transport_error end)
+    },
     historical_acceptance_status: (
       if $historical_failed == "true" then "failed"
       elif $historical_complete == "true" then "passed"

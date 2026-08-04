@@ -3,6 +3,7 @@ set -euo pipefail
 
 action="${1:-status}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+runtime_root="${QIU_MARKET_RUNTIME_ROOT:-$repo_root}"
 support_dir="/Users/xiuqiu/Library/Application Support/Qiu Market"
 log_dir="$support_dir/logs"
 launch_dir="/Users/xiuqiu/Library/LaunchAgents"
@@ -19,7 +20,7 @@ render_backup() {
   sed \
     -e '/<key>UserName<\/key>/{N;d;}' \
     -e "s|__MODE__|$mode|g" \
-    -e "s|__REPO_ROOT__|$repo_root|g" \
+    -e "s|__REPO_ROOT__|$runtime_root|g" \
     -e "s|__LOG_DIR__|$log_dir|g" \
     -e "s|<!-- __SCHEDULE__ -->|$schedule|g" \
     "$repo_root/ops/macos/com.qiumarket.backup.plist.template" \
@@ -30,7 +31,7 @@ case "$action" in
   install)
     install -d -m 700 "$support_dir" "$log_dir" "$launch_dir"
     sed \
-      -e "s|__REPO_ROOT__|$repo_root|g" \
+      -e "s|__REPO_ROOT__|$runtime_root|g" \
       -e "s|__LOG_DIR__|$log_dir|g" \
       "$repo_root/ops/macos/com.qiumarket.guardian.plist.template" \
       > "$launch_dir/com.qiumarket.guardian.plist"
@@ -38,7 +39,7 @@ case "$action" in
     render_backup trading
     sed \
       -e '/<key>UserName<\/key>/{N;d;}' \
-      -e "s|__REPO_ROOT__|$repo_root|g" \
+      -e "s|__REPO_ROOT__|$runtime_root|g" \
       -e "s|__LOG_DIR__|$log_dir|g" \
       "$repo_root/ops/macos/com.qiumarket.restore-drill.plist.template" \
       > "$launch_dir/com.qiumarket.restore-drill.plist"

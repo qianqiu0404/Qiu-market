@@ -11,9 +11,13 @@ qiu_load_production_environment() {
   local repo_root="$1"
   QIU_MARKET_SUPPORT_DIR="${QIU_MARKET_SUPPORT_DIR:-$HOME/Library/Application Support/Qiu Market}"
   QIU_MARKET_ENV_FILE="${QIU_MARKET_ENV_FILE:-$QIU_MARKET_SUPPORT_DIR/production.env}"
+  QIU_MARKET_DATABASE_ENV_FILE="${QIU_MARKET_DATABASE_ENV_FILE:-$QIU_MARKET_SUPPORT_DIR/database.env}"
 
   set -a
-  if [ -f "$repo_root/.env" ]; then
+  if [ -f "$QIU_MARKET_DATABASE_ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$QIU_MARKET_DATABASE_ENV_FILE"
+  elif [ -f "$repo_root/.env" ]; then
     # shellcheck disable=SC1091
     source "$repo_root/.env"
   fi
@@ -22,6 +26,11 @@ qiu_load_production_environment() {
     source "$QIU_MARKET_ENV_FILE"
   fi
   set +a
+
+  if [ -d "$repo_root/migrations" ]; then
+    MARKET_MIGRATIONS_DIR="$repo_root/migrations"
+    export MARKET_MIGRATIONS_DIR
+  fi
 
   QIU_MARKET_DB_NAME="${MARKET_MASTER_DB_NAME:-${MARKET_DB_NAME:-s78_market}}"
   QIU_MARKET_DB_HOST="${MARKET_MASTER_DB_HOST:-127.0.0.1}"
@@ -32,6 +41,7 @@ qiu_load_production_environment() {
 
 qiu_require_private_environment() {
   local permissions
+  local database_permissions
   if [ ! -f "$QIU_MARKET_ENV_FILE" ]; then
     echo "Private production environment is missing: $QIU_MARKET_ENV_FILE" >&2
     return 1
@@ -40,6 +50,13 @@ qiu_require_private_environment() {
   if [ "$permissions" != "600" ] && [ "$permissions" != "400" ]; then
     echo "Private production environment must have mode 0600 or 0400: $QIU_MARKET_ENV_FILE" >&2
     return 1
+  fi
+  if [ -f "$QIU_MARKET_DATABASE_ENV_FILE" ]; then
+    database_permissions="$(stat -f '%Lp' "$QIU_MARKET_DATABASE_ENV_FILE")"
+    if [ "$database_permissions" != "600" ] && [ "$database_permissions" != "400" ]; then
+      echo "Private database environment must have mode 0600 or 0400: $QIU_MARKET_DATABASE_ENV_FILE" >&2
+      return 1
+    fi
   fi
 }
 

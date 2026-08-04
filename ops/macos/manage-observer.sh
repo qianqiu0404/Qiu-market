@@ -3,6 +3,7 @@ set -euo pipefail
 
 action="${1:-status}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+runtime_root="${QIU_MARKET_RUNTIME_ROOT:-$repo_root}"
 support_dir="$HOME/Library/Application Support/Qiu Market"
 log_dir="$support_dir/logs"
 observation_dir="$support_dir/observations"
@@ -15,7 +16,7 @@ template="$repo_root/ops/macos/com.qiumarket.observer.plist.template"
 render() {
   mkdir -p "$launch_dir" "$log_dir" "$observation_dir"
   sed \
-    -e "s|__REPO_ROOT__|$repo_root|g" \
+    -e "s|__REPO_ROOT__|$runtime_root|g" \
     -e "s|__LOG_DIR__|$log_dir|g" \
     "$template" > "$target"
   plutil -lint "$target" >/dev/null

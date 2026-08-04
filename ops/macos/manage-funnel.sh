@@ -3,6 +3,7 @@ set -euo pipefail
 
 action="${1:-status}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+runtime_root="${QIU_MARKET_RUNTIME_ROOT:-$repo_root}"
 support_dir="$HOME/Library/Application Support/Qiu Market"
 tailscale_dir="$support_dir/tailscale"
 log_dir="$support_dir/logs"
@@ -20,7 +21,7 @@ fi
 install_daemon() {
   mkdir -p "$tailscale_dir" "$log_dir" "$HOME/Library/LaunchAgents"
   sed \
-    -e "s|__REPO_ROOT__|$repo_root|g" \
+    -e "s|__REPO_ROOT__|$runtime_root|g" \
     -e "s|__LOG_DIR__|$log_dir|g" \
     "$template" > "$launch_plist"
   plutil -lint "$launch_plist" >/dev/null
