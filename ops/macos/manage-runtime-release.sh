@@ -136,6 +136,7 @@ activate_bundle() {
   local target
   local plist_backup
   local temporary_link
+  local activation_status
   commit="$(git -C "$repo_root" rev-parse --verify "$revision^{commit}")"
   target="$release_root/$commit"
   verify_bundle "$target" || {
@@ -152,13 +153,18 @@ activate_bundle() {
   }
   plist_backup="$release_root/plist-backup-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   backup_plists "$plist_backup"
-  if ! (
+  set +e
+  (
+    set -e
     QIU_MARKET_RUNTIME_ROOT="$target" "$target/ops/macos/manage-services.sh" reload
     QIU_MARKET_RUNTIME_ROOT="$target" "$target/ops/macos/manage-funnel.sh" install-daemon
     QIU_MARKET_RUNTIME_ROOT="$target" "$target/ops/macos/manage-funnel.sh" start
     QIU_MARKET_RUNTIME_ROOT="$target" "$target/ops/macos/manage-user-resilience.sh" install
     QIU_MARKET_RUNTIME_ROOT="$target" "$target/ops/macos/manage-observer.sh" install
-  ); then
+  )
+  activation_status=$?
+  set -e
+  if [ "$activation_status" -ne 0 ]; then
     echo "Runtime activation failed; restoring previous LaunchAgent definitions." >&2
     restore_plists "$plist_backup"
     return 1
@@ -174,6 +180,12 @@ activate_bundle() {
       restore_plists "$plist_backup"
       return 1
     }
+    if ! launchctl print "gui/$UID/com.qiumarket.$label" 2>/dev/null |
+      grep -F "$target" >/dev/null; then
+      echo "Loaded runtime role does not reference the immutable bundle: $label" >&2
+      restore_plists "$plist_backup"
+      return 1
+    fi
     if ! plutil -p "$launch_dir/com.qiumarket.$label.plist" | grep -F "$target" >/dev/null; then
       echo "Managed runtime role does not reference the immutable bundle: $label" >&2
       restore_plists "$plist_backup"
