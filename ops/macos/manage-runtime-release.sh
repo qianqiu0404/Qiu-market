@@ -12,6 +12,29 @@ launch_dir="$HOME/Library/LaunchAgents"
 database_env="$support_dir/database.env"
 production_env="$support_dir/production.env"
 labels=(trading api crawler worker dex tailscaled guardian backup.full backup.trading restore-drill observer)
+runtime_paths=(
+  migrations
+  ops/macos/backup-production.sh
+  ops/macos/com.qiumarket.backup.plist.template
+  ops/macos/com.qiumarket.guardian.plist.template
+  ops/macos/com.qiumarket.observer.plist.template
+  ops/macos/com.qiumarket.restore-drill.plist.template
+  ops/macos/com.qiumarket.role.plist.template
+  ops/macos/com.qiumarket.tailscaled.plist.template
+  ops/macos/guardian.sh
+  ops/macos/manage-funnel.sh
+  ops/macos/manage-observer.sh
+  ops/macos/manage-runtime-release.sh
+  ops/macos/manage-services.sh
+  ops/macos/manage-user-resilience.sh
+  ops/macos/observe-production.sh
+  ops/macos/production-lib.sh
+  ops/macos/proxy-env.sh
+  ops/macos/restore-drill.sh
+  ops/macos/run-role.sh
+  ops/macos/run-tailscaled.sh
+  ops/macos/verify-runtime.sh
+)
 
 bundle_hash() {
   local root="$1"
@@ -68,7 +91,7 @@ prepare_bundle() {
     fi
   }
   trap cleanup_prepare RETURN
-  git -C "$repo_root" archive "$commit" -- ops/macos migrations | tar -xf - -C "$temporary"
+  git -C "$repo_root" archive "$commit" -- "${runtime_paths[@]}" | tar -xf - -C "$temporary"
   find "$temporary" -type d -exec chmod 700 {} +
   find "$temporary" -type f -exec chmod 600 {} +
   find "$temporary/ops/macos" -type f -name '*.sh' -exec chmod 700 {} +
