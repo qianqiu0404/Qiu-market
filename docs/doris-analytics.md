@@ -141,6 +141,28 @@ PostgreSQL + Redis
 
 固定 1000 是有界保护，不是无限事务等待的数学保证；每日对账是第二层恢复线。
 
+## Mac mini 不可变运行与恢复
+
+Mac mini 把 `dw` 作为与 `api`、`crawler` 同级的长期 launchd 角色管理，而不是
+从源码目录手工运行。发布顺序是：
+
+```text
+manage-runtime-release.sh
+  -> 归档 migrations 与 ops 脚本为带 commit 的只读运行包
+  -> manage-services.sh 生成 com.qiumarket.dw.plist
+  -> run-role.sh 从私有 database.env / production.env 启动同一受管二进制
+  -> launchd KeepAlive 在进程异常退出后重启
+```
+
+运行包激活只有在包括 `dw` 在内的全部受管 label 已加载、且 plist 和 launchd
+都指向同一个不可变目录时才成功。激活中途失败会移除候选 DW plist 并恢复激活前
+的完整 plist 备份，不留下只有一部分角色切换成功的状态。这里拒绝的替代方案是
+重新加载指向源码工作区的旧 DW plist：它绕过 commit 绑定，后续发布还会再次将其
+移除，无法证明实际运行的是哪一版脚本。
+
+恢复时先确认 Doris 健康，再检查 `dw_sync_state` 的最新更新时间和 v2
+`last_sync_seq`。进程存活只说明搬运工还在，水位持续前进才说明数据仍在更新。
+
 ## 验证
 
 ```bash
@@ -159,6 +181,10 @@ curl -X POST http://127.0.0.1:9092/api/v1/get_asset_momentum \
 - 24H / 7D / 30D 的 `expected_candles` 分别是 24 / 168 / 720。
 - `coverage_pct = candle_count / expected_candles * 100`。
 - Doris 停止后只有历史请求 503，`get_market_insights` 仍成功。
+- Mac mini 的 `com.qiumarket.dw` 已加载，ProgramArguments 指向
+  `runtime-releases/<commit>`，而不是源码工作区。
+- `dw_sync_state` 在一个以上 60 秒周期内继续更新，且 v2 最大水位逐步接近
+  PostgreSQL 当前 `sync_seq` 上界。
 
 ## 证据边界
 

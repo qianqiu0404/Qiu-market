@@ -11,7 +11,7 @@ production_env="$support_dir/production.env"
 launch_dir="$HOME/Library/LaunchAgents"
 template="$repo_root/ops/macos/com.qiumarket.role.plist.template"
 release_tool="$repo_root/ops/macos/release-production.sh"
-roles=(trading api crawler worker dex)
+roles=(trading api crawler worker dex dw)
 
 prepare() {
   mkdir -p "$log_dir"

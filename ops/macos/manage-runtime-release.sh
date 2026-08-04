@@ -11,7 +11,7 @@ current_link="$support_dir/runtime-current"
 launch_dir="$HOME/Library/LaunchAgents"
 database_env="$support_dir/database.env"
 production_env="$support_dir/production.env"
-labels=(trading api crawler worker dex tailscaled guardian backup.full backup.trading restore-drill observer)
+labels=(trading api crawler worker dex dw tailscaled guardian backup.full backup.trading restore-drill observer)
 runtime_paths=(
   migrations
   ops/macos/backup-production.sh
@@ -124,6 +124,13 @@ restore_plists() {
   local backup_dir="$1"
   local plist
   local label
+  # A failed first activation can leave the newly introduced DW LaunchAgent
+  # behind because no previous DW plist exists in the backup. Remove that
+  # candidate before restoring the complete previous plist set.
+  launchctl bootout "gui/$UID/com.qiumarket.dw" >/dev/null 2>&1 || true
+  if [ -f "$launch_dir/com.qiumarket.dw.plist" ]; then
+    find "$launch_dir/com.qiumarket.dw.plist" -maxdepth 0 -type f -delete
+  fi
   for plist in "$backup_dir"/com.qiumarket*.plist; do
     [ -f "$plist" ] || continue
     label="$(basename "$plist" .plist)"
@@ -169,11 +176,6 @@ activate_bundle() {
     echo "Runtime activation failed; restoring previous LaunchAgent definitions." >&2
     restore_plists "$plist_backup"
     return 1
-  fi
-  launchctl bootout "gui/$UID/com.qiumarket.dw" >/dev/null 2>&1 || true
-  if [ -f "$launch_dir/com.qiumarket.dw.plist" ]; then
-    install -m 600 "$launch_dir/com.qiumarket.dw.plist" "$plist_backup/com.qiumarket.dw.disabled.plist"
-    find "$launch_dir/com.qiumarket.dw.plist" -maxdepth 0 -type f -delete
   fi
   for label in "${labels[@]}"; do
     launchctl print "gui/$UID/com.qiumarket.$label" >/dev/null 2>&1 || {
