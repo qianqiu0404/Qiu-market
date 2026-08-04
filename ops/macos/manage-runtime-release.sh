@@ -135,7 +135,6 @@ activate_bundle() {
   local commit
   local target
   local plist_backup
-  local temporary_link
   local activation_status
   commit="$(git -C "$repo_root" rev-parse --verify "$revision^{commit}")"
   target="$release_root/$commit"
@@ -192,9 +191,7 @@ activate_bundle() {
       return 1
     fi
   done
-  temporary_link="$support_dir/.runtime-current.$$"
-  ln -s "$target" "$temporary_link"
-  mv -f "$temporary_link" "$current_link"
+  ln -sfn "$target" "$current_link"
   echo "Activated immutable runtime release: $target"
   echo "Previous LaunchAgent definitions preserved at: $plist_backup"
 }
