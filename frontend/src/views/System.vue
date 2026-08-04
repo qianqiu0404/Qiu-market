@@ -17,15 +17,16 @@ import type {
   StatusEvidence,
   SystemState,
 } from '../api/system'
+import { useI18n } from '../i18n'
 
 type SystemTab = 'status' | 'audit' | 'assets' | 'exchanges' | 'symbols'
 
-const SYSTEM_TABS: Array<{ value: SystemTab; label: string }> = [
-  { value: 'status', label: 'Status' },
-  { value: 'audit', label: 'Catalog Audit' },
-  { value: 'assets', label: 'Assets' },
-  { value: 'exchanges', label: 'Exchanges' },
-  { value: 'symbols', label: 'Symbols' },
+const SYSTEM_TABS: Array<{ value: SystemTab; en: string; zh: string }> = [
+  { value: 'status', en: 'Status', zh: '状态' },
+  { value: 'audit', en: 'Catalog Audit', zh: '目录审计' },
+  { value: 'assets', en: 'Assets', zh: '资产' },
+  { value: 'exchanges', en: 'Exchanges', zh: '交易所' },
+  { value: 'symbols', en: 'Symbols', zh: '交易对' },
 ]
 
 const catalogComponents = {
@@ -37,6 +38,15 @@ const catalogComponents = {
 
 const route = useRoute()
 const router = useRouter()
+const { locale } = useI18n()
+
+function t(en: string, zh: string): string {
+  return locale.value === 'zh-CN' ? zh : en
+}
+
+function tabLabel(tab: (typeof SYSTEM_TABS)[number]): string {
+  return locale.value === 'zh-CN' ? tab.zh : tab.en
+}
 
 function normalizeTab(value: unknown): SystemTab {
   return SYSTEM_TABS.some((tab) => tab.value === value) ? (value as SystemTab) : 'status'
@@ -58,44 +68,49 @@ const activeCatalog = computed(() =>
 
 const pageTitle = computed(() => {
   const tab = SYSTEM_TABS.find((item) => item.value === activeTab.value)
-  return activeTab.value === 'status' ? 'System' : tab?.label ?? 'System'
+  return activeTab.value === 'status'
+    ? t('System', '系统状态')
+    : tab ? tabLabel(tab) : t('System', '系统状态')
 })
 
 const pageSubtitle = computed(() => {
   switch (activeTab.value) {
   case 'audit':
-    return 'Discovered markets and identity-resolution gates'
+    return t('Discovered markets and identity-resolution gates', '查看已发现市场与身份解析门禁')
   case 'assets':
-    return 'Supported asset catalog'
+    return t('Supported asset catalog', '查看支持的资产目录')
   case 'exchanges':
-    return 'Connected exchange catalog'
+    return t('Connected exchange catalog', '查看已连接的交易所目录')
   case 'symbols':
-    return 'Tracked trading-pair catalog'
+    return t('Tracked trading-pair catalog', '查看正在跟踪的交易对目录')
   default:
-    return 'Ingestion process and dependency status'
+    return t(
+      'Read-only health evidence for matching, liquidity, transport, database, disk, retention, and data sources. This page does not start, stop, or promote services.',
+      '只读查看撮合、流动性、传输、数据库、磁盘、保留任务和数据源健康；本页不会启动、停止服务或执行切流。',
+    )
   }
 })
 
 /* 15s poll for the read-only observability view. */
 const system = usePolling(getSystemStatus, { interval: 15_000 })
 
-const componentLabels: Record<string, string> = {
-  matching: 'Matching',
-  liquidity: 'Liquidity',
-  transport: 'Transport',
-  market_data: 'Market data',
-  outbox: 'Outbox',
-  database: 'Database',
-  disk: 'Disk',
-  retention: 'Retention',
-}
+const componentLabels = computed<Record<string, string>>(() => ({
+  matching: t('Matching', '撮合'),
+  liquidity: t('Liquidity', '流动性'),
+  transport: t('Transport', '传输'),
+  market_data: t('Market data', '行情数据'),
+  outbox: t('Outbox', '事件发件箱'),
+  database: t('Database', '数据库'),
+  disk: t('Disk', '磁盘'),
+  retention: t('Retention', '保留任务'),
+}))
 
 const componentRows = computed(() => {
   const components = system.data.value?.components
   if (!components) return []
   return Object.entries(components).map(([key, status]) => ({
     key,
-    label: componentLabels[key] ?? key,
+    label: componentLabels.value[key] ?? key,
     status,
   }))
 })
@@ -126,17 +141,18 @@ function providerStatusVariant(status: string): BadgeVariant {
 }
 
 function feedModeLabel(value: string): string {
-  const labels: Record<string, string> = {
-    websocket_primary_rest_reconcile: 'WebSocket primary + REST reconcile',
-    websocket_primary: 'WebSocket primary',
-    rest_reconcile_only: 'REST reconcile only',
-    http_polling: 'HTTP polling',
-    native_rpc_routes: 'Native RPC routes',
-    http_catalog: 'HTTP catalog',
-    unobserved: 'Not observed',
-    provider_specific: 'Provider specific',
+  const labels: Record<string, [string, string]> = {
+    websocket_primary_rest_reconcile: ['WebSocket primary + REST reconcile', 'WebSocket 主链路 + REST 对账'],
+    websocket_primary: ['WebSocket primary', 'WebSocket 主链路'],
+    rest_reconcile_only: ['REST reconcile only', '仅 REST 对账'],
+    http_polling: ['HTTP polling', 'HTTP 轮询'],
+    native_rpc_routes: ['Native RPC routes', '原生 RPC 路线'],
+    http_catalog: ['HTTP catalog', 'HTTP 目录'],
+    unobserved: ['Not observed', '尚未观测'],
+    provider_specific: ['Provider specific', '数据源专用'],
   }
-  return labels[value] ?? value ?? '—'
+  const label = labels[value]
+  return label ? t(label[0], label[1]) : value ?? '—'
 }
 
 function formatBytes(value: number): string {
@@ -156,7 +172,7 @@ function metricLabel(
   formatter: (value: number) => string,
 ): string {
   if (!metric?.available || metric.value === null) {
-    return `Unavailable · ${metric?.reason || 'No reason reported'}`
+    return `${t('Unavailable', '不可用')} · ${contractText(metric?.reason || t('No reason reported', '未报告原因'))}`
   }
   return formatter(metric.value)
 }
@@ -175,31 +191,114 @@ function timeMetric(metric: OptionalMetric | undefined): string {
 
 function evidenceLastSuccess(status: StatusEvidence): string {
   return status.last_success_at === null
-    ? `Unavailable · ${status.reason}`
+    ? `${t('Unavailable', '不可用')} · ${contractText(status.reason)}`
     : formatTime(status.last_success_at)
 }
 
 function evidenceAge(status: StatusEvidence): string {
   return status.age_seconds === null
-    ? 'Age unavailable'
-    : `${formatDelay(status.age_seconds)} old`
+    ? t('Age unavailable', '数据年龄不可用')
+    : t(`${formatDelay(status.age_seconds)} old`, `距今 ${formatDelay(status.age_seconds)}`)
 }
 
 function stateLabel(state: SystemState | undefined): string {
-  return SYSTEM_STATE_LABELS[state ?? 'unknown']
+  const normalized = state ?? 'unknown'
+  if (locale.value === 'en') return SYSTEM_STATE_LABELS[normalized]
+  const labels: Record<SystemState, string> = {
+    live: '实时',
+    cached: '缓存',
+    demo_snapshot: '演示快照',
+    degraded: '降级',
+    offline: '离线',
+    unknown: '未知',
+  }
+  return labels[normalized]
+}
+
+function providerStatusLabel(status: string): string {
+  if (locale.value === 'en') return status
+  const labels: Record<string, string> = {
+    Healthy: '健康',
+    Observing: '观察中',
+    Unconfigured: '未配置',
+    Paused: '已暂停',
+    'Local Preview': '本地预览',
+    Stale: '陈旧',
+    Unavailable: '不可用',
+  }
+  return labels[status] ?? status
 }
 
 function sourceModeLabel(value: string | undefined): string {
   switch (value) {
   case 'native':
-    return 'Native system-status contract'
+    return t('Native system-status contract', '原生系统状态契约')
   case 'legacy':
-    return 'Legacy backend compatibility'
+    return t('Legacy backend compatibility', '旧版后端兼容模式')
   case 'demo_snapshot':
-    return 'Explicit demo snapshot'
+    return t('Explicit demo snapshot', '明确标记的演示快照')
   default:
-    return 'Unknown source mode'
+    return t('Unknown source mode', '未知来源模式')
   }
+}
+
+const CONTRACT_ZH: Record<string, string> = {
+  'all required read-only probes have explicit current success evidence': '所有必需的只读探针都有明确的当前成功证据',
+  'only market data is using a retained last success within five minutes': '只有行情数据使用了五分钟内保留的最近成功值',
+  'one or more required probes are stale, failed, or missing explicit evidence': '至少一个必需探针已陈旧、失败或缺少明确证据',
+  'system overview and trading reads are both unavailable': '系统概览和交易只读请求均不可用',
+  'trading status and order book reads both succeeded': '交易状态和订单簿读取均成功',
+  'only one trading read succeeded': '两项交易读取中只有一项成功',
+  'trading status and order book are unreachable': '交易状态和订单簿均不可达',
+  'matching engine explicitly reports ready': '撮合引擎明确报告 ready',
+  'two-sided BTC-USDT liquidity is visible': 'BTC-USDT 买卖双边流动性可见',
+  'two-sided BTC-USDT liquidity is not visible': 'BTC-USDT 买卖双边流动性不完整',
+  'outbox publisher explicitly reports ready': 'Outbox 发布器明确报告 ready',
+  'PostgreSQL read probe succeeded': 'PostgreSQL 读取探针成功',
+  'PostgreSQL read probe failed': 'PostgreSQL 读取探针失败',
+  'free disk is above the warning threshold': '可用磁盘空间高于告警阈值',
+  'free disk is below 25 GB': '可用磁盘空间低于 25 GB',
+  'free disk is below 15 GB': '可用磁盘空间低于 15 GB',
+  'retention succeeded within the expected daily window': '保留任务在预期的每日窗口内成功',
+  'retention success is older than 36 hours': '最近一次保留任务成功已超过 36 小时',
+  'the latest heartbeat exists': '存在最新心跳',
+  'the heartbeat is absent or the dependency probe failed': '心跳不存在或依赖探针失败',
+  'DEX route summaries are current': 'DEX 路线摘要当前有效',
+  'DEX route summaries are cached': 'DEX 路线摘要来自缓存',
+  'DEX route summaries are stale': 'DEX 路线摘要已陈旧',
+  'CEX Spot reference data is current': 'CEX 现货参考数据当前有效',
+  'CEX Spot reference data is served from the retained last success': 'CEX 现货参考数据来自保留的最近成功值',
+  'CEX Spot reference data is stale': 'CEX 现货参考数据已陈旧',
+  'Venue-specific indicative route quotes at the reported notional.': '按所示名义金额计算的特定场所指示性路线报价。',
+  'Never substituted for the CEX Spot reference display price.': '绝不替代 CEX 现货参考展示价。',
+  'Read-only composite reference used for display and the virtual demo-maker.': '用于展示和虚拟做市账户的只读综合参考价。',
+  'Not an executable route price and never filled from DEX or mock data.': '不是可执行路线价格，也绝不使用 DEX 或模拟数据补值。',
+  'Uniswap and PancakeSwap venue route summaries': 'Uniswap 与 PancakeSwap 场所路线摘要',
+  'asset_price_index built from fresh CEX Spot contributors': '由新鲜 CEX 现货贡献者构建的 asset_price_index',
+  'loopback trading REST over gRPC': '本机回环 trading REST → gRPC',
+  'BTC-USDT public order book': 'BTC-USDT 公共订单簿',
+  'trading GetStatus': 'trading GetStatus',
+  'trading GetStatus outbox fields': 'trading GetStatus 的 Outbox 字段',
+  'filesystem statfs': '文件系统 statfs',
+  'Redis heartbeat existence': 'Redis 心跳存在性',
+}
+
+function contractText(value: string | undefined): string {
+  if (!value || locale.value === 'en') return value || '—'
+  if (CONTRACT_ZH[value]) return CONTRACT_ZH[value]
+  if (value.startsWith('matching engine reports ')) {
+    return `撮合引擎报告 ${value.slice('matching engine reports '.length)}`
+  }
+  if (value.startsWith('outbox publisher reports ')) {
+    return `Outbox 发布器报告 ${value.slice('outbox publisher reports '.length)}`
+  }
+  return value
+}
+
+function priceSourceLabel(key: string, fallback: string): string {
+  if (key === 'route_price') return t('Route price', '路线价格')
+  if (key === 'reference_display_price') return t('Reference display price', '参考展示价')
+  return contractText(fallback)
 }
 </script>
 
@@ -211,7 +310,7 @@ function sourceModeLabel(value: string | undefined): string {
       :refreshed-at="activeTab === 'status' ? system.lastUpdated.value : null"
     >
       <template #actions>
-        <div class="segmented" role="group" aria-label="System section">
+        <div class="segmented" role="group" :aria-label="t('System section', '系统栏目')">
           <button
             v-for="tab in SYSTEM_TABS"
             :key="tab.value"
@@ -219,7 +318,7 @@ function sourceModeLabel(value: string | undefined): string {
             :class="{ active: activeTab === tab.value }"
             @click="activeTab = tab.value"
           >
-            {{ tab.label }}
+            {{ tabLabel(tab) }}
           </button>
         </div>
       </template>
@@ -246,25 +345,25 @@ function sourceModeLabel(value: string | undefined): string {
               {{ system.data.value.formula_version }}
             </span>
             <h2>{{ stateLabel(system.data.value.overall.state) }}</h2>
-            <p>{{ system.data.value.overall.reason }}</p>
+            <p>{{ contractText(system.data.value.overall.reason) }}</p>
           </div>
           <StatusBadge
             :variant="evidenceVariant(system.data.value.overall.state)"
             :label="stateLabel(system.data.value.overall.state)"
           />
           <div class="formula-note">
-            <strong>Status formula</strong>
-            <span>LIVE requires explicit current success from all eight required probes.</span>
-            <span>CACHED is allowed only when market data alone is 30s–5m old.</span>
-            <span>DEMO SNAPSHOT requires an explicit source flag; missing fields become DEGRADED, never LIVE.</span>
-            <span>OFFLINE means both trading transport and the database-backed market view are unavailable.</span>
+            <strong>{{ t('Status formula', '状态公式') }}</strong>
+            <span>{{ t('LIVE requires explicit current success from all eight required probes.', 'LIVE 要求八个必需探针都提供明确的当前成功证据。') }}</span>
+            <span>{{ t('CACHED is allowed only when market data alone is 30s–5m old.', '只有行情数据单独处于 30 秒至 5 分钟的保留窗口时，才允许显示 CACHED。') }}</span>
+            <span>{{ t('DEMO SNAPSHOT requires an explicit source flag; missing fields become DEGRADED, never LIVE.', 'DEMO SNAPSHOT 必须有明确来源标记；缺失字段只能降级为 DEGRADED，不能变成 LIVE。') }}</span>
+            <span>{{ t('OFFLINE means both trading transport and the database-backed market view are unavailable.', 'OFFLINE 表示交易传输和数据库支持的行情视图都不可用。') }}</span>
           </div>
         </div>
 
         <div class="section-heading provider-heading">
           <div>
-            <h2>Runtime truth</h2>
-            <p>Each state carries its own last success, age, reason, and source.</p>
+            <h2>{{ t('Runtime truth', '运行时事实') }}</h2>
+            <p>{{ t('Each state carries its own last success, age, reason, and source.', '每项状态都携带自己的最近成功时间、数据年龄、原因和来源。') }}</p>
           </div>
         </div>
         <div class="component-grid">
@@ -281,19 +380,19 @@ function sourceModeLabel(value: string | undefined): string {
                 :label="stateLabel(row.status.state)"
               />
             </div>
-            <p>{{ row.status.reason }}</p>
+            <p>{{ contractText(row.status.reason) }}</p>
             <div class="component-meta mono">
-              <span>success {{ evidenceLastSuccess(row.status) }}</span>
+              <span>{{ t('success', '成功') }} {{ evidenceLastSuccess(row.status) }}</span>
               <span>{{ evidenceAge(row.status) }}</span>
             </div>
-            <small>{{ row.status.source }}</small>
+            <small>{{ contractText(row.status.source) }}</small>
           </article>
         </div>
 
         <div class="section-heading provider-heading">
           <div>
-            <h2>Price sources</h2>
-            <p>Route price and reference display price are deliberately separate facts.</p>
+            <h2>{{ t('Price sources', '价格来源') }}</h2>
+            <p>{{ t('Route price and reference display price are deliberately separate facts.', '路线价格与参考展示价是刻意分离的两类事实，绝不互相补值。') }}</p>
           </div>
         </div>
         <div class="price-source-grid">
@@ -304,7 +403,7 @@ function sourceModeLabel(value: string | undefined): string {
             :data-price-source="priceSource.key"
           >
             <div class="component-title">
-              <h3>{{ priceSource.label }}</h3>
+              <h3>{{ priceSourceLabel(priceSource.key, priceSource.label) }}</h3>
               <StatusBadge
                 :variant="evidenceVariant(priceSource.status.state)"
                 :label="stateLabel(priceSource.status.state)"
@@ -312,19 +411,19 @@ function sourceModeLabel(value: string | undefined): string {
             </div>
             <dl>
               <div>
-                <dt>Source</dt>
-                <dd>{{ priceSource.source }}</dd>
+                <dt>{{ t('Source', '来源') }}</dt>
+                <dd>{{ contractText(priceSource.source) }}</dd>
               </div>
               <div>
-                <dt>Meaning</dt>
-                <dd>{{ priceSource.meaning }}</dd>
+                <dt>{{ t('Meaning', '含义') }}</dt>
+                <dd>{{ contractText(priceSource.meaning) }}</dd>
               </div>
               <div>
-                <dt>Boundary</dt>
-                <dd>{{ priceSource.boundary }}</dd>
+                <dt>{{ t('Boundary', '边界') }}</dt>
+                <dd>{{ contractText(priceSource.boundary) }}</dd>
               </div>
               <div>
-                <dt>Last success</dt>
+                <dt>{{ t('Last success', '最近成功') }}</dt>
                 <dd class="mono">
                   {{ evidenceLastSuccess(priceSource.status) }} ·
                   {{ evidenceAge(priceSource.status) }}
@@ -336,8 +435,8 @@ function sourceModeLabel(value: string | undefined): string {
 
         <div class="section-heading provider-heading">
           <div>
-            <h2>Processes & dependencies</h2>
-            <p>A heartbeat proves the process is running, not that its upstream source is usable.</p>
+            <h2>{{ t('Processes & dependencies', '进程与依赖') }}</h2>
+            <p>{{ t('A heartbeat proves the process is running, not that its upstream source is usable.', '心跳只能证明进程正在运行，不能证明它的上游数据源可用。') }}</p>
           </div>
         </div>
         <div class="card detail-card">
@@ -346,29 +445,29 @@ function sourceModeLabel(value: string | undefined): string {
           :key="row.key"
           class="detail-row"
         >
-          <span class="detail-name">{{ row.label }}</span>
+          <span class="detail-name">{{ contractText(row.label) }}</span>
           <StatusBadge
             :variant="evidenceVariant(row.status.state)"
             :label="stateLabel(row.status.state)"
           />
           <span class="detail-meta mono">
-            reported {{ row.raw_status }}
+            {{ t('reported', '报告值') }} {{ row.raw_status }}
           </span>
           <span class="detail-meta detail-reason">
-            {{ row.status.reason }} · {{ row.status.source }}
+            {{ contractText(row.status.reason) }} · {{ contractText(row.status.source) }}
           </span>
         </div>
         </div>
 
         <div class="section-heading provider-heading">
           <div>
-            <h2>Storage & retention</h2>
-            <p>Missing metrics show Unavailable with a reason; they never become zero or healthy by default.</p>
+            <h2>{{ t('Storage & retention', '存储与保留策略') }}</h2>
+            <p>{{ t('Missing metrics show Unavailable with a reason; they never become zero or healthy by default.', '缺失指标会显示“不可用”及原因，绝不会默认变成零或健康。') }}</p>
           </div>
         </div>
         <div class="card detail-card">
         <div class="detail-row">
-          <span class="detail-name">Mac mini free disk</span>
+          <span class="detail-name">{{ t('Mac mini free disk', 'Mac mini 可用磁盘') }}</span>
           <StatusBadge
             :variant="evidenceVariant(system.data.value.components.disk.state)"
             :label="stateLabel(system.data.value.components.disk.state)"
@@ -378,24 +477,24 @@ function sourceModeLabel(value: string | undefined): string {
           </span>
           <span class="detail-meta detail-reason">
             {{ system.data.value.components.disk.reason }} ·
-            warning &lt;{{ formatBytes(system.data.value.storage.warning_below_bytes) }} ·
-            critical &lt;{{ formatBytes(system.data.value.storage.critical_below_bytes) }}
+            {{ t('warning', '告警') }} &lt;{{ formatBytes(system.data.value.storage.warning_below_bytes) }} ·
+            {{ t('critical', '严重') }} &lt;{{ formatBytes(system.data.value.storage.critical_below_bytes) }}
           </span>
         </div>
         <div class="detail-row">
-          <span class="detail-name">PostgreSQL / K-lines</span>
+          <span class="detail-name">{{ t('PostgreSQL / K-lines', 'PostgreSQL / K 线') }}</span>
           <StatusBadge
             :variant="evidenceVariant(system.data.value.components.database.state)"
             :label="stateLabel(system.data.value.components.database.state)"
           />
           <span class="detail-meta mono">
-            DB {{ bytesMetric(system.data.value.storage.database_bytes) }} ·
-            K-lines {{ bytesMetric(system.data.value.storage.kline_table_bytes) }}
+            {{ t('DB', '数据库') }} {{ bytesMetric(system.data.value.storage.database_bytes) }} ·
+            {{ t('K-lines', 'K 线') }} {{ bytesMetric(system.data.value.storage.kline_table_bytes) }}
           </span>
           <span class="detail-meta detail-reason mono">
-            heap {{ bytesMetric(system.data.value.storage.kline_heap_bytes) }} ·
-            indexes {{ bytesMetric(system.data.value.storage.kline_index_bytes) }} ·
-            rows {{ numberMetric(system.data.value.storage.kline_estimated_rows) }}
+            {{ t('heap', '数据') }} {{ bytesMetric(system.data.value.storage.kline_heap_bytes) }} ·
+            {{ t('indexes', '索引') }} {{ bytesMetric(system.data.value.storage.kline_index_bytes) }} ·
+            {{ t('rows', '行数') }} {{ numberMetric(system.data.value.storage.kline_estimated_rows) }}
           </span>
         </div>
         <div
@@ -403,35 +502,35 @@ function sourceModeLabel(value: string | undefined): string {
           :key="item.interval"
           class="detail-row"
         >
-          <span class="detail-name mono">{{ item.interval }} candles</span>
+          <span class="detail-name mono">{{ item.interval }} {{ t('candles', 'K 线') }}</span>
           <StatusBadge
             :variant="item.oldest_at.available || item.newest_at.available ? 'accent' : 'stale'"
-            :label="item.oldest_at.available || item.newest_at.available ? 'OBSERVED' : 'UNAVAILABLE'"
+            :label="item.oldest_at.available || item.newest_at.available ? t('OBSERVED', '已观测') : t('UNAVAILABLE', '不可用')"
           />
-          <span class="detail-meta mono">oldest {{ timeMetric(item.oldest_at) }}</span>
+          <span class="detail-meta mono">{{ t('oldest', '最早') }} {{ timeMetric(item.oldest_at) }}</span>
           <span class="detail-meta detail-reason mono">
-            newest {{ timeMetric(item.newest_at) }} ·
-            policy {{ item.interval === '1d' ? 'indefinite' : 'bounded' }}
+            {{ t('newest', '最新') }} {{ timeMetric(item.newest_at) }} ·
+            {{ t('policy', '策略') }} {{ item.interval === '1d' ? t('indefinite', '永久') : t('bounded', '有界保留') }}
           </span>
         </div>
         <div class="detail-row">
-          <span class="detail-name">Retention job</span>
+          <span class="detail-name">{{ t('Retention job', '保留任务') }}</span>
           <StatusBadge
             :variant="evidenceVariant(system.data.value.components.retention.state)"
             :label="stateLabel(system.data.value.components.retention.state)"
           />
           <span class="detail-meta mono">
-            success {{ timeMetric(system.data.value.storage.retention_last_success_at) }} ·
-            started {{ timeMetric(system.data.value.storage.retention_last_started_at) }}
+            {{ t('success', '成功') }} {{ timeMetric(system.data.value.storage.retention_last_success_at) }} ·
+            {{ t('started', '开始') }} {{ timeMetric(system.data.value.storage.retention_last_started_at) }}
           </span>
           <span class="detail-meta detail-reason">
-            {{ system.data.value.storage.retention_last_error ||
-              system.data.value.components.retention.reason }}
+            {{ contractText(system.data.value.storage.retention_last_error ||
+              system.data.value.components.retention.reason) }}
           </span>
         </div>
         <div class="detail-row">
-          <span class="detail-name">Deleted rows · last run</span>
-          <StatusBadge variant="accent" label="EVIDENCE" />
+          <span class="detail-name">{{ t('Deleted rows · last run', '最近一次删除行数') }}</span>
+          <StatusBadge variant="accent" :label="t('EVIDENCE', '证据')" />
           <span class="detail-meta mono">
             1m {{ numberMetric(system.data.value.storage.retention_deleted_rows['1m']) }} ·
             15m {{ numberMetric(system.data.value.storage.retention_deleted_rows['15m']) }}
@@ -444,8 +543,8 @@ function sourceModeLabel(value: string | undefined): string {
 
         <div class="section-heading provider-heading">
           <div>
-            <h2>Data sources</h2>
-            <p>Operational health follows the active capability; rollout readiness remains evidence-only and requires a manual CLI action.</p>
+            <h2>{{ t('Data sources', '数据源') }}</h2>
+            <p>{{ t('Operational health follows the active capability; rollout readiness remains evidence-only and requires a manual CLI action.', '运行健康度以当前启用能力为准；切流就绪状态只是证据，仍需人工执行 CLI 操作。') }}</p>
           </div>
         </div>
         <div class="card detail-card">
@@ -458,55 +557,55 @@ function sourceModeLabel(value: string | undefined): string {
             <div>
               <span class="detail-name provider-name">{{ provider.provider }}</span>
               <span class="provider-meta">
-                {{ provider.local_preview_enabled ? 'local preview' : (provider.rollout_mode || 'unconfigured') }} ·
+                {{ provider.local_preview_enabled ? t('local preview', '本地预览') : (provider.rollout_mode || t('unconfigured', '未配置')) }} ·
                 Top {{ provider.rank_limit || '—' }} ·
                 {{ feedModeLabel(provider.feed_mode) }} ·
-                success {{ provider.success_rate_pct ? `${provider.success_rate_pct}%` : '—' }}
+                {{ t('success', '成功率') }} {{ provider.success_rate_pct ? `${provider.success_rate_pct}%` : '—' }}
               </span>
               <span class="provider-meta evidence-line">
-                {{ provider.received_count }} received · {{ provider.matched_asset_count }} matched ·
-                {{ provider.local_preview_enabled ? provider.preview_covered_count : provider.price_available_count }} priced ·
-                {{ provider.change_available_count }} with 24h ·
-                operational {{ provider.operational_status || 'Unknown' }}
+                {{ provider.received_count }} {{ t('received', '已接收') }} · {{ provider.matched_asset_count }} {{ t('matched', '已匹配') }} ·
+                {{ provider.local_preview_enabled ? provider.preview_covered_count : provider.price_available_count }} {{ t('priced', '有价格') }} ·
+                {{ provider.change_available_count }} {{ t('with 24h', '含 24h 涨跌') }} ·
+                {{ t('operational', '运行状态') }} {{ provider.operational_status || t('Unknown', '未知') }}
               </span>
               <span v-if="provider.selection_version" class="provider-meta evidence-line">
-                selection v{{ provider.selection_version }} ·
-                {{ provider.selection_count }}/{{ provider.selection_target_count }} selected ·
-                {{ provider.selection_candidate_count }} valid Top 200 candidates ·
-                generated {{ formatTime(provider.selection_generated_at || null) }}
+                {{ t('selection', '入选集') }} v{{ provider.selection_version }} ·
+                {{ provider.selection_count }}/{{ provider.selection_target_count }} {{ t('selected', '已入选') }} ·
+                {{ provider.selection_candidate_count }} {{ t('valid Top 200 candidates', '个有效 Top 200 候选') }} ·
+                {{ t('generated', '生成于') }} {{ formatTime(provider.selection_generated_at || null) }}
               </span>
               <span v-if="provider.kline_status" class="provider-meta evidence-line">
-                K-lines {{ provider.kline_status }} ·
-                {{ provider.kline_market_count }}/{{ provider.selection_count || provider.selection_target_count }} markets ·
-                {{ provider.kline_candle_count }} source candles this cycle ·
-                success {{ formatTime(provider.kline_last_success_at || null) }}
+                {{ t('K-lines', 'K 线') }} {{ provider.kline_status }} ·
+                {{ provider.kline_market_count }}/{{ provider.selection_count || provider.selection_target_count }} {{ t('markets', '个市场') }} ·
+                {{ provider.kline_candle_count }} {{ t('source candles this cycle', '根本周期来源 K 线') }} ·
+                {{ t('success', '成功') }} {{ formatTime(provider.kline_last_success_at || null) }}
               </span>
             </div>
             <StatusBadge
               :variant="providerStatusVariant(provider.status)"
-              :label="provider.status"
+              :label="providerStatusLabel(provider.status)"
             />
-            <span class="detail-meta mono">last success {{ formatTime(provider.last_success_at || null) }}</span>
+            <span class="detail-meta mono">{{ t('last success', '最近成功') }} {{ formatTime(provider.last_success_at || null) }}</span>
             <span class="detail-meta mono">
               {{ provider.rollout_ready
-                ? 'ready for manual promotion'
+                ? t('ready for manual promotion', '已具备人工切流条件')
                 : provider.readiness_not_before
-                  ? `not before ${formatTime(provider.readiness_not_before)}`
+                  ? t(`not before ${formatTime(provider.readiness_not_before)}`, `最早于 ${formatTime(provider.readiness_not_before)}`)
                   : provider.next_retry_at
-                ? `retry ${formatTime(provider.next_retry_at)}`
-                : provider.last_error_class || (provider.min_soak_until ? `soak until ${formatTime(provider.min_soak_until)}` : 'no active error') }}
+                ? t(`retry ${formatTime(provider.next_retry_at)}`, `重试于 ${formatTime(provider.next_retry_at)}`)
+                : provider.last_error_class || (provider.min_soak_until ? t(`soak until ${formatTime(provider.min_soak_until)}`, `观察至 ${formatTime(provider.min_soak_until)}`) : t('no active error', '无当前错误')) }}
             </span>
           </div>
           <div v-if="provider.rollout_blockers.length" class="rollout-blockers">
-            <strong>Promotion blockers</strong>
+            <strong>{{ t('Promotion blockers', '切流阻塞项') }}</strong>
             <span v-for="blocker in provider.rollout_blockers.slice(0, 3)" :key="blocker">{{ blocker }}</span>
             <span v-if="provider.rollout_blockers.length > 3">
-              +{{ provider.rollout_blockers.length - 3 }} more in rollout-status JSON
+              +{{ provider.rollout_blockers.length - 3 }} {{ t('more in rollout-status JSON', '项见 rollout-status JSON') }}
             </span>
           </div>
           <details v-if="provider.sources.length" class="source-details">
             <summary>
-              {{ provider.sources.length }} capability observation{{ provider.sources.length === 1 ? '' : 's' }}
+              {{ provider.sources.length }} {{ t(`capability observation${provider.sources.length === 1 ? '' : 's'}`, '项能力观测') }}
             </summary>
             <div class="source-matrix">
               <div v-for="source in provider.sources" :key="source.source_key" class="source-row">
@@ -516,7 +615,7 @@ function sourceModeLabel(value: string | undefined): string {
                 </span>
                 <StatusBadge
                   :variant="providerStatusVariant(source.status)"
-                  :label="source.status"
+                  :label="providerStatusLabel(source.status)"
                 />
                 <span class="detail-meta mono">
                   {{ source.success_count }}/{{ source.attempt_count }}
@@ -524,10 +623,10 @@ function sourceModeLabel(value: string | undefined): string {
                 </span>
                 <span class="detail-meta mono">
                   {{ source.matched_asset_count
-                    ? `${source.matched_asset_count} matched · ${source.written_count || source.received_count} rows`
+                    ? t(`${source.matched_asset_count} matched · ${source.written_count || source.received_count} rows`, `${source.matched_asset_count} 已匹配 · ${source.written_count || source.received_count} 行`)
                     : source.next_retry_at
-                      ? `retry ${formatTime(source.next_retry_at)}`
-                      : `success ${formatTime(source.last_success_at || null)}` }}
+                      ? t(`retry ${formatTime(source.next_retry_at)}`, `重试于 ${formatTime(source.next_retry_at)}`)
+                      : t(`success ${formatTime(source.last_success_at || null)}`, `成功于 ${formatTime(source.last_success_at || null)}`) }}
                 </span>
               </div>
             </div>
@@ -537,7 +636,7 @@ function sourceModeLabel(value: string | undefined): string {
           v-if="!system.data.value.provider_statuses.length"
           class="provider-empty"
         >
-          No provider observations recorded yet.
+          {{ t('No provider observations recorded yet.', '尚未记录任何数据源观测。') }}
         </div>
         </div>
       </template>

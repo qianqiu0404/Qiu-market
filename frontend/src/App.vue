@@ -6,22 +6,72 @@ import type { IconName } from './components/AppIcon.vue'
 import { usePolling } from './composables/usePolling'
 import { getSystemOverview } from './api/market'
 import { isHealthyStatus } from './utils/format'
+import { useI18n, type Locale } from './i18n'
 
 interface NavItem {
   to: string
-  label: string
+  label: { en: string; 'zh-CN': string }
   icon: IconName
 }
 
 const NAV: NavItem[] = [
-  { to: '/markets', label: 'Markets', icon: 'markets' },
-  { to: '/trade/BTC-USDT', label: 'Trade', icon: 'trade' },
-  { to: '/insights', label: 'Insights', icon: 'analytics' },
-  { to: '/system', label: 'System', icon: 'system' },
+  { to: '/markets', label: { en: 'Markets', 'zh-CN': '行情' }, icon: 'markets' },
+  { to: '/trade/BTC-USDT', label: { en: 'Trade', 'zh-CN': '交易' }, icon: 'trade' },
+  { to: '/insights', label: { en: 'Insights', 'zh-CN': '洞察' }, icon: 'analytics' },
+  { to: '/system', label: { en: 'System', 'zh-CN': '系统' }, icon: 'system' },
 ]
 
 const route = useRoute()
 const drawerOpen = ref(false)
+const { locale, setLocale } = useI18n()
+
+const copy = computed(() => locale.value === 'zh-CN' ? {
+  brandSub: '行情数据平台',
+  openNavigation: '打开导航',
+  closeNavigation: '关闭导航',
+  language: '语言',
+  apiOffline: 'API 离线',
+  connecting: '正在连接…',
+  coreRunning: '核心进程运行中',
+  coreDown: '核心进程全部停止',
+  coreDegraded: (count: number) => `${count} 个核心进程异常`,
+} : {
+  brandSub: 'Market Data Platform',
+  openNavigation: 'Open navigation',
+  closeNavigation: 'Close navigation',
+  language: 'Language',
+  apiOffline: 'API offline',
+  connecting: 'Connecting…',
+  coreRunning: 'Core processes running',
+  coreDown: 'Core processes down',
+  coreDegraded: (count: number) => `${count} core process${count > 1 ? 'es' : ''} degraded`,
+})
+
+function navLabel(item: NavItem): string {
+  return item.label[locale.value]
+}
+
+function chooseLocale(value: Locale): void {
+  setLocale(value)
+}
+
+const routeTitles: Record<string, { en: string; 'zh-CN': string }> = {
+  markets: { en: 'Markets', 'zh-CN': '行情' },
+  'market-detail': { en: 'Market Chart', 'zh-CN': '市场图表' },
+  'trade-btc-usdt': { en: 'Virtual Spot', 'zh-CN': '虚拟现货' },
+  insights: { en: 'Insights', 'zh-CN': '市场洞察' },
+  system: { en: 'System', 'zh-CN': '系统状态' },
+  'not-found': { en: 'Not Found', 'zh-CN': '页面不存在' },
+}
+
+watch(
+  [() => route.name, locale],
+  ([name]) => {
+    const title = typeof name === 'string' ? routeTitles[name]?.[locale.value] : ''
+    document.title = title ? `${title} · Qiu Market` : 'Qiu Market'
+  },
+  { immediate: true },
+)
 
 watch(
   () => route.fullPath,
@@ -34,9 +84,9 @@ watch(
 const { data: overview, error } = usePolling(getSystemOverview, { interval: 30_000 })
 
 const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() => {
-  if (error.value) return { tone: 'down', label: 'API offline' }
+  if (error.value) return { tone: 'down', label: copy.value.apiOffline }
   const ov = overview.value
-  if (!ov) return { tone: 'degraded', label: 'Connecting…' }
+  if (!ov) return { tone: 'degraded', label: copy.value.connecting }
   const statuses = [
     ov.crawler_status,
     ov.redis_status,
@@ -45,16 +95,16 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
     ov.api_status,
   ]
   const unhealthy = statuses.filter((s) => !isHealthyStatus(s)).length
-  if (unhealthy === 0) return { tone: 'ok', label: 'Core processes running' }
-  if (unhealthy >= statuses.length) return { tone: 'down', label: 'Core processes down' }
-  return { tone: 'degraded', label: `${unhealthy} core process${unhealthy > 1 ? 'es' : ''} degraded` }
+  if (unhealthy === 0) return { tone: 'ok', label: copy.value.coreRunning }
+  if (unhealthy >= statuses.length) return { tone: 'down', label: copy.value.coreDown }
+  return { tone: 'degraded', label: copy.value.coreDegraded(unhealthy) }
 })
 </script>
 
 <template>
   <div class="app-shell">
     <header class="topbar">
-      <button type="button" class="topbar-menu" aria-label="Open navigation" @click="drawerOpen = true">
+      <button type="button" class="topbar-menu" :aria-label="copy.openNavigation" @click="drawerOpen = true">
         <AppIcon name="menu" :size="20" />
       </button>
       <span class="topbar-brand">Qiu Market</span>
@@ -67,12 +117,12 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
         <span class="brand-tile">Q</span>
         <span class="brand-text">
           <span class="brand-name">Qiu Market</span>
-          <span class="brand-sub">Market Data Platform</span>
+          <span class="brand-sub">{{ copy.brandSub }}</span>
         </span>
         <button
           type="button"
           class="drawer-close"
-          aria-label="Close navigation"
+          :aria-label="copy.closeNavigation"
           @click="drawerOpen = false"
         >
           <AppIcon name="close" :size="18" />
@@ -86,12 +136,31 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
           :to="item.to"
           class="nav-item"
           active-class="active"
-          :title="item.label"
+          :title="navLabel(item)"
         >
           <AppIcon :name="item.icon" :size="18" />
-          <span class="nav-label">{{ item.label }}</span>
+          <span class="nav-label">{{ navLabel(item) }}</span>
         </RouterLink>
       </nav>
+
+      <div class="locale-switch" role="group" :aria-label="copy.language">
+        <button
+          type="button"
+          :class="{ active: locale === 'zh-CN' }"
+          :aria-pressed="locale === 'zh-CN'"
+          @click="chooseLocale('zh-CN')"
+        >
+          中文
+        </button>
+        <button
+          type="button"
+          :class="{ active: locale === 'en' }"
+          :aria-pressed="locale === 'en'"
+          @click="chooseLocale('en')"
+        >
+          EN
+        </button>
+      </div>
 
       <div class="sidebar-footer">
         <span class="health-dot" :class="`health-dot--${health.tone}`"></span>
@@ -221,6 +290,35 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
   overflow: hidden;
 }
 
+.locale-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin: 0 12px 12px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel-2);
+}
+
+.locale-switch button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.locale-switch button.active {
+  background: var(--bg-panel);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(15, 42, 72, 0.08);
+}
+
 .health-dot {
   width: 8px;
   height: 8px;
@@ -279,6 +377,18 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
   .brand-text,
   .nav-label {
     display: none;
+  }
+
+  .locale-switch {
+    grid-template-columns: 1fr;
+    margin: 0 5px 10px;
+    padding: 2px;
+  }
+
+  .locale-switch button {
+    min-height: 26px;
+    padding: 0;
+    font-size: 9px;
   }
 
   .nav-item {
@@ -344,6 +454,18 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
   .sidebar .nav-group-label,
   .sidebar .nav-label {
     display: flex;
+  }
+
+  .sidebar .locale-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    margin: 0 12px 12px;
+    padding: 3px;
+  }
+
+  .sidebar .locale-switch button {
+    min-height: 32px;
+    font-size: 11px;
   }
 
   .sidebar .nav-group-label {

@@ -108,6 +108,23 @@ rejected / older tick rejected`。超过五分钟就 Unavailable。
 
 WebSocket 连接前先领取一次性 ticket，并携带最后 cursor 重连。连接状态、撮合恢复状态和重试原因必须可见。可信参考或 K 线缺失时显示 unavailable；不得用静态 BTC、随机蜡烛或过期响应填图。
 
+### Insights / System 双语展示契约
+
+侧栏提供 `中文 / EN` 展示语言切换。选择保存在浏览器
+`localStorage` 的 `qiu-market.locale`；首次访问没有保存值时，按浏览器语言列表选择
+中文或英文，不支持的语言回退英文。切换只改变界面文案、图表标签和
+`<html lang>`，不改变 API 参数、资产身份、价格语义、状态公式或后端错误事实。
+
+本轮双语范围固定为全局导航、共享错误/刷新文案、Insights 和 System 主 Status：
+
+- Insights 明确解释市场宽度、跨场所比较和历史动量都是研究信号，不是可执行价格；
+- System 明确解释它只读观察撮合、流动性、传输、数据库、磁盘、保留任务和数据源，
+  不提供启动、停止或切流控制；
+- System 从版本化状态契约返回的固定 reason/source 只翻译已知枚举或固定句子，未知
+  文本保留原文，避免翻译器猜测运维事实；
+- Catalog Audit、Assets、Exchanges、Symbols 的 tab 名称已双语，但其独立页面正文留到
+  后续单独治理，不能声称全站已经国际化。
+
 ## 交互与信息层级
 
 资产行固定为 Rank、Asset、Price、24h、Market Cap、Venue Volume、Markets/Routes、Quality。All 的 Price 是 CEX 综合 Spot；CEX tab 是 venue Spot。All 标题展示 `N/并集数 fresh`；CEX 标题展示 `N/50 fresh · selection vX`。24h 缺失不再只有无解释横杠，而是显示 `24h reference missing`、Stale 或 Source unavailable。抽屉请求携带当前 venue：All 展示所有来源，CEX tab 只展示该交易所。1180/1280/1440 不改变核心字段。
@@ -155,6 +172,9 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 7. **价格事实不在组件内重新拼装。** 被拒绝的是让 `Markets.vue` 从 price/source/time 多个字段猜当前语义；响应稍大，但旧缓存、乱序响应和 route/reference 切换都有同一校验单位。
 8. **generation + 单调事实门，而不是只看 query key。** 被拒绝的是 A→B→A 时复用同 key，也拒绝“最后返回者获胜”；代价是保存一个小型 venue+asset last-good map，但请求竞态不会改写来源。
 9. **DEX 永久双栏，而不是选一个“最好看的价格”。** 被拒绝的是 route 新鲜时覆盖 reference、route 过期时再把 reference 改名为 route。代价是 DEX 行更高、字段更多，但链上指示价与市场参考永远不会静默换口径。
+10. **使用小型、类型化的本地语言状态，不引入完整翻译框架。** 当前只有两种语言和
+    两个深度页面；引入第三方 i18n 运行时会增加包体和迁移成本。代价是文案暂时由页面
+    内类型化 copy 维护；当第三个语言或更多页面进入范围时，再迁移成独立消息目录。
 
 ## 关键代码入口与顺序
 
@@ -165,6 +185,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 5. `frontend/src/views/Trade.vue`：参考/K 线、订单簿、下单、余额、订单与成交。
 6. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
 7. `frontend/src/composables/usePolling.ts`：可见性暂停、恢复刷新和卸载清理。
+8. `frontend/src/i18n.ts`：语言规范化、浏览器回退、持久化和 `<html lang>` 同步。
 
 ## 术语
 
@@ -205,6 +226,8 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | 可信 BTC 参考或 K 线缺失 | 对应卡片显示 unavailable，不生成假图 | 行情源产生新鲜可信数据 |
 | WebSocket 断开 | 显示重连状态并保留 cursor | 新 ticket 建连后补发 |
 | session/CSRF 失效 | 清除私有视图并要求重新登录 | 重新建立合法会话 |
+| localStorage 不可用 | 当前标签页仍可切换语言，但不承诺刷新后保留 | 浏览器存储恢复后下次选择重新持久化 |
+| 后端返回未知状态原因 | 中文界面保留原始 reason/source，不猜测翻译 | 后端契约新增固定枚举后补充显式映射 |
 | provider 为 shadow/paused | 目录可见，正式 venue snapshot 为 unavailable | CLI 串行切入 canary/enabled |
 | venue 参数未知 | HTTP 400 / gRPC InvalidArgument，不静默回退 All | 调用方改用八个受支持值之一 |
 
@@ -255,9 +278,17 @@ spec 验收。
 - `production-recommendation`：将 generation rejection、source mismatch 与
   last-good age 暴露为长期指标和告警，不把测试注入当作线上事故证据。
 
+2026-08-04 的双语专项另行执行：Vitest 12 files / 78 tests、Vue production
+build、System Playwright 8/8、Insights Playwright 1/1 与 `git diff --check` 通过。
+本地 Chrome 还验证了中文/英文切换、刷新持久化、`html lang` 更新且无 Vite error
+overlay。开发服务器直连受保护的本地 API 会按预期得到 trusted-proxy 401；这不是
+Production BFF 的集成证据，因此本轮双语仍是 `build-verified`，尚未部署 Production。
+
 ## Owner 60 秒解释
 
 > 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact。DEX 的 Route 和 Reference 永远分栏，route 最多读 60 秒，过期会同时失去链上价格、涨跌、成交额、来源和质量；reference 只保留自己的标签。3 秒 CEX tick 绑定 query generation，再检查 venue identity、version 和 observed time；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。
+
+> Insights 用来研究市场宽度、跨场所比较和历史动量；System 用来只读解释撮合、流动性、传输、存储和来源健康，不执行启停或切流。中文/英文只是展示层状态，保存在浏览器本地；它不会改变 API 契约、价格来源或状态公式，未知运维原因也不会被猜测翻译。
 
 ## 闭卷自检
 

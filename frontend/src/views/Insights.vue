@@ -27,8 +27,138 @@ import {
   freshnessFromDelay,
   isHealthyStatus,
 } from '../utils/format'
+import { useI18n } from '../i18n'
 
 echarts.use([BarChart, ScatterChart, GridComponent, TooltipComponent, CanvasRenderer])
+
+const { locale } = useI18n()
+const copy = computed(() => locale.value === 'zh-CN' ? {
+  title: '市场洞察',
+  subtitle: '用于分析市场宽度、跨场所价差和固定时间窗口的历史动量；这里展示研究信号，不提供可执行交易价格。',
+  selectionTitle: '数据源入选覆盖',
+  selectionDescription: '每个数据源都有稳定且经过审核的资产集合。CEX 目标为 50 项；DEX 只统计通过身份与路线资格校验的真实资产；All 是 CEX 资产的去重并集。',
+  unavailable: '不可用',
+  cexDispersion: 'CEX 报价离散度',
+  cexDispersionHint: '最高价减最低价，再除以中间价',
+  asset: '资产',
+  venues: '场所数',
+  dispersion: '离散度',
+  noDispersion: '暂无资产同时拥有两个新鲜的 CEX 报价。',
+  dexMonitor: 'DEX 路线路径监控',
+  dexMonitorHint: '按 $10K / $1K / $100 分档询价；不是套利信号',
+  provider: '数据源',
+  routes: '路线数',
+  quality: '质量',
+  noDexRoutes: '暂无通过审核的 DEX 路线正在发布报价。',
+  breadthTitle: '24 小时市场宽度 · 完整目录',
+  breadthDescription: '使用更广的活跃市场目录，独立于四家 CEX 的入选并集。每项资产只采用一个参考市场；缺失涨跌幅仍记为未知。',
+  assets: '资产数',
+  unknown: '未知',
+  advancing: '上涨',
+  knownRatio: '占已知资产',
+  declining: '下跌',
+  unchanged: '持平',
+  median24h: '24h 中位数',
+  assetMedian: '资产级中位数',
+  turnover24h: '24h 成交额',
+  notFxNormalized: 'USD 系资产，未做外汇归一',
+  changeDistribution: '涨跌分布',
+  knownAssets: '个已知资产',
+  crossVenueTitle: '跨场所监控',
+  crossVenueDescription: '比较同一资产的现货与永续合约指示价；结果不是可执行套利价格。',
+  noSharedAssets: '暂无共享资产',
+  noSharedAssetsMessage: '当前没有同时具备活跃现货与永续市场的资产。',
+  spot: '现货',
+  perp: '永续',
+  indicativeSpread: '指示价差',
+  changeGap24h: '24h 涨跌差',
+  turnoverShare: '成交额占比',
+  freshness: '新鲜度',
+  historicalTitle: '历史动量',
+  historicalDescription: '只使用已闭合的 1 小时 K 线。覆盖率低于 90% 的资产保留在表格中，但不进入散点图。',
+  momentumWindow: '动量窗口',
+  historicalNoData: '历史模块暂无数据',
+  historicalNoDataMessage: 'Doris 可能不可用，或所选闭合 K 线窗口尚未同步。实时市场宽度不受此模块影响。',
+  returnVolatility: '收益率 × 波动率',
+  plotted: '个已绘制',
+  lowCoverage: '个低覆盖',
+  noCoverageAssets: '没有资产达到覆盖率门槛',
+  noCoverageAssetsMessage: '下方表格仍可查看。资产需要至少覆盖 90% 的预期闭合 1 小时 K 线，才会进入比较图。',
+  referenceMarket: '参考市场',
+  return: '收益率',
+  volatility1h: '1h 波动率',
+  highLowRange: '高低区间',
+  coverage: '覆盖率',
+  candles: 'K 线数',
+  low: '低',
+  historicalUnavailable: (status: string) => `历史动量不可用，因为 Doris 当前状态为 ${status || '未配置'}。`,
+  tooltipAssets: '项资产',
+  volatility: '波动率',
+  range: '区间',
+} : {
+  title: 'Insights',
+  subtitle: 'Analyze market breadth, cross-venue spreads, and fixed-window historical momentum. These are research signals, not executable prices.',
+  selectionTitle: 'Provider Selection Coverage',
+  selectionDescription: 'Every provider owns a stable reviewed selection. CEX targets 50; DEX shows only the real assets it can qualify. All remains the deduplicated CEX union.',
+  unavailable: 'Unavailable',
+  cexDispersion: 'CEX Quote Dispersion',
+  cexDispersionHint: 'max minus min, relative to midpoint',
+  asset: 'Asset',
+  venues: 'Venues',
+  dispersion: 'Dispersion',
+  noDispersion: 'No asset has two fresh CEX quotes yet.',
+  dexMonitor: 'DEX Route Monitor',
+  dexMonitorHint: 'tiered $10K / $1K / $100 indicative routes; not an arbitrage signal',
+  provider: 'Provider',
+  routes: 'Routes',
+  quality: 'Quality',
+  noDexRoutes: 'No reviewed DEX route is publishing a quote.',
+  breadthTitle: '24h Market Breadth · Full Catalog',
+  breadthDescription: 'Broader active-market catalog, independent from the four CEX selection union. One reference-market vote per asset; missing changes remain Unknown.',
+  assets: 'Assets',
+  unknown: 'unknown',
+  advancing: 'Advancing',
+  knownRatio: 'of known',
+  declining: 'Declining',
+  unchanged: 'unchanged',
+  median24h: 'Median 24h',
+  assetMedian: 'Asset-level median',
+  turnover24h: '24h Turnover',
+  notFxNormalized: 'USD-family not FX-normalized',
+  changeDistribution: 'Change distribution',
+  knownAssets: 'known assets',
+  crossVenueTitle: 'Cross-Venue Monitor',
+  crossVenueDescription: 'Indicative spot–perp comparison for shared assets. This is not an executable arbitrage price.',
+  noSharedAssets: 'No shared assets',
+  noSharedAssetsMessage: 'No active asset currently has both a spot and perpetual market.',
+  spot: 'Spot',
+  perp: 'Perp',
+  indicativeSpread: 'Indicative Spread',
+  changeGap24h: '24h Change Gap',
+  turnoverShare: 'Turnover Share',
+  freshness: 'Freshness',
+  historicalTitle: 'Historical Momentum',
+  historicalDescription: 'Closed 1h candles only. Coverage below 90% stays in the table but is excluded from the scatter plot.',
+  momentumWindow: 'Momentum window',
+  historicalNoData: 'Historical module has no data',
+  historicalNoDataMessage: 'Doris may be unavailable or the selected closed-candle window has not been synchronized yet. Real-time breadth remains independent.',
+  returnVolatility: 'Return × volatility',
+  plotted: 'plotted',
+  lowCoverage: 'low coverage',
+  noCoverageAssets: 'No assets meet the coverage threshold',
+  noCoverageAssetsMessage: 'The table remains available below. Assets need at least 90% of expected closed 1h candles before they appear in this comparison.',
+  referenceMarket: 'Reference Market',
+  return: 'Return',
+  volatility1h: '1h Volatility',
+  highLowRange: 'High–Low Range',
+  coverage: 'Coverage',
+  candles: 'Candles',
+  low: 'Low',
+  historicalUnavailable: (status: string) => `Historical momentum is unavailable because Doris is ${status || 'not configured'}.`,
+  tooltipAssets: 'assets',
+  volatility: 'Volatility',
+  range: 'Range',
+})
 
 const WINDOWS: Array<{ value: MomentumWindow; label: string }> = [
   { value: '24h', label: '24H' },
@@ -42,9 +172,7 @@ const venues = usePolling(getTop50VenueInsights, { interval: 30_000 })
 async function getAvailableMomentum() {
   const system = await getSystemOverview()
   if (!isHealthyStatus(system.dw_status)) {
-    throw new Error(
-      `Historical momentum is unavailable because Doris is ${system.dw_status || 'not configured'}.`,
-    )
+    throw new Error(copy.value.historicalUnavailable(system.dw_status))
   }
   return getAssetMomentum(windowValue.value)
 }
@@ -106,7 +234,7 @@ function renderDistribution(): void {
         formatter: (params: unknown) => {
           const list = Array.isArray(params) ? (params as Array<{ dataIndex: number }>) : []
           const row = rows[list[0]?.dataIndex ?? -1]
-          return row ? `${row.label}<br/><strong>${row.count}</strong> assets` : ''
+          return row ? `${row.label}<br/><strong>${row.count}</strong> ${copy.value.tooltipAssets}` : ''
         },
       },
       series: [
@@ -145,14 +273,14 @@ function renderMomentum(): void {
       },
       xAxis: {
         type: 'value',
-        name: 'Volatility %',
+        name: `${copy.value.volatility} %`,
         nameTextStyle: { color: '#6E6E73', fontSize: 10 },
         axisLabel: { color: '#6E6E73', fontSize: 10, formatter: '{value}%' },
         splitLine: { lineStyle: { color: '#ECECF0' } },
       },
       yAxis: {
         type: 'value',
-        name: 'Return %',
+        name: `${copy.value.return} %`,
         nameTextStyle: { color: '#6E6E73', fontSize: 10 },
         axisLabel: { color: '#6E6E73', fontSize: 10, formatter: '{value}%' },
         splitLine: { lineStyle: { color: '#ECECF0' } },
@@ -167,10 +295,10 @@ function renderMomentum(): void {
           if (!value) return ''
           return [
             `<strong>${value.asset_symbol}</strong> · ${value.exchange}`,
-            `Return ${formatPercent(value.return_pct)}`,
-            `Volatility ${formatPercent(value.volatility_pct)}`,
-            `Range ${formatPercent(value.high_low_range_pct)}`,
-            `Coverage ${value.coverage_pct.toFixed(1)}%`,
+            `${copy.value.return} ${formatPercent(value.return_pct)}`,
+            `${copy.value.volatility} ${formatPercent(value.volatility_pct)}`,
+            `${copy.value.range} ${formatPercent(value.high_low_range_pct)}`,
+            `${copy.value.coverage} ${value.coverage_pct.toFixed(1)}%`,
           ].join('<br/>')
         },
       },
@@ -192,6 +320,10 @@ function renderMomentum(): void {
 
 watch(() => realtime.data.value?.distribution, renderDistribution, { deep: true })
 watch(chartMomentum, renderMomentum)
+watch(locale, () => {
+  renderDistribution()
+  renderMomentum()
+})
 watch(distributionEl, (value) => value && renderDistribution())
 watch(momentumEl, (value) => {
   if (!value) {
@@ -221,16 +353,16 @@ function signedClass(value: number): string {
 <template>
   <section>
     <PageHeader
-      title="Insights"
-      subtitle="Market breadth, spot–perp comparison and fixed-window historical momentum"
+      :title="copy.title"
+      :subtitle="copy.subtitle"
       :refreshed-at="realtime.lastUpdated.value"
     />
 
     <section class="insight-section">
       <div class="section-heading">
         <div>
-          <h2>Provider Selection Coverage</h2>
-          <p>Every provider owns a stable reviewed selection. CEX targets 50; DEX shows only the real assets it can qualify. All remains the deduplicated CEX union.</p>
+          <h2>{{ copy.selectionTitle }}</h2>
+          <p>{{ copy.selectionDescription }}</p>
         </div>
       </div>
       <ErrorState v-if="venues.error.value && !venues.data.value" :message="venues.error.value" @retry="venues.refresh" />
@@ -240,19 +372,19 @@ function signedClass(value: number): string {
           <article v-for="row in venueCoverage" :key="row.venue" class="card coverage-card">
             <span>{{ row.venue }}</span>
             <strong v-if="row.available" class="num">{{ row.priced }} / {{ row.total }}</strong>
-            <strong v-else class="unavailable">Unavailable</strong>
+            <strong v-else class="unavailable">{{ copy.unavailable }}</strong>
             <small>{{ row.available ? `${row.coverage_pct.toFixed(1)}% ${row.coverage_kind}` : row.error }}</small>
           </article>
         </div>
         <div class="monitor-grid">
           <div class="table-card card">
             <div class="monitor-title">
-              <strong>CEX Quote Dispersion</strong>
-              <small>max minus min, relative to midpoint</small>
+              <strong>{{ copy.cexDispersion }}</strong>
+              <small>{{ copy.cexDispersionHint }}</small>
             </div>
             <div class="table-scroll">
               <table class="compact-table">
-                <thead><tr><th>Asset</th><th>Venues</th><th class="align-right">Dispersion</th></tr></thead>
+                <thead><tr><th>{{ copy.asset }}</th><th>{{ copy.venues }}</th><th class="align-right">{{ copy.dispersion }}</th></tr></thead>
                 <tbody v-if="cexDispersion.length">
                   <tr v-for="row in cexDispersion" :key="row.asset_id">
                     <td class="asset-symbol">{{ row.asset_symbol }}</td>
@@ -260,18 +392,18 @@ function signedClass(value: number): string {
                     <td class="align-right num">{{ formatPercent(row.dispersion_pct, 3) }}</td>
                   </tr>
                 </tbody>
-                <tbody v-else><tr><td colspan="3" class="unavailable">No asset has two fresh CEX quotes yet.</td></tr></tbody>
+                <tbody v-else><tr><td colspan="3" class="unavailable">{{ copy.noDispersion }}</td></tr></tbody>
               </table>
             </div>
           </div>
           <div class="table-card card">
             <div class="monitor-title">
-              <strong>DEX Route Monitor</strong>
-              <small>tiered $10K / $1K / $100 indicative routes; not an arbitrage signal</small>
+              <strong>{{ copy.dexMonitor }}</strong>
+              <small>{{ copy.dexMonitorHint }}</small>
             </div>
             <div class="table-scroll">
               <table class="compact-table">
-                <thead><tr><th>Asset</th><th>Provider</th><th class="align-right">Routes</th><th class="align-right">Quality</th></tr></thead>
+                <thead><tr><th>{{ copy.asset }}</th><th>{{ copy.provider }}</th><th class="align-right">{{ copy.routes }}</th><th class="align-right">{{ copy.quality }}</th></tr></thead>
                 <tbody v-if="dexRouteMonitor.length">
                   <tr v-for="row in dexRouteMonitor" :key="`${row.provider}:${row.asset_id}`">
                     <td class="asset-symbol">{{ row.asset_symbol }}</td>
@@ -280,7 +412,7 @@ function signedClass(value: number): string {
                     <td class="align-right"><StatusBadge :variant="row.available ? 'live' : 'stale'" :label="row.quality" /></td>
                   </tr>
                 </tbody>
-                <tbody v-else><tr><td colspan="4" class="unavailable">No reviewed DEX route is publishing a quote.</td></tr></tbody>
+                <tbody v-else><tr><td colspan="4" class="unavailable">{{ copy.noDexRoutes }}</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -291,24 +423,24 @@ function signedClass(value: number): string {
     <section class="insight-section">
       <div class="section-heading">
         <div>
-          <h2>24h Market Breadth · Full Catalog</h2>
-          <p>Broader active-market catalog, independent from the four CEX selection union. One reference-market vote per asset; missing changes remain Unknown.</p>
+          <h2>{{ copy.breadthTitle }}</h2>
+          <p>{{ copy.breadthDescription }}</p>
         </div>
       </div>
       <ErrorState v-if="realtime.error.value && !breadth" :message="realtime.error.value" @retry="realtime.refresh" />
       <template v-else>
         <SkeletonRows v-if="realtime.loading.value && !breadth" variant="cards" :rows="4" />
         <div v-else-if="breadth" class="breadth-grid">
-          <StatCard label="Assets" :value="breadth.asset_count" :hint="`${breadth.unknown} unknown`" />
-          <StatCard label="Advancing" :value="breadth.advancers" :hint="`${breadth.advance_ratio.toFixed(1)}% of known`" tone="up" />
-          <StatCard label="Declining" :value="breadth.decliners" :hint="`${breadth.flat} unchanged`" tone="down" />
-          <StatCard label="Median 24h" :value="formatPercent(breadth.median_change24h)" hint="Asset-level median" tone="accent" />
-          <StatCard label="24h Turnover" :value="formatAbbr(breadth.turnover24h, '$')" hint="USD-family not FX-normalized" />
+          <StatCard :label="copy.assets" :value="breadth.asset_count" :hint="`${breadth.unknown} ${copy.unknown}`" />
+          <StatCard :label="copy.advancing" :value="breadth.advancers" :hint="`${breadth.advance_ratio.toFixed(1)}% ${copy.knownRatio}`" tone="up" />
+          <StatCard :label="copy.declining" :value="breadth.decliners" :hint="`${breadth.flat} ${copy.unchanged}`" tone="down" />
+          <StatCard :label="copy.median24h" :value="formatPercent(breadth.median_change24h)" :hint="copy.assetMedian" tone="accent" />
+          <StatCard :label="copy.turnover24h" :value="formatAbbr(breadth.turnover24h, '$')" :hint="copy.notFxNormalized" />
         </div>
         <div v-if="breadth" class="chart-card card">
           <div class="chart-caption">
-            <span>Change distribution</span>
-            <span>{{ breadth.advancers + breadth.decliners + breadth.flat }} known assets</span>
+            <span>{{ copy.changeDistribution }}</span>
+            <span>{{ breadth.advancers + breadth.decliners + breadth.flat }} {{ copy.knownAssets }}</span>
           </div>
           <div ref="distributionEl" class="distribution-chart"></div>
         </div>
@@ -318,25 +450,25 @@ function signedClass(value: number): string {
     <section class="insight-section">
       <div class="section-heading">
         <div>
-          <h2>Cross-Venue Monitor</h2>
-          <p>Indicative spot–perp comparison for shared assets. This is not an executable arbitrage price.</p>
+          <h2>{{ copy.crossVenueTitle }}</h2>
+          <p>{{ copy.crossVenueDescription }}</p>
         </div>
       </div>
       <ErrorState v-if="realtime.error.value && crossVenue.length === 0" :message="realtime.error.value" @retry="realtime.refresh" />
       <SkeletonRows v-else-if="realtime.loading.value && crossVenue.length === 0" :rows="6" />
-      <EmptyState v-else-if="crossVenue.length === 0" title="No shared assets" message="No active asset currently has both a spot and perpetual market." />
+      <EmptyState v-else-if="crossVenue.length === 0" :title="copy.noSharedAssets" :message="copy.noSharedAssetsMessage" />
       <div v-else class="table-card card">
         <div class="table-scroll">
           <table>
             <thead>
               <tr>
-                <th>Asset</th>
-                <th>Spot</th>
-                <th>Perp</th>
-                <th class="align-right">Indicative Spread</th>
-                <th class="align-right">24h Change Gap</th>
-                <th class="align-right">Turnover Share</th>
-                <th class="align-center">Freshness</th>
+                <th>{{ copy.asset }}</th>
+                <th>{{ copy.spot }}</th>
+                <th>{{ copy.perp }}</th>
+                <th class="align-right">{{ copy.indicativeSpread }}</th>
+                <th class="align-right">{{ copy.changeGap24h }}</th>
+                <th class="align-right">{{ copy.turnoverShare }}</th>
+                <th class="align-center">{{ copy.freshness }}</th>
               </tr>
             </thead>
             <tbody>
@@ -354,7 +486,7 @@ function signedClass(value: number): string {
                   <span v-if="row.spread_available" class="num" :class="signedClass(row.indicative_spread_pct)">
                     {{ formatPercent(row.indicative_spread_pct, 3) }}
                   </span>
-                  <span v-else class="unavailable">Unavailable</span>
+                  <span v-else class="unavailable">{{ copy.unavailable }}</span>
                 </td>
                 <td class="align-right">
                   <span v-if="row.change_gap_available" class="num" :class="signedClass(row.change_gap_pct_points)">
@@ -363,8 +495,8 @@ function signedClass(value: number): string {
                   <span v-else class="unavailable">—</span>
                 </td>
                 <td class="align-right share-cell">
-                  <span class="num">Spot {{ row.spot_turnover_share.toFixed(1) }}%</span>
-                  <span class="num">Perp {{ row.perp_turnover_share.toFixed(1) }}%</span>
+                  <span class="num">{{ copy.spot }} {{ row.spot_turnover_share.toFixed(1) }}%</span>
+                  <span class="num">{{ copy.perp }} {{ row.perp_turnover_share.toFixed(1) }}%</span>
                 </td>
                 <td class="align-center freshness-pair">
                   <StatusBadge :variant="freshnessFromDelay(row.spot_delay_seconds)" :label="`S ${formatDelay(row.spot_delay_seconds)}`" :dot="false" />
@@ -380,10 +512,10 @@ function signedClass(value: number): string {
     <section class="insight-section">
       <div class="section-heading momentum-heading">
         <div>
-          <h2>Historical Momentum</h2>
-          <p>Closed 1h candles only. Coverage below 90% stays in the table but is excluded from the scatter plot.</p>
+          <h2>{{ copy.historicalTitle }}</h2>
+          <p>{{ copy.historicalDescription }}</p>
         </div>
-        <div class="segmented" role="group" aria-label="Momentum window">
+        <div class="segmented" role="group" :aria-label="copy.momentumWindow">
           <button
             v-for="option in WINDOWS"
             :key="option.value"
@@ -399,20 +531,20 @@ function signedClass(value: number): string {
       <SkeletonRows v-else-if="momentum.loading.value && momentumItems.length === 0" :rows="6" />
       <EmptyState
         v-else-if="momentumItems.length === 0"
-        title="Historical module has no data"
-        message="Doris may be unavailable or the selected closed-candle window has not been synchronized yet. Real-time breadth remains independent."
+        :title="copy.historicalNoData"
+        :message="copy.historicalNoDataMessage"
       />
       <template v-else>
         <div class="chart-card card">
           <div class="chart-caption">
-            <span>Return × volatility</span>
-            <span>{{ chartMomentum.length }} plotted · {{ lowCoverageCount }} low coverage</span>
+            <span>{{ copy.returnVolatility }}</span>
+            <span>{{ chartMomentum.length }} {{ copy.plotted }} · {{ lowCoverageCount }} {{ copy.lowCoverage }}</span>
           </div>
           <div v-if="chartMomentum.length > 0" ref="momentumEl" class="momentum-chart"></div>
           <EmptyState
             v-else
-            title="No assets meet the coverage threshold"
-            message="The table remains available below. Assets need at least 90% of expected closed 1h candles before they appear in this comparison."
+            :title="copy.noCoverageAssets"
+            :message="copy.noCoverageAssetsMessage"
           />
         </div>
         <div class="table-card card momentum-table">
@@ -420,13 +552,13 @@ function signedClass(value: number): string {
             <table>
               <thead>
                 <tr>
-                  <th>Asset</th>
-                  <th>Reference Market</th>
-                  <th class="align-right">Return</th>
-                  <th class="align-right">1h Volatility</th>
-                  <th class="align-right">High–Low Range</th>
-                  <th class="align-right">Coverage</th>
-                  <th class="align-right">Candles</th>
+                  <th>{{ copy.asset }}</th>
+                  <th>{{ copy.referenceMarket }}</th>
+                  <th class="align-right">{{ copy.return }}</th>
+                  <th class="align-right">{{ copy.volatility1h }}</th>
+                  <th class="align-right">{{ copy.highLowRange }}</th>
+                  <th class="align-right">{{ copy.coverage }}</th>
+                  <th class="align-right">{{ copy.candles }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -439,7 +571,7 @@ function signedClass(value: number): string {
                   <td class="align-right">
                     <StatusBadge
                       :variant="row.low_coverage ? 'delayed' : 'live'"
-                      :label="row.low_coverage ? `Low ${row.coverage_pct.toFixed(1)}%` : `${row.coverage_pct.toFixed(1)}%`"
+                      :label="row.low_coverage ? `${copy.low} ${row.coverage_pct.toFixed(1)}%` : `${row.coverage_pct.toFixed(1)}%`"
                       :dot="false"
                     />
                   </td>

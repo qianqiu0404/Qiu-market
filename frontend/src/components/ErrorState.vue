@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import AppIcon from './AppIcon.vue'
+import { computed } from 'vue'
+import { useI18n } from '../i18n'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     message?: string
   }>(),
-  { message: 'Unable to load data. The API may be unreachable.' },
+  { message: undefined },
 )
+
+const { locale } = useI18n()
+const message = computed(() => props.message || (locale.value === 'zh-CN'
+  ? '无法加载数据，API 可能不可达。'
+  : 'Unable to load data. The API may be unreachable.'))
 
 const emit = defineEmits<{ retry: [] }>()
 </script>
@@ -14,11 +21,11 @@ const emit = defineEmits<{ retry: [] }>()
 <template>
   <div class="error-state">
     <AppIcon name="alert" :size="36" />
-    <div class="error-title">Something went wrong</div>
+    <div class="error-title">{{ locale === 'zh-CN' ? '出现问题' : 'Something went wrong' }}</div>
     <div class="error-message">{{ message }}</div>
     <button type="button" class="btn" @click="emit('retry')">
       <AppIcon name="refresh" :size="15" />
-      Retry
+      {{ locale === 'zh-CN' ? '重试' : 'Retry' }}
     </button>
   </div>
 </template>

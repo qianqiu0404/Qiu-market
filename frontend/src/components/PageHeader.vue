@@ -2,6 +2,9 @@
 import StatusBadge from './StatusBadge.vue'
 import AppIcon from './AppIcon.vue'
 import { formatClock, FRESHNESS_LABELS, type Freshness } from '../utils/format'
+import { useI18n } from '../i18n'
+
+const { locale } = useI18n()
 
 withDefaults(
   defineProps<{
@@ -24,7 +27,7 @@ withDefaults(
       <slot name="actions" />
       <span v-if="refreshedAt" class="page-clock mono">
         <AppIcon name="clock" :size="14" />
-        Page refreshed {{ formatClock(refreshedAt) }}
+        {{ locale === 'zh-CN' ? '页面刷新于' : 'Page refreshed' }} {{ formatClock(refreshedAt) }}
       </span>
       <StatusBadge
         v-if="freshness"
