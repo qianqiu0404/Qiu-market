@@ -17,11 +17,47 @@ fixture_private_env="$fixture_dir/production.env"
 cp "$fixture_env" "$fixture_private_env"
 chmod 600 "$fixture_private_env"
 export QIU_MARKET_DATABASE_ENV_FILE="$fixture_private_env"
+export QIU_MARKET_TRANSPORT_SMOKE_FILE="$fixture_dir/transport-smoke.json"
+runtime_target="$fixture_dir/runtime-release"
+runtime_link="$fixture_dir/runtime-current"
+mkdir -p "$runtime_target"
+runtime_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+printf 'git_commit=%s\n' "$runtime_commit" > "$runtime_target/runtime-manifest.env"
+ln -s "$runtime_target" "$runtime_link"
+export QIU_MARKET_RUNTIME_LINK="$runtime_link"
+export QIU_MARKET_ACCEPTANCE_NOW_EPOCH=1785120000
 manager="$repo_root/ops/macos/manage-acceptance-epoch.sh"
 deployment_id="dpl_FixtureRelease123"
 deployment_url="https://qiu-market-fixture-release.vercel.app"
 production_origin="https://qiu-market.vercel.app"
 release_commit="19928325f9a1104d1dd3505a004dffb9fe52a714"
+
+jq -n \
+  --arg deployment_id "$deployment_id" \
+  --arg deployment_url "$deployment_url" \
+  --arg deployment_commit "$release_commit" \
+  --arg runtime_release_commit "$runtime_commit" '
+  {
+    schema_version: 1,
+    status: "passed",
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    completed_at: "2026-07-27T02:40:00Z",
+    result: {
+      status: "passed",
+      acceptance: {
+        full_30m_window: true,
+        exactly_30_observed: true,
+        all_minutes_passed: true,
+        no_rest_5xx: true,
+        rest_p95_below_5s: true,
+        no_guardian_restart: true
+      }
+    }
+  }
+' > "$QIU_MARKET_TRANSPORT_SMOKE_FILE"
 
 if "$manager" start \
   --deployment-id "$deployment_id" \

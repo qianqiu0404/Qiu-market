@@ -16,6 +16,8 @@ production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app
 funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.ts.net}"
 tailscale_socket="$support_dir/tailscale/tailscaled.sock"
 tailscale_cli="/opt/homebrew/bin/tailscale"
+runtime_link="$support_dir/runtime-current"
+guardian_last_restart_file="$support_dir/guardian/last-automatic-restart-at"
 lock_dir="$observation_dir/.observer.lock"
 started_epoch="$(date -u '+%s')"
 scheduled_epoch=$((started_epoch - started_epoch % 60))
@@ -192,6 +194,19 @@ if [ -x "$tailscale_cli" ] && [ -S "$tailscale_socket" ]; then
     jq -e 'length == 0' <<<"$tailscale_health_json" >/dev/null 2>&1; then
     tailscale_health_ok=true
   fi
+fi
+
+runtime_release_commit="unmanaged"
+if [ -L "$runtime_link" ] && [ -f "$runtime_link/runtime-manifest.env" ]; then
+  runtime_release_commit="$(
+    sed -n 's/^git_commit=//p' "$runtime_link/runtime-manifest.env" | head -1
+  )"
+fi
+guardian_last_automatic_restart_at="$(
+  cat "$guardian_last_restart_file" 2>/dev/null || echo 0
+)"
+if [[ ! "$guardian_last_automatic_restart_at" =~ ^[0-9]+$ ]]; then
+  guardian_last_automatic_restart_at=0
 fi
 
 trading_provenance="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Provenance)"
@@ -736,6 +751,8 @@ jq -n \
   --arg tailscale_backend_state "$tailscale_backend_state" \
   --arg tailscale_health_ok "$tailscale_health_ok" \
   --argjson tailscale_health "$tailscale_health_json" \
+  --arg runtime_release_commit "$runtime_release_commit" \
+  --arg guardian_last_automatic_restart_at "$guardian_last_automatic_restart_at" \
   --argjson uniswap "$uniswap_summary" \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
@@ -756,6 +773,7 @@ jq -n \
     deployment_commit: (
       if $trading_release_commit == "" then null else $trading_release_commit end
     ),
+    runtime_release_commit: $runtime_release_commit,
     scheduled_at: $scheduled_at,
     started_at: $started_at,
     finished_at: $finished_at,
@@ -855,7 +873,10 @@ jq -n \
       retention_last_error: $retention_last_error,
       tailscale_backend_state: $tailscale_backend_state,
       tailscale_health: $tailscale_health,
-      tailscale_health_ok: ($tailscale_health_ok == "true")
+      tailscale_health_ok: ($tailscale_health_ok == "true"),
+      guardian_last_automatic_restart_at: (
+        $guardian_last_automatic_restart_at | tonumber? // 0
+      )
     },
     latency_ms: {
       production_page: ($site_latency_ms | tonumber? // 20000),

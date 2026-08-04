@@ -24,8 +24,10 @@ runtime_paths=(
   ops/macos/guardian.sh
   ops/macos/manage-funnel.sh
   ops/macos/manage-observer.sh
+  ops/macos/manage-acceptance-epoch.sh
   ops/macos/manage-runtime-release.sh
   ops/macos/manage-services.sh
+  ops/macos/manage-transport-smoke.sh
   ops/macos/manage-user-resilience.sh
   ops/macos/observe-production.sh
   ops/macos/production-lib.sh

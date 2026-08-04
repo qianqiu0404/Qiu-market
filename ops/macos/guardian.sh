@@ -73,6 +73,15 @@ record_throttled() {
   fi
 }
 
+mark_automatic_restart() {
+  local destination="$state_dir/last-automatic-restart-at"
+  local temporary
+  temporary="$(mktemp "$state_dir/.last-automatic-restart-at.XXXXXX")"
+  date '+%s' > "$temporary"
+  chmod 600 "$temporary"
+  mv "$temporary" "$destination"
+}
+
 api_healthy=false
 if curl --fail --silent --max-time 3 http://127.0.0.1:9092/healthz >/dev/null; then
   api_healthy=true
@@ -87,6 +96,7 @@ else
   echo "$api_failures" > "$counter_file"
   if [ "$api_failures" -eq 3 ]; then
     record "api failed three consecutive health checks; kickstarting only API"
+    mark_automatic_restart
     launchctl kickstart -k "$launch_domain/com.qiumarket.api" || true
   fi
 fi
@@ -171,6 +181,7 @@ else
   if [ "$trading_failures" -ge 3 ] && [ ! -f "$trading_restart" ]; then
     date '+%s' > "$trading_restart"
     record "trading state=$trading_state failed three checks; performing its single automatic restart"
+    mark_automatic_restart
     launchctl kickstart -k "$launch_domain/com.qiumarket.trading" || true
   elif [ -f "$trading_restart" ]; then
     restarted_at="$(cat "$trading_restart")"
@@ -223,6 +234,7 @@ elif [ "$api_healthy" = true ]; then
     date '+%s' > "$funnel_restart"
     echo 0 > "$funnel_failures_file"
     record "Funnel failed three checks while local API is healthy; using its single automatic tailscaled restart"
+    mark_automatic_restart
     launchctl kickstart -k "$launch_domain/com.qiumarket.tailscaled" || true
     tailscale_state="NoState"
     for _ in $(seq 1 20); do

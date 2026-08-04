@@ -10,6 +10,8 @@ support_dir="$HOME/Library/Application Support/Qiu Market"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 observation_dir="${QIU_MARKET_OBSERVATION_DIR:-$support_dir/observations}"
 epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoch.json}"
+transport_smoke_file="${QIU_MARKET_TRANSPORT_SMOKE_FILE:-$observation_dir/transport-smoke.json}"
+runtime_link="${QIU_MARKET_RUNTIME_LINK:-$support_dir/runtime-current}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
 database_env="${QIU_MARKET_DATABASE_ENV_FILE:-${QIU_MARKET_ENV_FILE:-$support_dir/production.env}}"
 
@@ -153,6 +155,34 @@ case "$action" in
     fi
     if [ "$deployment_url" = "$production_origin" ]; then
       echo "The Production alias is not an immutable deployment URL." >&2
+      exit 1
+    fi
+    runtime_manifest="$runtime_link/runtime-manifest.env"
+    runtime_commit=""
+    if [ -L "$runtime_link" ] && [ -f "$runtime_manifest" ]; then
+      runtime_commit="$(sed -n 's/^git_commit=//p' "$runtime_manifest" | head -1)"
+    fi
+    acceptance_now="${QIU_MARKET_ACCEPTANCE_NOW_EPOCH:-$(date -u '+%s')}"
+    if [[ ! "$runtime_commit" =~ ^[0-9a-f]{40}$ ]] ||
+      [[ ! "$acceptance_now" =~ ^[0-9]+$ ]] ||
+      ! jq -e \
+        --arg deployment_id "$deployment_id" \
+        --arg deployment_url "$deployment_url" \
+        --arg deployment_commit "$deployment_commit" \
+        --arg runtime_commit "$runtime_commit" \
+        --argjson now "$acceptance_now" '
+          .schema_version == 1 and
+          .status == "passed" and
+          .deployment_id == $deployment_id and
+          .deployment_url == $deployment_url and
+          .deployment_commit == $deployment_commit and
+          .runtime_release_commit == $runtime_commit and
+          (.completed_at | fromdateiso8601) <= $now and
+          ($now - (.completed_at | fromdateiso8601)) <= 1800 and
+          .result.status == "passed" and
+          ([.result.acceptance[]] | all)
+        ' "$transport_smoke_file" >/dev/null 2>&1; then
+      echo "A passing 30-minute transport smoke for this exact release is required within the previous 30 minutes." >&2
       exit 1
     fi
     if [ -s "$epoch_file" ] &&
