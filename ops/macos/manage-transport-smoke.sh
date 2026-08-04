@@ -57,6 +57,17 @@ evaluate() {
     echo "The transport smoke state is invalid." >&2
     return 1
   fi
+  if jq -e '
+    (.status == "passed" or .status == "failed") and
+    (.result | type == "object")
+  ' "$smoke_file" >/dev/null 2>&1; then
+    jq '.result + {
+      completed_at: .completed_at,
+      terminal_state: .status,
+      failure_reason: (.failure_reason // null)
+    } | .status = .terminal_state' "$smoke_file"
+    return
+  fi
 
   local current_epoch
   local window_start

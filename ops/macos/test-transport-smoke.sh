@@ -127,5 +127,11 @@ jq -e '
   .result.passed_minutes == 30 and
   ([.result.acceptance[]] | all)
 ' "$QIU_MARKET_TRANSPORT_SMOKE_FILE" >/dev/null
+"$manager" status | jq -e '
+  .status == "passed" and
+  .terminal_state == "passed" and
+  .completed_at != null and
+  ([.acceptance[]] | all)
+' >/dev/null
 
 echo "Qiu Market 30-minute transport smoke fixtures passed."
