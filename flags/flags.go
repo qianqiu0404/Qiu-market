@@ -216,6 +216,12 @@ var (
 		Value:   true,
 		EnvVars: prefixEnvVars("TRADING_DEMO_MAKER_ENABLED"),
 	}
+	TradingRecoveryGateFlag = &cli.BoolFlag{
+		Name:    "trading-recovery-gate",
+		Usage:   "enable the durable fail-closed trading recovery write gate; activation requires an operator recovery workflow",
+		Value:   false,
+		EnvVars: prefixEnvVars("TRADING_RECOVERY_GATE_ENABLED"),
+	}
 
 	// Doris OLAP 数仓（全部可选）：默认值与 docker-compose 的 doris 服务匹配。
 	// 显式将 MARKET_DORIS_HOST 置空可禁用数仓；Doris 未运行时 dw 模式与
@@ -296,6 +302,7 @@ var optionalFlags = []cli.Flag{
 	TradingGitHubSecretFlag,
 	TradingGitHubRedirectFlag,
 	TradingDemoMakerFlag,
+	TradingRecoveryGateFlag,
 	DorisHostFlag,
 	DorisHttpPortFlag,
 	DorisQueryPortFlag,

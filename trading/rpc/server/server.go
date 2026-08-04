@@ -566,6 +566,8 @@ func mapError(err error) error {
 		return status.Error(codes.FailedPrecondition, "insufficient virtual balance")
 	case errors.Is(err, tradingruntime.ErrQueueFull):
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, tradingruntime.ErrRecoveryInProgress):
+		return status.Error(codes.Unavailable, "recovery_in_progress")
 	case errors.Is(err, tradingruntime.ErrUnavailable),
 		errors.Is(err, tradingruntime.ErrClosed),
 		errors.Is(err, exchange.ErrPersistence):

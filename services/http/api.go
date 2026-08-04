@@ -105,6 +105,7 @@ func (a *API) initTrading(ctx context.Context, cfg *config.Config) {
 		GitHubRedirect: cfg.Trading.GitHubRedirect,
 		DiskPath:       "/",
 		MinWriteBytes:  15 << 30,
+		RecoveryGate:   cfg.Trading.RecoveryGate,
 	})
 	if err != nil {
 		log.Warn("virtual trading gateway unavailable; market-data API remains healthy", "err", err)

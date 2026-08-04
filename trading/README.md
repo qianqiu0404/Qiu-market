@@ -54,6 +54,7 @@ PostgreSQL（事件流 / 账本 / outbox / 快照 / 可重建投影）
 | `gateway` | 共享 HTTP API 使用的会话与 gRPC adapter |
 | `reference` | 只读 S78 BTC 综合现货指数 |
 | `integration` | 正式 migration + gRPC + REST + restart 的隔离 PostgreSQL E2E |
+| `recovery` | 持久化 recovery epoch、phase CAS 与服务端 fail-closed 写门禁；不保存订单、余额或撮合状态 |
 
 ## 固定业务语义
 
@@ -94,6 +95,18 @@ PostgreSQL 使用 `SELECT ... FOR UPDATE` 和 stream sequence CAS。订单、成
 `MarketRunner` 是单市场唯一写入口。队列满时返回背压错误；存储提交结果不确定时立即停止接单，从事件日志恢复后才重新 ready。请求超时不代表命令未执行，调用方必须使用同一幂等键重试。
 
 当前“每命令克隆完整状态”和“快照包含完整 journal”服务于教学可审计性，不是低延迟生产优化方案。
+
+### Recovery Coordinator 写门禁
+
+可选的 `MARKET_TRADING_RECOVERY_GATE_ENABLED=true` 会启用持久化 recovery
+epoch。启用后的每次 trading 启动先把 phase 重置为 `bootstrap`，runner 的
+Fund/Submit/Cancel 在权威入口统一返回 `recovery_in_progress`；只读查询仍可用。
+事件重放、state hash、完整账本、projection 和 outbox 本地证明完成后只推进到
+`transport_warmup`，不会自行宣称公网健康或开放写入。
+
+该开关默认关闭，避免在尚未安装 operator promote 流程的现有环境中静默锁死
+交易。当前切片还没有实现 operator 把精确 epoch 推进到 `writable` 的受管命令，
+因此生产暂时不得开启该开关。开启时 demo-maker 也不会启动，避免绕过权威门禁。
 
 ## 运行
 

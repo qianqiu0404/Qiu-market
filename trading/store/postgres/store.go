@@ -352,6 +352,34 @@ func (s *Store) CurrentSequence(ctx context.Context) (uint64, error) {
 	return uint64(sequence), nil
 }
 
+// EventHead is the last immutable event cursor. It is used only by recovery
+// admission control to prove that projections and the published feed caught up
+// with the event authority before writes reopen.
+func (s *Store) EventHead(ctx context.Context) (Cursor, error) {
+	var (
+		sequence   int64
+		eventIndex int32
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT sequence,
+		       COALESCE(jsonb_array_length(result_payload->'events'), 0)
+		FROM trading_event_batch
+		WHERE market_id=$1
+		ORDER BY sequence DESC
+		LIMIT 1
+	`, s.market.ID).Scan(&sequence, &eventIndex)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Cursor{}, nil
+	}
+	if err != nil {
+		return Cursor{}, fmt.Errorf("read trading event head: %w", err)
+	}
+	if sequence < 0 || eventIndex < 0 {
+		return Cursor{}, fmt.Errorf("trading event head contains a negative cursor")
+	}
+	return Cursor{Sequence: uint64(sequence), EventIndex: uint32(eventIndex)}, nil
+}
+
 func (s *Store) GetOrder(ctx context.Context, orderID domain.OrderID) (domain.Order, bool, error) {
 	if orderID == "" {
 		return domain.Order{}, false, fmt.Errorf("order id is required")

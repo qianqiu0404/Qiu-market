@@ -87,6 +87,7 @@ func runTrading(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 		DemoMakerEnabled: cfg.Trading.DemoMakerEnabled,
 		DiskPath:         "/",
 		MinWriteBytes:    15 << 30,
+		RecoveryGate:     cfg.Trading.RecoveryGate,
 	}, shutdown)
 }
 

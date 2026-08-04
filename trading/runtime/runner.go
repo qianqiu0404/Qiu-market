@@ -13,9 +13,10 @@ import (
 )
 
 var (
-	ErrQueueFull   = errors.New("market command queue is full")
-	ErrUnavailable = errors.New("market runner is unavailable")
-	ErrClosed      = errors.New("market runner is closed")
+	ErrQueueFull          = errors.New("market command queue is full")
+	ErrUnavailable        = errors.New("market runner is unavailable")
+	ErrClosed             = errors.New("market runner is closed")
+	ErrRecoveryInProgress = errors.New("recovery_in_progress")
 )
 
 type State string
@@ -32,6 +33,9 @@ type Config struct {
 	QueueSize       int
 	SnapshotEvery   uint64
 	SnapshotTimeout time.Duration
+	WriteGate       interface {
+		RequireWritable(context.Context) error
+	}
 }
 
 func DefaultConfig() Config {
@@ -259,6 +263,11 @@ func (r *MarketRunner) Close(ctx context.Context) error {
 func (r *MarketRunner) execute(ctx context.Context, request command) (domain.Result, error) {
 	if ctx == nil {
 		return domain.Result{}, fmt.Errorf("context is required")
+	}
+	if r.config.WriteGate != nil {
+		if err := r.config.WriteGate.RequireWritable(ctx); err != nil {
+			return domain.Result{}, fmt.Errorf("%w: %v", ErrRecoveryInProgress, err)
+		}
 	}
 	request.response = make(chan response, 1)
 

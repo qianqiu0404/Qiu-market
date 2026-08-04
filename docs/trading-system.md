@@ -290,6 +290,54 @@ property test 只能证明覆盖到的状态空间；长期 soak、跨进程 Pos
 
 订单、成交、余额与 checkpoint 是查询加速投影，可以从事件流重建；不能把投影表当成最终真值。
 
+## Recovery Coordinator 与写入开放
+
+`MarketRunner=ready` 只证明撮合内存完成 snapshot + tail 恢复，不能单独证明
+projection、outbox、公网链路和浏览器 cursor 都已追平。为此新增持久化 Recovery
+Coordinator。启用后可见结果是：Fund、Submit、Cancel 在 runner 唯一命令入口
+统一 fail closed；HTTP gateway 返回 503 `recovery_in_progress`；订单簿、状态、
+订单、成交和余额等只读查询继续可用。
+
+```text
+bootstrap -> dependencies_ready -> trading_replay -> reconciling
+          -> read_only -> transport_warmup -> writable
+                         \-> offline / manual_review
+```
+
+`trading_recovery_epoch` 保存 phase、proof 摘要、错误和 CAS version，
+`trading_recovery_current` 原子选择当前 epoch。它们只是写入准入控制平面，不保存
+订单、余额、账本或撮合状态；`trading_event_batch` 仍是最终真值。启动新 epoch 会
+插入新的历史行并以事务切换 current，旧 version 不能覆盖新 epoch。
+
+本地调用链依次为：`trading/recovery/coordinator.go` 定义 phase 与 proof；
+`postgres_store.go` 持久化 epoch；`trading/service/backend.go` 启动 epoch 并复用
+现有 restore/audit；`trading/runtime/runner.go` 在 Fund/Submit/Cancel 前执行权威
+门禁；`trading/gateway/gateway.go` 提供友好 503 和只读 recovery status。
+
+选择 runner 门禁而不是只禁用 Vue 按钮，是因为 loopback gRPC 和 demo-maker 也
+必须服从同一边界。拒绝用固定 sleep 自动开放，因为时间经过不是账本、cursor 或
+公网健康证明。代价是启用时增加一次完整 immutable history 审计。
+
+失败语义固定为：recovery row 缺失、数据库失败或 proof 不完整时关闭写入；
+snapshot/event/hash/ledger/projection 不一致进入 `manual_review`；outbox 未追平停在
+`reconciling`；本地证明完成只到 `transport_warmup`。当前 operator transport
+proof/promote 尚未实现，所以 `MARKET_TRADING_RECOVERY_GATE_ENABLED` 默认 false，
+避免现有环境静默锁死；生产暂不得开启，证据为
+`implemented / activation-pending`，不是全自动恢复或 production-verified。
+
+术语：admission gate 是命令进入唯一 writer 前的准入判断；recovery epoch 是一次
+启动恢复的持久化验收身份；control plane 是决定能否写的红绿灯，不是交易事实；
+CAS 表示只有持有预期旧 version 的 actor 才能更新。
+
+60 秒复述：runner ready 不等于系统可交易。Recovery Coordinator 每次从关闭写入
+开始，复用原事件恢复和账本审计，等 projection/outbox 追到 event head 后只进入
+transport warmup。权威门禁在 runner，gateway 只翻译错误。当前缺 operator 的公网
+证明与 promote，所以开关保持关闭，不能宣称生产自动恢复已经完成。
+
+闭卷自检：为什么 ready 不能直接开放？为什么门禁不能只放在 Vue？recovery epoch
+为什么不是第二套交易状态？为什么本地证明后只到 transport_warmup？新 epoch 如何
+阻止旧 version 覆盖 current？
+
 ## 接口与鉴权
 
 内部 `TradingService`：

@@ -20,7 +20,9 @@ import (
 	"github.com/the-web3/s78-market-services/trading/marketmaker"
 	"github.com/the-web3/s78-market-services/trading/netutil"
 	"github.com/the-web3/s78-market-services/trading/outbox"
+	"github.com/the-web3/s78-market-services/trading/recovery"
 	"github.com/the-web3/s78-market-services/trading/reference"
+	"github.com/the-web3/s78-market-services/trading/reliability"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
@@ -39,6 +41,7 @@ type Config struct {
 	DemoMakerEnabled bool
 	DiskPath         string
 	MinWriteBytes    int64
+	RecoveryGate     bool
 }
 
 // Backend is the only integrated process that owns the in-memory matching
@@ -57,6 +60,9 @@ type Backend struct {
 	publisher       *outbox.Publisher
 	publisherCancel context.CancelFunc
 	publisherDone   chan struct{}
+	recovery        *recovery.Coordinator
+	recoveryProof   recovery.Proof
+	recoveryHead    postgresstore.Cursor
 
 	started  atomic.Bool
 	stopped  atomic.Bool
@@ -90,19 +96,103 @@ func New(
 	}
 
 	market := domain.DefaultBTCUSDTMarket()
+	var recoveryCoordinator *recovery.Coordinator
+	if config.RecoveryGate {
+		recoveryStore, recoveryErr := recovery.NewPostgresStore(pool)
+		if recoveryErr != nil {
+			return nil, recoveryErr
+		}
+		recoveryCoordinator, recoveryErr = recovery.NewCoordinator(recoveryStore, market.ID)
+		if recoveryErr != nil {
+			return nil, recoveryErr
+		}
+		if _, recoveryErr = recoveryCoordinator.Begin(ctx); recoveryErr != nil {
+			return nil, fmt.Errorf("begin fail-closed trading recovery: %w", recoveryErr)
+		}
+		if _, recoveryErr = recoveryCoordinator.Advance(
+			ctx,
+			recovery.PhaseDependenciesReady,
+			recovery.Proof{},
+		); recoveryErr != nil {
+			return nil, recoveryErr
+		}
+		if _, recoveryErr = recoveryCoordinator.Advance(
+			ctx,
+			recovery.PhaseTradingReplay,
+			recovery.Proof{},
+		); recoveryErr != nil {
+			return nil, recoveryErr
+		}
+	}
 	persistence, err := postgresstore.New(ctx, pool, market)
 	if err != nil {
 		return nil, err
+	}
+	runnerConfig := tradingruntime.DefaultConfig()
+	if recoveryCoordinator != nil {
+		runnerConfig.WriteGate = recoveryCoordinator
 	}
 	runner, err := tradingruntime.NewMarketRunner(
 		ctx,
 		market,
 		persistence,
 		persistence,
-		tradingruntime.DefaultConfig(),
+		runnerConfig,
 	)
 	if err != nil {
+		if recoveryCoordinator != nil {
+			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, err)
+		}
 		return nil, err
+	}
+	var (
+		recoveryProof recovery.Proof
+		recoveryHead  postgresstore.Cursor
+	)
+	if recoveryCoordinator != nil {
+		if _, err = recoveryCoordinator.Advance(
+			ctx,
+			recovery.PhaseReconciling,
+			recovery.Proof{},
+		); err != nil {
+			return nil, err
+		}
+		proof, proofErr := reliability.ProveRecovery(ctx, market, persistence, persistence)
+		if proofErr != nil {
+			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, proofErr)
+			return nil, proofErr
+		}
+		recoveryHead, proofErr = persistence.EventHead(ctx)
+		if proofErr != nil {
+			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, proofErr)
+			return nil, proofErr
+		}
+		projection, found, projectionErr := persistence.ProjectionCheckpoint(ctx)
+		if projectionErr != nil {
+			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, projectionErr)
+			return nil, projectionErr
+		}
+		projectionCaughtUp := recoveryHead == (postgresstore.Cursor{}) && !found
+		if found {
+			projectionCaughtUp = projection.Sequence == recoveryHead.Sequence &&
+				projection.EventIndex == recoveryHead.EventIndex
+		}
+		recoveryProof = recovery.Proof{
+			RuntimeSequence:    proof.RestoredSequence,
+			StateHash:          proof.RestoredStateHash,
+			LedgerBalanced:     true,
+			EventContinuous:    true,
+			ProjectionCaughtUp: projectionCaughtUp,
+		}
+		if !projectionCaughtUp {
+			proofErr = fmt.Errorf(
+				"trading projection checkpoint is behind event head %d/%d",
+				recoveryHead.Sequence,
+				recoveryHead.EventIndex,
+			)
+			_, _ = recoveryCoordinator.Fail(ctx, recovery.PhaseManualReview, proofErr)
+			return nil, proofErr
+		}
 	}
 	publisher, err := outbox.New(persistence, outbox.DefaultConfig())
 	if err != nil {
@@ -140,7 +230,7 @@ func New(
 	tradingv1.RegisterTradingServiceServer(grpcServer, rpcService)
 
 	var maker *marketmaker.Maker
-	if config.DemoMakerEnabled {
+	if config.DemoMakerEnabled && recoveryCoordinator == nil {
 		if err := bootstrapDemoMaker(ctx, runner, market); err != nil {
 			return nil, err
 		}
@@ -172,14 +262,17 @@ func New(
 	cleanupRunner = false
 	cleanupListener = false
 	return &Backend{
-		config:     config,
-		shutdown:   shutdown,
-		pool:       pool,
-		runner:     runner,
-		grpcServer: grpcServer,
-		listener:   listener,
-		maker:      maker,
-		publisher:  publisher,
+		config:        config,
+		shutdown:      shutdown,
+		pool:          pool,
+		runner:        runner,
+		grpcServer:    grpcServer,
+		listener:      listener,
+		maker:         maker,
+		publisher:     publisher,
+		recovery:      recoveryCoordinator,
+		recoveryProof: recoveryProof,
+		recoveryHead:  recoveryHead,
 	}, nil
 }
 
@@ -230,6 +323,9 @@ func (b *Backend) Start(ctx context.Context) error {
 		defer close(b.publisherDone)
 		b.publisher.Run(publisherContext)
 	}()
+	if b.recovery != nil {
+		go b.completeLocalRecovery(publisherContext)
+	}
 	go func() {
 		err := b.grpcServer.Serve(b.listener)
 		if err != nil && !errors.Is(err, grpc.ErrServerStopped) && !b.stopped.Load() {
@@ -260,6 +356,40 @@ func (b *Backend) Start(ctx context.Context) error {
 		"demo_maker", b.maker != nil,
 	)
 	return nil
+}
+
+func (b *Backend) completeLocalRecovery(ctx context.Context) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		delivery := b.publisher.Status()
+		if delivery.State == "ready" &&
+			delivery.Checkpoint.Sequence == b.recoveryHead.Sequence &&
+			delivery.Checkpoint.EventIndex == b.recoveryHead.EventIndex {
+			proof := b.recoveryProof
+			proof.OutboxCaughtUp = true
+			if _, err := b.recovery.Advance(ctx, recovery.PhaseReadOnly, proof); err != nil {
+				_, _ = b.recovery.Fail(ctx, recovery.PhaseManualReview, err)
+				return
+			}
+			if _, err := b.recovery.Advance(
+				ctx,
+				recovery.PhaseTransportWarmup,
+				proof,
+			); err != nil {
+				_, _ = b.recovery.Fail(ctx, recovery.PhaseManualReview, err)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (b *Backend) Stop(ctx context.Context) error {

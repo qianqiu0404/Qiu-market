@@ -16,6 +16,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/auth"
 	"github.com/the-web3/s78-market-services/trading/httpapi"
 	"github.com/the-web3/s78-market-services/trading/netutil"
+	"github.com/the-web3/s78-market-services/trading/recovery"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	postgresstore "github.com/the-web3/s78-market-services/trading/store/postgres"
 )
@@ -32,6 +33,7 @@ type Config struct {
 	GitHubRedirect string
 	DiskPath       string
 	MinWriteBytes  int64
+	RecoveryGate   bool
 }
 
 // Gateway owns browser authentication and protocol adaptation, but no trading
@@ -111,17 +113,31 @@ func New(ctx context.Context, config Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	var recoveryCoordinator *recovery.Coordinator
+	if config.RecoveryGate {
+		recoveryStore, storeErr := recovery.NewPostgresStore(pool)
+		if storeErr != nil {
+			return nil, storeErr
+		}
+		recoveryCoordinator, storeErr = recovery.NewCoordinator(
+			recoveryStore,
+			"BTC-USDT",
+		)
+		if storeErr != nil {
+			return nil, storeErr
+		}
+	}
 
 	cleanupPool = false
 	cleanupConnection = false
+	handler := diskWriteGuard(server.Handler(), config.DiskPath, config.MinWriteBytes)
+	if recoveryCoordinator != nil {
+		handler = recoveryWriteGuard(handler, recoveryCoordinator)
+	}
 	return &Gateway{
 		pool:       pool,
 		connection: connection,
-		handler: boundedREST(diskWriteGuard(
-			server.Handler(),
-			config.DiskPath,
-			config.MinWriteBytes,
-		)),
+		handler:    boundedREST(handler),
 	}, nil
 }
 
@@ -214,6 +230,80 @@ func writeDiskPaused(writer http.ResponseWriter) {
 	_ = json.NewEncoder(writer).Encode(map[string]string{
 		"code":    "trading_write_paused",
 		"message": "virtual trading writes are paused because local storage is critical",
+	})
+}
+
+type recoveryGate interface {
+	Status(context.Context) (recovery.Status, error)
+	RequireWritable(context.Context) error
+}
+
+func recoveryWriteGuard(next http.Handler, gate recoveryGate) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet &&
+			request.URL.Path == "/api/v1/trading/recovery/status" {
+			writeRecoveryStatus(writer, request, gate)
+			return
+		}
+		if !isTradingMutation(request) {
+			next.ServeHTTP(writer, request)
+			return
+		}
+		if err := gate.RequireWritable(request.Context()); err != nil {
+			writeRecoveryBlocked(writer, request, gate)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func writeRecoveryStatus(
+	writer http.ResponseWriter,
+	request *http.Request,
+	gate recoveryGate,
+) {
+	status, err := gate.Status(request.Context())
+	if err != nil {
+		writeRecoveryUnavailable(writer)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(writer).Encode(status)
+}
+
+func writeRecoveryBlocked(
+	writer http.ResponseWriter,
+	request *http.Request,
+	gate recoveryGate,
+) {
+	status, err := gate.Status(request.Context())
+	if err != nil {
+		writeRecoveryUnavailable(writer)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(writer).Encode(map[string]any{
+		"code":           "recovery_in_progress",
+		"message":        "virtual trading writes are blocked until recovery proof completes",
+		"market_id":      status.MarketID,
+		"recovery_epoch": status.EpochID,
+		"phase":          status.Phase,
+		"writes_enabled": false,
+	})
+}
+
+func writeRecoveryUnavailable(writer http.ResponseWriter) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(writer).Encode(map[string]any{
+		"code":           "recovery_in_progress",
+		"message":        "virtual trading recovery state is unavailable",
+		"phase":          "uninitialized",
+		"writes_enabled": false,
 	})
 }
 
