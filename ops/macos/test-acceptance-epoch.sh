@@ -53,7 +53,8 @@ jq -n \
         all_minutes_passed: true,
         no_rest_5xx: true,
         rest_p95_below_5s: true,
-        no_guardian_restart: true
+        no_guardian_restart: true,
+        network_identity_unchanged: true
       }
     }
   }

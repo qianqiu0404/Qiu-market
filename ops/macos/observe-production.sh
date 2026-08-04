@@ -209,6 +209,18 @@ if [[ ! "$guardian_last_automatic_restart_at" =~ ^[0-9]+$ ]]; then
   guardian_last_automatic_restart_at=0
 fi
 
+network_route="$(route -n get default 2>/dev/null || true)"
+network_interface="$(
+  awk '$1 == "interface:" { print $2; exit }' <<<"$network_route"
+)"
+network_gateway="$(
+  awk '$1 == "gateway:" { print $2; exit }' <<<"$network_route"
+)"
+network_ipv4=""
+if [ -n "$network_interface" ]; then
+  network_ipv4="$(ipconfig getifaddr "$network_interface" 2>/dev/null || true)"
+fi
+
 trading_provenance="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Provenance)"
 trading_release_commit="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Release-Commit)"
 trading_deployment_id="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Deployment-ID)"
@@ -753,6 +765,9 @@ jq -n \
   --argjson tailscale_health "$tailscale_health_json" \
   --arg runtime_release_commit "$runtime_release_commit" \
   --arg guardian_last_automatic_restart_at "$guardian_last_automatic_restart_at" \
+  --arg network_interface "$network_interface" \
+  --arg network_gateway "$network_gateway" \
+  --arg network_ipv4 "$network_ipv4" \
   --argjson uniswap "$uniswap_summary" \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
@@ -876,7 +891,10 @@ jq -n \
       tailscale_health_ok: ($tailscale_health_ok == "true"),
       guardian_last_automatic_restart_at: (
         $guardian_last_automatic_restart_at | tonumber? // 0
-      )
+      ),
+      network_interface: $network_interface,
+      network_gateway: $network_gateway,
+      network_ipv4: $network_ipv4
     },
     latency_ms: {
       production_page: ($site_latency_ms | tonumber? // 20000),

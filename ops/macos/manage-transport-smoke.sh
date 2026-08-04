@@ -49,6 +49,8 @@ evaluate() {
     (.deployment_url | type == "string" and startswith("https://")) and
     (.deployment_commit | type == "string" and test("^[0-9a-f]{40}$")) and
     (.runtime_release_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+    (.network_interface | type == "string" and length > 0) and
+    (.network_gateway | type == "string" and length > 0) and
     (.started_at | fromdateiso8601 | type == "number") and
     (.last_scheduled_at | fromdateiso8601 | type == "number")
   ' "$smoke_file" >/dev/null 2>&1; then
@@ -127,7 +129,9 @@ evaluate() {
         .checks.tailscale_backend_state == "Running" and
         .checks.tailscale_health_ok == true and
         (.checks.tailscale_health | length) == 0 and
-        .checks.guardian_last_automatic_restart_at == $state.guardian_restart_baseline
+        .checks.guardian_last_automatic_restart_at == $state.guardian_restart_baseline and
+        .checks.network_interface == $state.network_interface and
+        .checks.network_gateway == $state.network_gateway
       )
     })) as $slots |
     (reduce $slots[] as $slot ({}; .[($slot.scheduled_at | fromdateiso8601 | tostring)] = $slot)) as $by_slot |
@@ -160,13 +164,23 @@ evaluate() {
       rest_5xx_count:$rest5xx,
       rest_p95_ms:p95($latencies),
       guardian_restart_unchanged:$restart_unchanged,
+      network_interface:$state.network_interface,
+      network_gateway:$state.network_gateway,
+      network_identity_unchanged:all($samples[];
+        .checks.network_interface == $state.network_interface and
+        .checks.network_gateway == $state.network_gateway
+      ),
       acceptance:{
         full_30m_window:($evaluation_end >= $window_end),
         exactly_30_observed:($expected == 30 and $observed == 30),
         all_minutes_passed:($expected == 30 and $passed == 30),
         no_rest_5xx:($rest5xx == 0),
         rest_p95_below_5s:((p95($latencies) // 20000) < 5000),
-        no_guardian_restart:$restart_unchanged
+        no_guardian_restart:$restart_unchanged,
+        network_identity_unchanged:all($samples[];
+          .checks.network_interface == $state.network_interface and
+          .checks.network_gateway == $state.network_gateway
+        )
       }
     } |
     .status = (
@@ -232,7 +246,9 @@ case "$action" in
         .checks.tailscale_backend_state == "Running" and
         .checks.tailscale_health_ok == true and
         (.checks.tailscale_health | length) == 0 and
-        .checks.guardian_last_automatic_restart_at == $guardian
+        .checks.guardian_last_automatic_restart_at == $guardian and
+        (.checks.network_interface | type == "string" and length > 0) and
+        (.checks.network_gateway | type == "string" and length > 0)
       ' "$latest_file" >/dev/null 2>&1 ||
       [ "$((current_epoch - latest_epoch))" -gt 180 ]; then
       echo "A fresh passing observer sample for the exact production and runtime release is required." >&2
@@ -252,12 +268,16 @@ case "$action" in
     fi
     started_epoch=$(((current_epoch / 60 + 1) * 60))
     last_epoch=$((started_epoch + 29 * 60))
+    network_interface="$(jq -r '.checks.network_interface' "$latest_file")"
+    network_gateway="$(jq -r '.checks.network_gateway' "$latest_file")"
     payload="$(jq -n \
       --arg smoke_id "qiu-market-transport-$(date -u '+%Y%m%dT%H%M%SZ')-$RANDOM" \
       --arg deployment_id "$deployment_id" \
       --arg deployment_url "$deployment_url" \
       --arg deployment_commit "$deployment_commit" \
       --arg runtime_release_commit "$observed_runtime" \
+      --arg network_interface "$network_interface" \
+      --arg network_gateway "$network_gateway" \
       --arg created_at "$(iso_at "$current_epoch")" \
       --arg started_at "$(iso_at "$started_epoch")" \
       --arg last_scheduled_at "$(iso_at "$last_epoch")" \
@@ -270,6 +290,8 @@ case "$action" in
           deployment_url:$deployment_url,
           deployment_commit:$deployment_commit,
           runtime_release_commit:$runtime_release_commit,
+          network_interface:$network_interface,
+          network_gateway:$network_gateway,
           guardian_restart_baseline:$guardian_restart_baseline,
           created_at:$created_at,
           started_at:$started_at,
@@ -306,8 +328,37 @@ case "$action" in
     echo "$report"
     [ "$final_status" = passed ] || exit 1
     ;;
+  abort)
+    [ -s "$smoke_file" ] || {
+      echo "No transport smoke window exists." >&2
+      exit 1
+    }
+    [ "$(jq -r '.status // ""' "$smoke_file")" = active ] || {
+      echo "Transport smoke window is not active." >&2
+      exit 1
+    }
+    if ! report="$(evaluate 2>/dev/null)"; then
+      report="$(jq -n --argjson state "$(cat "$smoke_file")" '{
+        window:"transport_smoke_30m",
+        smoke_id:($state.smoke_id // "unknown"),
+        status:"failed",
+        reason:"state_schema_changed_during_active_window"
+      }')"
+    fi
+    completed_at="$(iso_at "$(now_epoch)")"
+    payload="$(jq \
+      --arg completed_at "$completed_at" \
+      --argjson result "$report" '
+        .status = "failed" |
+        .completed_at = $completed_at |
+        .failure_reason = "operator_aborted_after_irreversible_gate_failure" |
+        .result = ($result | .status = "failed")
+      ' "$smoke_file")"
+    write_state "$payload"
+    jq . "$smoke_file"
+    ;;
   *)
-    echo "Usage: $0 start|status|finish" >&2
+    echo "Usage: $0 start|status|finish|abort" >&2
     exit 2
     ;;
 esac

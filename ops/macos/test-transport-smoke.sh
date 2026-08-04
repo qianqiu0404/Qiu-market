@@ -56,7 +56,9 @@ jq -n \
       tailscale_backend_state:"Running",
       tailscale_health_ok:true,
       tailscale_health:[],
-      guardian_last_automatic_restart_at:0
+      guardian_last_automatic_restart_at:0,
+      network_interface:"en1",
+      network_gateway:"192.0.2.1"
     }
   }
 ' > "$latest_file"
@@ -99,6 +101,8 @@ for offset in $(seq 0 29); do
         tailscale_health_ok:true,
         tailscale_health:[],
         guardian_last_automatic_restart_at:0,
+        network_interface:"en1",
+        network_gateway:"192.0.2.1",
         trading_bff_http:200,
         system_bff_http:200,
         uniswap_bff_http:200,
