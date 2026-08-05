@@ -64,4 +64,3 @@ export function useI18n() {
     setLocale,
   }
 }
-
