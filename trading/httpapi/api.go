@@ -157,8 +157,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/trading/orders", s.submitOrder)
 	s.mux.HandleFunc("GET /api/v1/trading/orders", s.listOrders)
 	s.mux.HandleFunc("GET /api/v1/trading/orders/{order}", s.getOrder)
+	s.mux.HandleFunc("GET /api/v1/trading/orders/{order}/events", s.listOrderEvents)
 	s.mux.HandleFunc("POST /api/v1/trading/orders/{order}/cancel", s.cancelOrder)
+	s.mux.HandleFunc("GET /api/v1/trading/account/trades", s.listAccountTrades)
+	// Safe legacy compatibility route. It is intentionally backed by the
+	// account-scoped RPC and never serializes the rich two-sided Trade DTO.
 	s.mux.HandleFunc("GET /api/v1/trading/trades", s.listTrades)
+	s.mux.HandleFunc("GET /api/v1/trading/ledger/entries", s.listLedgerEntries)
 	s.mux.HandleFunc("GET /api/v1/trading/balances", s.getBalances)
 	s.mux.HandleFunc("POST /api/v1/trading/admin/fund", s.fundVirtual)
 	s.mux.HandleFunc("POST /api/v1/trading/ws-ticket", s.issueWebSocketTicket)
@@ -375,12 +380,49 @@ func (s *Server) listOrders(writer http.ResponseWriter, request *http.Request) {
 	if !ok {
 		return
 	}
+	limit, ok := parsePrivatePageLimit(writer, request)
+	if !ok {
+		return
+	}
+	var openOnly *bool
+	if request.URL.Query().Has("open_only") {
+		values := request.URL.Query()["open_only"]
+		if len(values) != 1 {
+			writeError(writer, http.StatusBadRequest, "validation_failed", "open_only must appear once")
+			return
+		}
+		parsed, err := strconv.ParseBool(values[0])
+		if err != nil {
+			writeError(writer, http.StatusBadRequest, "validation_failed", "open_only must be true or false")
+			return
+		}
+		openOnly = proto.Bool(parsed)
+	}
+	if openOnly != nil && request.URL.Query().Has("scope") {
+		writeError(
+			writer,
+			http.StatusBadRequest,
+			"validation_failed",
+			"open_only and scope cannot be combined",
+		)
+		return
+	}
 	response, err := s.client.ListOrders(request.Context(), &tradingv1.ListOrdersRequest{
 		MarketId:  s.config.MarketID,
 		AccountId: session.Principal.AccountID,
-		OpenOnly:  proto.Bool(parseBool(request.URL.Query().Get("open_only"))),
-		Limit:     uint32(parseLimit(request.URL.Query().Get("limit"), 100, 500)),
+		OpenOnly:  openOnly,
+		Limit:     limit,
+		Cursor:    request.URL.Query().Get("cursor"),
+		Scope:     request.URL.Query().Get("scope"),
+		Status:    request.URL.Query().Get("status"),
+		Side:      request.URL.Query().Get("side"),
+		Type:      request.URL.Query().Get("type"),
 	})
+	if err == nil {
+		for _, order := range response.GetOrders() {
+			redactPrivateOrderAccount(order)
+		}
+	}
 	s.writeGRPC(writer, response, err)
 }
 
@@ -394,7 +436,16 @@ func (s *Server) getOrder(writer http.ResponseWriter, request *http.Request) {
 		AccountId: session.Principal.AccountID,
 		OrderId:   request.PathValue("order"),
 	})
+	if err == nil {
+		redactPrivateOrderAccount(response)
+	}
 	s.writeGRPC(writer, response, err)
+}
+
+func redactPrivateOrderAccount(order *tradingv1.Order) {
+	if order != nil {
+		order.AccountId = ""
+	}
 }
 
 type cancelOrderBody struct {
@@ -425,12 +476,112 @@ func (s *Server) listTrades(writer http.ResponseWriter, request *http.Request) {
 	if !ok {
 		return
 	}
-	response, err := s.client.ListTrades(request.Context(), &tradingv1.ListTradesRequest{
+	limit, ok := parsePrivatePageLimit(writer, request)
+	if !ok {
+		return
+	}
+	accountResponse, err := s.client.ListAccountTrades(
+		request.Context(),
+		&tradingv1.ListAccountTradesRequest{
+			MarketId:  s.config.MarketID,
+			AccountId: session.Principal.AccountID,
+			Limit:     limit,
+		},
+	)
+	if err != nil {
+		s.writeGRPC(writer, nil, err)
+		return
+	}
+	response := &tradingv1.ListTradesResponse{
+		Trades: make([]*tradingv1.Trade, 0, len(accountResponse.GetTrades())),
+	}
+	for _, trade := range accountResponse.GetTrades() {
+		response.Trades = append(response.Trades, legacyTradeFromAccountView(trade))
+	}
+	s.writeGRPC(writer, response, nil)
+}
+
+func (s *Server) listAccountTrades(writer http.ResponseWriter, request *http.Request) {
+	session, _, ok := s.requireSession(writer, request, false)
+	if !ok {
+		return
+	}
+	limit, ok := parsePrivatePageLimit(writer, request)
+	if !ok {
+		return
+	}
+	response, err := s.client.ListAccountTrades(request.Context(), &tradingv1.ListAccountTradesRequest{
 		MarketId:  s.config.MarketID,
 		AccountId: session.Principal.AccountID,
-		Limit:     uint32(parseLimit(request.URL.Query().Get("limit"), 100, 500)),
+		Limit:     limit,
+		Cursor:    request.URL.Query().Get("cursor"),
+		Side:      request.URL.Query().Get("side"),
 	})
 	s.writeGRPC(writer, response, err)
+}
+
+func (s *Server) listOrderEvents(writer http.ResponseWriter, request *http.Request) {
+	session, _, ok := s.requireSession(writer, request, false)
+	if !ok {
+		return
+	}
+	limit, ok := parsePrivatePageLimit(writer, request)
+	if !ok {
+		return
+	}
+	response, err := s.client.ListOrderEvents(request.Context(), &tradingv1.ListOrderEventsRequest{
+		MarketId:  s.config.MarketID,
+		AccountId: session.Principal.AccountID,
+		OrderId:   request.PathValue("order"),
+		Limit:     limit,
+		Cursor:    request.URL.Query().Get("cursor"),
+	})
+	s.writeGRPC(writer, response, err)
+}
+
+func (s *Server) listLedgerEntries(writer http.ResponseWriter, request *http.Request) {
+	session, _, ok := s.requireSession(writer, request, false)
+	if !ok {
+		return
+	}
+	limit, ok := parsePrivatePageLimit(writer, request)
+	if !ok {
+		return
+	}
+	response, err := s.client.ListLedgerEntries(request.Context(), &tradingv1.ListLedgerEntriesRequest{
+		MarketId:  s.config.MarketID,
+		AccountId: session.Principal.AccountID,
+		Limit:     limit,
+		Cursor:    request.URL.Query().Get("cursor"),
+		Asset:     request.URL.Query().Get("asset"),
+		Reason:    request.URL.Query().Get("reason"),
+	})
+	s.writeGRPC(writer, response, err)
+}
+
+// legacyTradeFromAccountView keeps the deprecated private /trades response
+// safe during the one-release migration to /account/trades. It deliberately
+// leaves every account ID and the counterparty order ID empty.
+func legacyTradeFromAccountView(trade *tradingv1.AccountTrade) *tradingv1.Trade {
+	legacy := &tradingv1.Trade{
+		Id: trade.GetId(), MarketId: trade.GetMarketId(), Price: trade.GetPrice(),
+		Quantity: trade.GetQuantity(), QuoteAmount: trade.GetQuoteAmount(),
+	}
+	if trade.GetLiquidityRole() == "maker" {
+		legacy.MakerOrderId = trade.GetOrderId()
+	} else {
+		legacy.TakerOrderId = trade.GetOrderId()
+	}
+	fee := &tradingv1.Fee{
+		Asset: trade.GetFeeAsset(), Amount: trade.GetFeeAmount(),
+		RateBps: trade.GetFeeRateBps(), Role: trade.GetLiquidityRole(),
+	}
+	if trade.GetSide() == "buy" {
+		legacy.BuyerFee = fee
+	} else {
+		legacy.SellerFee = fee
+	}
+	return legacy
 }
 
 func (s *Server) getBalances(writer http.ResponseWriter, request *http.Request) {
@@ -596,15 +747,25 @@ func (s *Server) writeGRPC(writer http.ResponseWriter, value any, err error) {
 	}
 	current := status.Convert(err)
 	httpStatus := http.StatusInternalServerError
+	errorCode := strings.ToLower(current.Code().String())
+	message := current.Message()
 	switch current.Code() {
 	case codes.InvalidArgument:
 		httpStatus = http.StatusBadRequest
+		errorCode = "validation_failed"
+		if strings.HasPrefix(message, "invalid_cursor:") {
+			errorCode = "invalid_cursor"
+		}
+		message = stripTradingErrorPrefix(message)
 	case codes.Unauthenticated:
 		httpStatus = http.StatusUnauthorized
 	case codes.PermissionDenied:
 		httpStatus = http.StatusForbidden
 	case codes.NotFound:
 		httpStatus = http.StatusNotFound
+		if strings.HasPrefix(message, "order_not_found") {
+			errorCode = "order_not_found"
+		}
 	case codes.AlreadyExists:
 		httpStatus = http.StatusConflict
 	case codes.FailedPrecondition:
@@ -613,10 +774,24 @@ func (s *Server) writeGRPC(writer http.ResponseWriter, value any, err error) {
 		httpStatus = http.StatusTooManyRequests
 	case codes.Unavailable:
 		httpStatus = http.StatusServiceUnavailable
+		errorCode = "backend_unavailable"
 	case codes.DeadlineExceeded:
 		httpStatus = http.StatusGatewayTimeout
+		errorCode = "backend_timeout"
+	case codes.Unimplemented:
+		httpStatus = http.StatusServiceUnavailable
+		errorCode = "backend_unavailable"
 	}
-	writeError(writer, httpStatus, strings.ToLower(current.Code().String()), current.Message())
+	writeError(writer, httpStatus, errorCode, message)
+}
+
+func stripTradingErrorPrefix(message string) string {
+	for _, prefix := range []string{"validation_failed:", "invalid_cursor:"} {
+		if strings.HasPrefix(message, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(message, prefix))
+		}
+	}
+	return message
 }
 
 func (s *Server) expireCookie(writer http.ResponseWriter, name, path string, httpOnly bool) {
@@ -720,9 +895,21 @@ func parseLimit(value string, fallback, maximum int) int {
 	return parsed
 }
 
-func parseBool(value string) bool {
-	parsed, _ := strconv.ParseBool(value)
-	return parsed
+func parsePrivatePageLimit(writer http.ResponseWriter, request *http.Request) (uint32, bool) {
+	values, exists := request.URL.Query()["limit"]
+	if !exists {
+		return 50, true
+	}
+	if len(values) != 1 {
+		writeError(writer, http.StatusBadRequest, "validation_failed", "limit must appear once")
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(values[0])
+	if err != nil || parsed < 1 || parsed > 100 {
+		writeError(writer, http.StatusBadRequest, "validation_failed", "limit must be in [1,100]")
+		return 0, false
+	}
+	return uint32(parsed), true
 }
 
 func parseOrderEnums(

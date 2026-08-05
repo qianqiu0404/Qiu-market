@@ -61,7 +61,10 @@ type Config struct {
 	EventPollEvery time.Duration
 	// Queries is the optional Trade Product V1 read-model boundary. New query
 	// RPCs remain unimplemented until a PostgreSQL-backed Reader is wired.
-	Queries  query.Reader
+	Queries query.Reader
+	// Cursors is required whenever Queries is configured. Process wiring owns
+	// loading current/previous secrets from the private runtime environment.
+	Cursors  CursorConfig
 	Recovery interface {
 		Status(context.Context) (recovery.Status, error)
 		Promote(context.Context, recovery.Binding, recovery.TransportEvidence) (recovery.Status, error)
@@ -223,6 +226,7 @@ type Server struct {
 	events   EventSource
 	delivery DeliveryStatusSource
 	queries  query.Reader
+	cursors  *queryCursorCodec
 	config   Config
 }
 
@@ -244,7 +248,17 @@ func New(
 	if len(delivery) > 1 {
 		return nil, fmt.Errorf("at most one delivery status source is supported")
 	}
-	server := &Server{engine: engine, events: events, queries: config.Queries, config: config}
+	var cursors *queryCursorCodec
+	if config.Queries != nil {
+		var err error
+		cursors, err = newQueryCursorCodec(config.Cursors)
+		if err != nil {
+			return nil, fmt.Errorf("configure trading query cursors: %w", err)
+		}
+	}
+	server := &Server{
+		engine: engine, events: events, queries: config.Queries, cursors: cursors, config: config,
+	}
 	if len(delivery) == 1 {
 		server.delivery = delivery[0]
 	}
@@ -351,30 +365,10 @@ func (s *Server) GetOrder(
 }
 
 func (s *Server) ListOrders(
-	_ context.Context,
+	ctx context.Context,
 	request *tradingv1.ListOrdersRequest,
 ) (*tradingv1.ListOrdersResponse, error) {
-	market, err := s.market(request.GetMarketId())
-	if err != nil {
-		return nil, err
-	}
-	if request.GetAccountId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "account_id is required")
-	}
-	orders, err := s.engine.Orders(domain.AccountID(request.GetAccountId()), request.GetOpenOnly())
-	if err != nil {
-		return nil, mapError(err)
-	}
-	orders = limitSlice(orders, request.GetLimit(), 100)
-	response := &tradingv1.ListOrdersResponse{Orders: make([]*tradingv1.Order, 0, len(orders))}
-	for _, order := range orders {
-		converted, convertErr := toOrder(market, order)
-		if convertErr != nil {
-			return nil, status.Error(codes.Internal, convertErr.Error())
-		}
-		response.Orders = append(response.Orders, converted)
-	}
-	return response, nil
+	return s.listOrdersV1(ctx, request)
 }
 
 func (s *Server) ListTrades(
@@ -385,7 +379,13 @@ func (s *Server) ListTrades(
 	if err != nil {
 		return nil, err
 	}
-	trades, err := s.engine.Trades(domain.AccountID(request.GetAccountId()))
+	if request.GetAccountId() != "" {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"account_id is not accepted by the public trade feed",
+		)
+	}
+	trades, err := s.engine.Trades("")
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -396,9 +396,26 @@ func (s *Server) ListTrades(
 		if convertErr != nil {
 			return nil, status.Error(codes.Internal, convertErr.Error())
 		}
+		redactPublicTradeAccounts(converted)
 		response.Trades = append(response.Trades, converted)
 	}
 	return response, nil
+}
+
+func redactPublicTradeAccounts(trade *tradingv1.Trade) {
+	if trade == nil {
+		return
+	}
+	trade.MakerAccountId = ""
+	trade.TakerAccountId = ""
+	trade.BuyerAccountId = ""
+	trade.SellerAccountId = ""
+	if trade.BuyerFee != nil {
+		trade.BuyerFee.AccountId = ""
+	}
+	if trade.SellerFee != nil {
+		trade.SellerFee.AccountId = ""
+	}
 }
 
 func (s *Server) GetBalances(

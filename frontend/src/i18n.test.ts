@@ -5,6 +5,7 @@ import {
   normalizeLocale,
   resolveInitialLocale,
   setLocale,
+  tradeMessageKeys,
 } from './i18n'
 
 describe('locale selection', () => {
@@ -33,5 +34,10 @@ describe('locale selection', () => {
 
     expect(initializeLocale()).toBe('zh-CN')
     expect(document.documentElement.lang).toBe('zh-CN')
+  })
+
+  it('keeps the Trade Product V1 English and Chinese key sets identical', () => {
+    expect(tradeMessageKeys('zh-CN')).toEqual(tradeMessageKeys('en'))
+    expect(tradeMessageKeys('en').length).toBeGreaterThan(100)
   })
 })

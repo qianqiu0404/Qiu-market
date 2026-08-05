@@ -24,6 +24,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/auth"
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/httpapi"
+	"github.com/the-web3/s78-market-services/trading/query"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
@@ -132,8 +133,31 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 	}
 	var orders tradingv1.ListOrdersResponse
 	decodeResponse(t, response, &orders)
-	if len(orders.Orders) != 1 || orders.Orders[0].AccountId != "github:qianqiu0404" {
-		t.Fatalf("forged account was not ignored: %+v", orders.Orders)
+	if len(orders.Orders) != 1 || orders.Orders[0].AccountId != "" {
+		t.Fatalf("private order account was not minimized: %+v", orders.Orders)
+	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("private orders cache control = %q", response.Header.Get("Cache-Control"))
+	}
+	response = do(t, client, http.MethodGet,
+		httpServer.URL+"/api/v1/trading/orders?cursor=not-a-valid-cursor", nil, "", "")
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid cursor status = %d: %s", response.StatusCode, readBody(t, response))
+	}
+	var cursorFailure map[string]string
+	decodeResponse(t, response, &cursorFailure)
+	if cursorFailure["code"] != "invalid_cursor" {
+		t.Fatalf("invalid cursor response = %+v", cursorFailure)
+	}
+	response = do(t, client, http.MethodGet,
+		httpServer.URL+"/api/v1/trading/orders?open_only=true&scope=", nil, "", "")
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("scope/open_only conflict status = %d: %s", response.StatusCode, readBody(t, response))
+	}
+	var scopeFailure map[string]string
+	decodeResponse(t, response, &scopeFailure)
+	if scopeFailure["code"] != "validation_failed" {
+		t.Fatalf("scope/open_only conflict response = %+v", scopeFailure)
 	}
 
 	mustFundGRPC(t, grpcClient, "fund-victim", "victim", "BTC", "0.2")
@@ -196,6 +220,70 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 		trades.Trades[0].MakerAccountId != "" || trades.Trades[0].TakerAccountId != "" ||
 		trades.Trades[0].BuyerAccountId != "" || trades.Trades[0].SellerAccountId != "" {
 		t.Fatalf("public trade leaked accounts: %+v", trades.Trades)
+	}
+
+	// The new private endpoint takes the account only from the session. The
+	// deprecated private endpoint is derived from that one-sided DTO and must
+	// never re-expose the rich two-sided Trade fields.
+	response = do(t, client, http.MethodPost,
+		httpServer.URL+"/api/v1/trading/admin/fund",
+		map[string]any{"request_id": "fund-self-usdt", "asset": "USDT", "amount": "1000"},
+		"http://trade.test", csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("fund self USDT status = %d: %s", response.StatusCode, readBody(t, response))
+	}
+	_ = response.Body.Close()
+	mustFundGRPC(t, grpcClient, "fund-private-maker", "private-maker", "BTC", "0.02")
+	privateMaker, err := grpcClient.SubmitOrder(context.Background(), &tradingv1.SubmitOrderRequest{
+		MarketId: "BTC-USDT", AccountId: "private-maker", ClientOrderId: "private-maker-sell",
+		Side: tradingv1.Side_SIDE_SELL, Type: tradingv1.OrderType_ORDER_TYPE_LIMIT,
+		TimeInForce: tradingv1.TimeInForce_TIME_IN_FORCE_GTC,
+		Price:       "60000", Quantity: "0.01",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = do(t, client, http.MethodPost,
+		httpServer.URL+"/api/v1/trading/orders",
+		map[string]any{
+			"client_order_id": "private-self-buy", "side": "buy", "type": "limit",
+			"time_in_force": "ioc", "price": "60000", "quantity": "0.01",
+		},
+		"http://trade.test", csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("private taker status = %d: %s", response.StatusCode, readBody(t, response))
+	}
+	var privateOrder tradingv1.CommandResult
+	decodeResponse(t, response, &privateOrder)
+
+	response = do(t, client, http.MethodGet,
+		httpServer.URL+"/api/v1/trading/account/trades?account_id=victim", nil, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("account trades status = %d: %s", response.StatusCode, readBody(t, response))
+	}
+	var accountTrades tradingv1.ListAccountTradesResponse
+	decodeResponse(t, response, &accountTrades)
+	if len(accountTrades.Trades) != 1 || accountTrades.Trades[0].OrderId != privateOrder.OrderId ||
+		accountTrades.Trades[0].OrderId == privateMaker.OrderId {
+		t.Fatalf("account-scoped trades used a forged/counterparty identity: %+v", accountTrades.Trades)
+	}
+
+	response = do(t, client, http.MethodGet,
+		httpServer.URL+"/api/v1/trading/trades", nil, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("legacy private trades status = %d: %s", response.StatusCode, readBody(t, response))
+	}
+	var legacyTrades tradingv1.ListTradesResponse
+	decodeResponse(t, response, &legacyTrades)
+	if len(legacyTrades.Trades) != 1 {
+		t.Fatalf("legacy private trades = %+v", legacyTrades.Trades)
+	}
+	legacy := legacyTrades.Trades[0]
+	if legacy.MakerAccountId != "" || legacy.TakerAccountId != "" ||
+		legacy.BuyerAccountId != "" || legacy.SellerAccountId != "" ||
+		legacy.MakerOrderId != "" || legacy.TakerOrderId != privateOrder.OrderId ||
+		legacy.BuyerFee == nil || legacy.BuyerFee.AccountId != "" || legacy.SellerFee != nil {
+		t.Fatalf("legacy private trade leaked rich DTO fields: %+v", legacy)
 	}
 
 	response = do(t, client, http.MethodPost,
@@ -309,7 +397,12 @@ func newGRPCTestClient(
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := tradingserver.New(runner, nil, tradingserver.DefaultConfig())
+	serverConfig := tradingserver.DefaultConfig()
+	serverConfig.Queries = runnerQueryReader{runner: runner}
+	serverConfig.Cursors = tradingserver.CursorConfig{Current: tradingserver.CursorKeyConfig{
+		KeyID: "http-test", Secret: bytes.Repeat([]byte{0x41}, 32),
+	}}
+	service, err := tradingserver.New(runner, nil, serverConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +438,112 @@ func newGRPCTestClient(
 	})
 	return tradingv1.NewTradingServiceClient(connection), runner
 }
+
+type runnerQueryReader struct {
+	runner *tradingruntime.MarketRunner
+}
+
+func (r runnerQueryReader) GetOrder(
+	_ context.Context,
+	accountID domain.AccountID,
+	orderID domain.OrderID,
+) (query.OrderView, bool, error) {
+	order, found, err := r.runner.Order(orderID)
+	if err != nil || !found || order.AccountID != accountID {
+		return query.OrderView{}, false, err
+	}
+	return query.OrderView{Order: order}, true, nil
+}
+
+func (r runnerQueryReader) ListOrders(
+	_ context.Context,
+	accountID domain.AccountID,
+	filter query.OrderFilter,
+	_ *query.OrderCursor,
+	limit int,
+) (query.OrderPage, error) {
+	orders, err := r.runner.Orders(accountID, filter.Scope == query.OrderScopeOpen)
+	if err != nil {
+		return query.OrderPage{}, err
+	}
+	result := make([]query.OrderView, 0, len(orders))
+	for _, order := range orders {
+		if filter.Scope == query.OrderScopeHistory && order.IsOpen() {
+			continue
+		}
+		result = append(result, query.OrderView{Order: order})
+		if len(result) == limit {
+			break
+		}
+	}
+	return query.OrderPage{Orders: result}, nil
+}
+
+func (r runnerQueryReader) ListAccountTrades(
+	_ context.Context,
+	accountID domain.AccountID,
+	_ query.TradeFilter,
+	_ *query.TradeCursor,
+	limit int,
+) (query.TradePage, error) {
+	trades, err := r.runner.Trades(accountID)
+	if err != nil {
+		return query.TradePage{}, err
+	}
+	result := make([]query.AccountTrade, 0, len(trades))
+	for index, trade := range trades {
+		view := query.AccountTrade{
+			ID: trade.ID, MarketID: trade.MarketID, Price: trade.Price,
+			Quantity: trade.Quantity, QuoteAmount: trade.QuoteAmount,
+			Sequence: uint64(len(trades) - index), EventIndex: 1,
+		}
+		if trade.BuyerAccountID == accountID {
+			view.Side = domain.SideBuy
+			view.FeeAsset = trade.BuyerFee.Asset
+			view.FeeAmount = trade.BuyerFee.Amount
+			view.FeeRateBPS = trade.BuyerFee.RateBPS
+		} else {
+			view.Side = domain.SideSell
+			view.FeeAsset = trade.SellerFee.Asset
+			view.FeeAmount = trade.SellerFee.Amount
+			view.FeeRateBPS = trade.SellerFee.RateBPS
+		}
+		if trade.MakerAccountID == accountID {
+			view.OrderID = trade.MakerOrderID
+			view.LiquidityRole = domain.LiquidityRoleMaker
+		} else {
+			view.OrderID = trade.TakerOrderID
+			view.LiquidityRole = domain.LiquidityRoleTaker
+		}
+		result = append(result, view)
+		if len(result) == limit {
+			break
+		}
+	}
+	return query.TradePage{Trades: result}, nil
+}
+
+func (runnerQueryReader) ListOrderEvents(
+	context.Context,
+	domain.AccountID,
+	domain.OrderID,
+	*query.TimelineCursor,
+	int,
+) (query.OrderEventPage, error) {
+	return query.OrderEventPage{}, nil
+}
+
+func (runnerQueryReader) ListLedgerEntries(
+	context.Context,
+	domain.AccountID,
+	query.LedgerFilter,
+	*query.LedgerCursor,
+	int,
+) (query.LedgerPage, error) {
+	return query.LedgerPage{}, nil
+}
+
+var _ query.Reader = runnerQueryReader{}
 
 func mustFundGRPC(
 	t *testing.T,

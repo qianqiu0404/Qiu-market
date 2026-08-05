@@ -373,8 +373,10 @@ require_verified_release() {
 
 preflight_production() {
   local available_bytes
+  local current_cursor_key_id
+  local previous_cursor_key_id
   local minimum_deploy_bytes="${QIU_MARKET_MINIMUM_DEPLOY_BYTES:-35000000000}"
-  for command_name in curl git go jq launchctl nc npm pg_dump pg_isready pg_restore psql shasum; do
+  for command_name in base64 curl git go jq launchctl nc npm pg_dump pg_isready pg_restore psql shasum; do
     qiu_require_command "$command_name"
   done
   qiu_require_private_environment
@@ -382,6 +384,23 @@ preflight_production() {
     [[ "${MARKET_PUBLIC_PROXY_HMAC_SECRET:-}" == replace-with-* ]]; then
     echo "Production HMAC secret is missing or still a placeholder." >&2
     return 1
+  fi
+  if [ -z "${MARKET_TRADING_CURSOR_HMAC_CURRENT:-}" ] ||
+    [[ "${MARKET_TRADING_CURSOR_HMAC_CURRENT:-}" == replace-with-* ]]; then
+    echo "Persistent Trade V1 cursor HMAC key is missing or still a placeholder." >&2
+    return 1
+  fi
+  current_cursor_key_id="$(
+    qiu_validate_cursor_hmac_value "$MARKET_TRADING_CURSOR_HMAC_CURRENT"
+  )" || return 1
+  if [ -n "${MARKET_TRADING_CURSOR_HMAC_PREVIOUS:-}" ]; then
+    previous_cursor_key_id="$(
+      qiu_validate_cursor_hmac_value "$MARKET_TRADING_CURSOR_HMAC_PREVIOUS"
+    )" || return 1
+    if [ "$current_cursor_key_id" = "$previous_cursor_key_id" ]; then
+      echo "Current and previous cursor HMAC key IDs must differ." >&2
+      return 1
+    fi
   fi
   if ! pg_isready -q \
     --host="$QIU_MARKET_DB_HOST" \

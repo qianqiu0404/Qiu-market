@@ -271,8 +271,7 @@ func TestTradingGRPCDecimalContractAndOwnership(t *testing.T) {
 	assertBalance(t, balances.Balances, "USDT", "15800", "0")
 
 	trades, err := client.ListTrades(ctx, &tradingv1.ListTradesRequest{
-		MarketId:  "BTC-USDT",
-		AccountId: "taker",
+		MarketId: "BTC-USDT",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -280,6 +279,17 @@ func TestTradingGRPCDecimalContractAndOwnership(t *testing.T) {
 	if len(trades.Trades) != 1 || trades.Trades[0].Price != "60000" ||
 		trades.Trades[0].Quantity != "0.07" {
 		t.Fatalf("trades = %+v", trades.Trades)
+	}
+	if trades.Trades[0].MakerAccountId != "" || trades.Trades[0].TakerAccountId != "" ||
+		trades.Trades[0].BuyerAccountId != "" || trades.Trades[0].SellerAccountId != "" ||
+		trades.Trades[0].BuyerFee.GetAccountId() != "" ||
+		trades.Trades[0].SellerFee.GetAccountId() != "" {
+		t.Fatalf("public ListTrades leaked account identity: %+v", trades.Trades[0])
+	}
+	if _, err := client.ListTrades(ctx, &tradingv1.ListTradesRequest{
+		MarketId: "BTC-USDT", AccountId: "taker",
+	}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("public ListTrades accepted account_id: %v", err)
 	}
 	makerOrder, err := client.GetOrder(ctx, &tradingv1.GetOrderRequest{
 		MarketId:  "BTC-USDT",

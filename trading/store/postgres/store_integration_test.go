@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +43,8 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_projection_checkpoint WHERE market_id=$1`, market.ID)
+		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_order_event WHERE market_id=$1`, market.ID)
+		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_order_event_checkpoint WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_outbox_checkpoint WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_ledger_entry WHERE market_id=$1`, market.ID)
 		_, _ = pool.Exec(cleanupContext, `DELETE FROM trading_balance WHERE market_id=$1`, market.ID)
@@ -120,6 +123,8 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 
 	for _, table := range []string{
 		"trading_projection_checkpoint",
+		"trading_order_event",
+		"trading_order_event_checkpoint",
 		"trading_ledger_entry",
 		"trading_balance",
 		"trading_trade",
@@ -220,10 +225,229 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 		t.Fatalf("stream sequence after stale writer = %d, want 5", sequence)
 	}
 
+	if _, err := pool.Exec(ctx, `
+		UPDATE trading_event_batch
+		SET schema_version=CASE WHEN sequence<=2 THEN 3 WHEN sequence=3 THEN 4 ELSE 5 END
+		WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM trading_order_event WHERE market_id=$1`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM trading_order_event_checkpoint WHERE market_id=$1`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	persistence, err = postgresstore.New(ctx, pool, market)
+	if err != nil {
+		t.Fatalf("mixed-schema lifecycle backfill: %v", err)
+	}
+	var lifecycleCheckpoint int64
+	var lifecycleRecordedRows int64
+	var lifecycleRows int64
+	if err := pool.QueryRow(ctx, `
+		SELECT checkpoint.sequence, checkpoint.row_count, count(events.*)
+		FROM trading_order_event_checkpoint AS checkpoint
+		LEFT JOIN trading_order_event AS events USING (market_id)
+		WHERE checkpoint.market_id=$1
+		GROUP BY checkpoint.sequence, checkpoint.row_count
+	`, market.ID).Scan(&lifecycleCheckpoint, &lifecycleRecordedRows, &lifecycleRows); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleCheckpoint != 5 || lifecycleRows == 0 || lifecycleRecordedRows != lifecycleRows {
+		t.Fatalf(
+			"mixed lifecycle checkpoint/recorded/actual=%d/%d/%d",
+			lifecycleCheckpoint,
+			lifecycleRecordedRows,
+			lifecycleRows,
+		)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event WHERE market_id=$1 AND sequence>3
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trading_order_event_checkpoint
+		SET sequence=3,
+		    row_count=(
+		        SELECT count(*) FROM trading_order_event
+		        WHERE market_id=$1
+		    )
+		WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err != nil {
+		t.Fatalf("resume mixed lifecycle backfill: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT sequence, row_count FROM trading_order_event_checkpoint WHERE market_id=$1
+	`, market.ID).Scan(&lifecycleCheckpoint, &lifecycleRecordedRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM trading_order_event WHERE market_id=$1
+	`, market.ID).Scan(&lifecycleRows); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleCheckpoint != 5 || lifecycleRecordedRows != lifecycleRows {
+		t.Fatalf(
+			"resumed lifecycle checkpoint/recorded/actual=%d/%d/%d",
+			lifecycleCheckpoint,
+			lifecycleRecordedRows,
+			lifecycleRows,
+		)
+	}
+
 	conflict := market
 	conflict.MakerFeeBPS++
 	if _, err := postgresstore.New(ctx, pool, conflict); !errors.Is(err, postgresstore.ErrMarketConfigConflict) {
 		t.Fatalf("market config conflict error = %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event
+		WHERE ctid=(
+			SELECT ctid FROM trading_order_event
+			WHERE market_id=$1
+			ORDER BY sequence, event_index, timeline_index
+			LIMIT 1
+		)
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err == nil ||
+		!strings.Contains(err.Error(), "row-count mismatch") {
+		t.Fatalf("missing lifecycle row did not fail closed: %v", err)
+	}
+
+	// Dropping both the rebuildable lifecycle and its checkpoint is the safe
+	// operator repair. A checkpoint alone is never rewritten to bless damage.
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event_checkpoint WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err != nil {
+		t.Fatalf("safe lifecycle rebuild after damage: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event_checkpoint WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err == nil ||
+		!strings.Contains(err.Error(), "orphaned rows") {
+		t.Fatalf("orphaned lifecycle rows did not fail closed: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err != nil {
+		t.Fatalf("safe lifecycle rebuild after orphan repair: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO trading_order_event (
+			market_id, account_id, order_id, sequence, event_index,
+			timeline_index, event_type, payload, occurred_at
+		)
+		SELECT market_id, account_id, order_id, sequence, event_index,
+		       timeline_index+1000, event_type, payload, occurred_at
+		FROM trading_order_event
+		WHERE market_id=$1
+		ORDER BY sequence, event_index, timeline_index
+		LIMIT 1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err == nil ||
+		!strings.Contains(err.Error(), "row-count mismatch") {
+		t.Fatalf("extra lifecycle row did not fail closed: %v", err)
+	}
+}
+
+func TestPostgresLifecycleIntegrityStopsBothCheckpoints(t *testing.T) {
+	dsn := os.Getenv("S78_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("S78_TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if err := postgresstore.EnsureSchema(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	market := domain.DefaultBTCUSDTMarket()
+	market.ID = domain.MarketID(fmt.Sprintf("BTC-USDT-INTEGRITY-%d", time.Now().UnixNano()))
+	defer cleanupPostgresMarket(t, pool, market.ID)
+
+	memory := corestore.NewMemory()
+	fixture, err := exchange.New(market, memory, memory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustFund(t, fixture, "fund-maker", "maker", market.BaseAsset, 20_000_000)
+	mustSubmit(t, fixture, domain.NewOrder{
+		ClientOrderID: "maker-order",
+		AccountID:     "maker",
+		Side:          domain.SideSell,
+		Type:          domain.OrderTypeLimit,
+		TimeInForce:   domain.TimeInForceGTC,
+		Price:         60_000_000_000,
+		Quantity:      10_000_000,
+	})
+	records, err := memory.RecordsAfter(ctx, 0)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("fixture records=%d err=%v", len(records), err)
+	}
+	records[1].Journal[0].Reference = "order-hold:wrong-order"
+
+	persistence, err := postgresstore.New(ctx, pool, market)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistence.Append(ctx, 0, records[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistence.Append(ctx, 1, records[1]); err == nil {
+		t.Fatal("corrupt lifecycle append unexpectedly succeeded")
+	}
+	current, err := persistence.CurrentSequence(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, found, err := persistence.ProjectionCheckpoint(ctx)
+	if err != nil || !found {
+		t.Fatalf("projection checkpoint found=%v err=%v", found, err)
+	}
+	var lifecycle int64
+	if err := pool.QueryRow(ctx, `
+		SELECT sequence FROM trading_order_event_checkpoint WHERE market_id=$1
+	`, market.ID).Scan(&lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if current != 1 || projection.Sequence != 1 || lifecycle != 1 {
+		t.Fatalf(
+			"checkpoints after corrupt append current/projection/lifecycle=%d/%d/%d",
+			current,
+			projection.Sequence,
+			lifecycle,
+		)
 	}
 }
 
@@ -347,4 +571,37 @@ func mustRecords(t *testing.T, persistence *postgresstore.Store) []corestore.Rec
 		t.Fatal(err)
 	}
 	return records
+}
+
+func cleanupPostgresMarket(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	marketID domain.MarketID,
+) {
+	t.Helper()
+	cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cleanupCancel()
+	for _, table := range []string{
+		"trading_projection_checkpoint",
+		"trading_order_event",
+		"trading_order_event_checkpoint",
+		"trading_ledger_entry",
+		"trading_balance",
+		"trading_trade",
+		"trading_order",
+		"trading_event_feed",
+		"trading_outbox_checkpoint",
+		"trading_outbox",
+		"trading_snapshot",
+		"trading_event_batch",
+		"trading_market",
+	} {
+		if _, err := pool.Exec(
+			cleanupContext,
+			`DELETE FROM `+table+` WHERE market_id=$1`,
+			marketID,
+		); err != nil {
+			t.Errorf("cleanup %s: %v", table, err)
+		}
+	}
 }

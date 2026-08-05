@@ -20,6 +20,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/httpapi"
 	"github.com/the-web3/s78-market-services/trading/outbox"
+	readmodelpostgres "github.com/the-web3/s78-market-services/trading/readmodel/postgres"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
@@ -37,6 +38,13 @@ func run() error {
 	config, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	cursors, err := tradingserver.ParseCursorConfig(
+		config.cursorHMACCurrent,
+		config.cursorHMACPrevious,
+	)
+	if err != nil {
+		return fmt.Errorf("configure Trade V1 cursors: %w", err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -56,6 +64,10 @@ func run() error {
 	persistence, err := postgresstore.New(ctx, pool, market)
 	if err != nil {
 		return err
+	}
+	queries, err := readmodelpostgres.New(pool, market)
+	if err != nil {
+		return fmt.Errorf("create Trade V1 reader: %w", err)
 	}
 	runner, err := tradingruntime.NewMarketRunner(
 		ctx,
@@ -89,10 +101,13 @@ func run() error {
 		<-publisherDone
 	}()
 
+	rpcConfig := tradingserver.DefaultConfig()
+	rpcConfig.Queries = queries
+	rpcConfig.Cursors = cursors
 	rpcService, err := tradingserver.New(
 		runner,
 		tradingserver.NewPostgresEventSource(persistence),
-		tradingserver.DefaultConfig(),
+		rpcConfig,
 		publisher,
 	)
 	if err != nil {

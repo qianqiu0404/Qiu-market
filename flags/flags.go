@@ -216,6 +216,16 @@ var (
 		Value:   true,
 		EnvVars: prefixEnvVars("TRADING_DEMO_MAKER_ENABLED"),
 	}
+	TradingCursorHMACCurrentFlag = &cli.StringFlag{
+		Name:    "trading-cursor-hmac-current",
+		Usage:   "private key_id:base64url-secret used to sign Trade V1 cursors",
+		EnvVars: prefixEnvVars("TRADING_CURSOR_HMAC_CURRENT"),
+	}
+	TradingCursorHMACPreviousFlag = &cli.StringFlag{
+		Name:    "trading-cursor-hmac-previous",
+		Usage:   "optional previous key_id:base64url-secret accepted during cursor rotation",
+		EnvVars: prefixEnvVars("TRADING_CURSOR_HMAC_PREVIOUS"),
+	}
 	TradingRecoveryGateFlag = &cli.BoolFlag{
 		Name:    "trading-recovery-gate",
 		Usage:   "enable the durable fail-closed trading recovery write gate; activation requires an operator recovery workflow",
@@ -322,6 +332,8 @@ var optionalFlags = []cli.Flag{
 	TradingGitHubSecretFlag,
 	TradingGitHubRedirectFlag,
 	TradingDemoMakerFlag,
+	TradingCursorHMACCurrentFlag,
+	TradingCursorHMACPreviousFlag,
 	TradingRecoveryGateFlag,
 	TradingProductionOriginFlag,
 	TradingDeploymentIDFlag,

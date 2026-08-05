@@ -24,6 +24,8 @@ export const PENDING_TRADING_WRITE_STORAGE_KEY =
 export const LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY =
   'qiu-market.pending-trading-write.v1'
 
+type PendingWriteStorageReader = Pick<Storage, 'getItem'>
+
 const terminalOrderStatuses = new Set([
   'filled',
   'canceled',
@@ -79,6 +81,66 @@ export function parsePendingTradingWrite(
   } catch {
     return null
   }
+}
+
+/**
+ * The local journal is shared by every Qiu Market tab and is therefore the
+ * authority for write admission. A non-empty malformed value is an error, not
+ * an empty journal: callers must fail closed instead of claiming it.
+ */
+export function readLocalPendingTradingWrite(
+  localStorage: PendingWriteStorageReader,
+): PendingTradingWrite | null {
+  const candidates = [
+    localStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY),
+    localStorage.getItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY),
+  ]
+  for (const raw of candidates) {
+    if (raw === null) continue
+    const parsed = parsePendingTradingWrite(raw)
+    if (!parsed) throw new Error('pending trading write journal is malformed')
+    return parsed
+  }
+  return null
+}
+
+/**
+ * Session storage is consulted only for the one-time migration of journals
+ * created by older builds. A shared local journal always wins.
+ */
+export function readPersistedPendingTradingWrite(
+  localStorage: PendingWriteStorageReader,
+  sessionStorage: PendingWriteStorageReader,
+): PendingTradingWrite | null {
+  const shared = readLocalPendingTradingWrite(localStorage)
+  if (shared) return shared
+  const candidates = [
+    sessionStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY),
+    sessionStorage.getItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY),
+  ]
+  for (const raw of candidates) {
+    if (raw === null) continue
+    const parsed = parsePendingTradingWrite(raw)
+    if (!parsed) throw new Error('pending trading write journal is malformed')
+    return parsed
+  }
+  return null
+}
+
+/**
+ * A new operation may claim only an empty journal. Updates and clears must
+ * still own the operation they prepared; a stale tab may never mutate a newer
+ * operation written by System, Trade, or another tab.
+ */
+export function pendingTradingWriteMutationAllowed(
+  authoritative: PendingTradingWrite | null,
+  next: PendingTradingWrite | null,
+  expectedOperationID: string | null,
+): boolean {
+  if (expectedOperationID === null) return authoritative === null && next !== null
+  if (authoritative === null) return next === null
+  return authoritative.operation_id === expectedOperationID &&
+    (next === null || next.operation_id === expectedOperationID)
 }
 
 export function updatePendingTradingWriteState(

@@ -83,12 +83,14 @@ func runTrading(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 	log.Info("run isolated virtual BTC/USDT trading service...")
 	cfg := config.NewConfig(ctx)
 	return tradingservice.New(ctx.Context, tradingservice.Config{
-		PostgresURL:      cfg.MasterDB.PostgresURL(),
-		GRPCAddress:      cfg.Trading.GRPCAddress,
-		DemoMakerEnabled: cfg.Trading.DemoMakerEnabled,
-		DiskPath:         "/",
-		MinWriteBytes:    15 << 30,
-		RecoveryGate:     cfg.Trading.RecoveryGate,
+		PostgresURL:        cfg.MasterDB.PostgresURL(),
+		GRPCAddress:        cfg.Trading.GRPCAddress,
+		DemoMakerEnabled:   cfg.Trading.DemoMakerEnabled,
+		DiskPath:           "/",
+		MinWriteBytes:      15 << 30,
+		CursorHMACCurrent:  cfg.Trading.CursorHMACCurrent,
+		CursorHMACPrevious: cfg.Trading.CursorHMACPrevious,
+		RecoveryGate:       cfg.Trading.RecoveryGate,
 		RecoveryProvenance: recovery.Provenance{
 			ProductionOrigin: cfg.Trading.ProductionOrigin,
 			DeploymentID:     cfg.Trading.DeploymentID,

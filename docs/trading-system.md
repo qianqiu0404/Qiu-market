@@ -414,6 +414,22 @@ runner safety-cancel 撤单。当前默认仍关闭，等待 Mac mini production
 
 浏览器接口位于 `/api/v1/trading/**`。订单簿、公共成交、状态和登录能力可匿名读取；账户余额、个人订单/成交、下单、撤单、虚拟入金和事件订阅要求会话。
 
+Trade Product V1 的私有查询包括订单、账户成交、账本流水和事件真值订单时间线。
+分页 cursor 绑定 market、session account、查询类型、筛选条件和不可变排序键；HTTP 层不会把
+客户端 `account_id` 当成授权输入，也不会把私有订单的账户标识回传给浏览器。cursor 使用
+`MARKET_TRADING_CURSOR_HMAC_CURRENT=key_id:base64url-secret` 签发，可在有界轮换窗口内用
+`MARKET_TRADING_CURSOR_HMAC_PREVIOUS` 验证旧 cursor。current 缺失、格式错误、解码后少于
+32 字节，或 current/previous key ID 相同，交易进程都会在启动时 fail closed；不会生成
+重启即失效的临时 key。
+
+订单 lifecycle 是从 event stream 重建的读模型。checkpoint 除 stream sequence 外还记录
+`row_count`；每个在线 append 和每批最多 500 条的历史回填，都在同一 PostgreSQL 事务中
+原子 CAS 两者。启动时即使 checkpoint 已等于 stream head，也会核对实际行数与最大 sequence；
+缺行、多行、孤儿行或 checkpoint 越界都会拒绝启动。安全修复是同时清空该可重建 lifecycle
+投影和 checkpoint，再由事件真值重放；只改 checkpoint 会掩盖损坏，因此被拒绝。row count
+只能发现基数变化，不能认证“相同行数但 payload 被原位篡改”；内容 digest 是独立后续迁移，
+当前不能宣称已实现。
+
 安全边界：
 
 - gRPC 地址必须是显式 IP loopback，默认 `127.0.0.1:9094`；
