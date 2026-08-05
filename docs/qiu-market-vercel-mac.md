@@ -348,10 +348,10 @@ Cookie 带 Secure，错误 Origin、过期 WebSocket ticket 与伪造 CSRF 均�
 
 启用 Recovery Gate 后，LaunchDaemon 重启 trading 只会恢复到
 `transport_warmup`。operator 先用 loopback `trading-recovery status` 固定本次
-market/epoch/version/sequence/hash，再用 `promote` 连续 30 秒核对运维者指定的 HTTPS
-recovery JSON、权威 gRPC、runner state hash 和 outbox checkpoint。当前实现尚未把
-status URL 绑定到 Production origin 或验证其 deployment provenance，因此这只能证明
-指定 HTTPS endpoint 的观察结果，不能称为 Production 公网证明。命令由
+market/epoch/version/sequence/hash 和 epoch 内受信任的 Production origin、immutable
+Vercel deployment ID/URL、release commit、backend source digest，再用 `promote` 连续
+30 秒核对 Production HTTPS recovery JSON、Vercel provenance 响应头、权威 gRPC、
+runner state hash 和 outbox checkpoint。命令由
 trading 进程内部 CAS，禁止手工 SQL。任一样本失败、版本变化、数据库读写不确定或
 CAS 冲突都保持只读；同一 epoch 不会因网络恢复自动开放，必须重启 trading 创建新
 epoch 并重新证明。Demo Maker 在 writable 前不启动，旧订单与回退后的订单通过
@@ -372,7 +372,7 @@ mTLS 或等价强认证。
 这部分目前是 `implemented / build-verified`；随机隔离数据库中的 migration/CAS/fault
 与真实 loopback gRPC TransportProbe 30 秒集成已达到
 `integration-verified (isolated local PostgreSQL + loopback gRPC)`。默认 flag 仍为 false，
-Mac mini production PostgreSQL/epoch、实际外部 HTTPS、Production origin/provenance
+Mac mini production PostgreSQL/epoch、实际外部 HTTPS provenance
 绑定和断电故障注入仍为 `environment-pending`，完成前不得修改生产配置。
 
 ## 6. 极省空间 K 线治理

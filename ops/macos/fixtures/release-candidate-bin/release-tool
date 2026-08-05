@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fixture only: the manager restricts override tools to an isolated /tmp tree.
+# shellcheck disable=SC1090
+source "$QIU_MARKET_TEST_PRODUCTION_LIB"
+action="${1:-}"
+subject="${2:-}"
+case "$action" in
+  artifact|preflight|status)
+    exit 0
+    ;;
+  deploy)
+    qiu_require_release_coordination release-deploy "$subject"
+    ;;
+  rollback)
+    qiu_require_release_coordination release-rollback "$subject"
+    ;;
+  *)
+    echo "Unexpected fixture release action: $action" >&2
+    exit 2
+    ;;
+esac
+printf 'release:%s:%s\n' "$action" "$subject" >> "$QIU_MARKET_RELEASE_FIXTURE_LOG"

@@ -18,6 +18,7 @@ import (
 	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/grpc"
 	rest "github.com/the-web3/s78-market-services/services/http"
+	"github.com/the-web3/s78-market-services/trading/recovery"
 	tradingservice "github.com/the-web3/s78-market-services/trading/service"
 	"github.com/the-web3/s78-market-services/worker"
 )
@@ -88,6 +89,13 @@ func runTrading(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 		DiskPath:         "/",
 		MinWriteBytes:    15 << 30,
 		RecoveryGate:     cfg.Trading.RecoveryGate,
+		RecoveryProvenance: recovery.Provenance{
+			ProductionOrigin: cfg.Trading.ProductionOrigin,
+			DeploymentID:     cfg.Trading.DeploymentID,
+			DeploymentURL:    cfg.Trading.DeploymentURL,
+			ReleaseCommit:    cfg.Trading.ReleaseCommit,
+			SourceDigest:     cfg.Trading.SourceDigest,
+		},
 	}, shutdown)
 }
 

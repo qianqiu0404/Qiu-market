@@ -142,12 +142,14 @@ func (s *Server) PromoteRecovery(
 		Version:         version,
 		RuntimeSequence: sequence,
 		StateHash:       bindingRequest.GetStateHash(),
+		Provenance:      fromRecoveryProvenance(bindingRequest.GetProvenance()),
 	}, recovery.TransportEvidence{
 		SampleCount:    int(evidenceRequest.GetSampleCount()),
 		FirstSampleAt:  firstSample,
 		LastSampleAt:   lastSample,
 		MaximumGapMS:   maximumGap,
 		EvidenceSHA256: evidenceRequest.GetEvidenceSha256(),
+		Provenance:     fromRecoveryProvenance(evidenceRequest.GetProvenance()),
 	})
 	if err != nil {
 		switch {
@@ -176,6 +178,30 @@ func toRecoveryStatus(current recovery.Status) *tradingv1.RecoveryStatusResponse
 		ContinuityUncertain: current.ContinuityUncertain,
 		ContinuityError:     current.ContinuityError,
 		UpdatedAt:           current.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		Provenance:          toRecoveryProvenance(current.Provenance),
+	}
+}
+
+func toRecoveryProvenance(value recovery.Provenance) *tradingv1.RecoveryProvenance {
+	return &tradingv1.RecoveryProvenance{
+		ProductionOrigin: value.ProductionOrigin,
+		DeploymentId:     value.DeploymentID,
+		DeploymentUrl:    value.DeploymentURL,
+		ReleaseCommit:    value.ReleaseCommit,
+		SourceDigest:     value.SourceDigest,
+	}
+}
+
+func fromRecoveryProvenance(value *tradingv1.RecoveryProvenance) recovery.Provenance {
+	if value == nil {
+		return recovery.Provenance{}
+	}
+	return recovery.Provenance{
+		ProductionOrigin: value.GetProductionOrigin(),
+		DeploymentID:     value.GetDeploymentId(),
+		DeploymentURL:    value.GetDeploymentUrl(),
+		ReleaseCommit:    value.GetReleaseCommit(),
+		SourceDigest:     value.GetSourceDigest(),
 	}
 }
 

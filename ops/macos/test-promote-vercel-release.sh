@@ -202,6 +202,8 @@ jq -n \
     same_request_id_replay_equal: true,
     ledger_balanced: true,
     state_hash_consistent: true,
+    submitted_unknown_evidence: "environment-pending",
+    browser_cursor_reconcile_evidence: "environment-pending",
     production_logout_204: true,
     stale_production_session_401: true,
     completed_at: $completed_at

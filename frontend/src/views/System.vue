@@ -474,6 +474,11 @@ function recoveryVariant(): BadgeVariant {
               <span>{{ t('Continuity', '存储连续性') }} <b>{{ recovery.data.value.continuity_uncertain ? t('Uncertain', '不确定') : t('Verified', '已确认') }}</b></span>
               <span>{{ t('Last error', '最近错误') }} <b>{{ recovery.data.value.last_error || '—' }}</b></span>
               <span>{{ t('Continuity error', '连续性错误') }} <b>{{ recovery.data.value.continuity_error || '—' }}</b></span>
+              <span>{{ t('Production origin', '生产入口') }} <b class="mono">{{ recovery.data.value.provenance?.production_origin || '—' }}</b></span>
+              <span>{{ t('Deployment', '部署标识') }} <b class="mono">{{ recovery.data.value.provenance ? shortRecoveryID(recovery.data.value.provenance.deployment_id) : '—' }}</b></span>
+              <span>{{ t('Immutable deployment', '不可变部署') }} <b class="mono">{{ recovery.data.value.provenance?.deployment_url || '—' }}</b></span>
+              <span>{{ t('Release commit', '发布提交') }} <b class="mono">{{ recovery.data.value.provenance ? shortRecoveryID(recovery.data.value.provenance.release_commit) : '—' }}</b></span>
+              <span>{{ t('Source digest', '源码摘要') }} <b class="mono">{{ recovery.data.value.provenance ? shortRecoveryID(recovery.data.value.provenance.source_digest) : '—' }}</b></span>
             </div>
             <p v-if="recoveryAdmission?.mode === 'unavailable'">
               {{ t('The latest public recovery read failed or became stale. Last-good fields remain visible for diagnosis, but write admission is unavailable.', '最近一次公开恢复状态读取失败或已经过龄。为便于诊断仍展示 last-good 字段，但写入准入当前不可用。') }}

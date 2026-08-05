@@ -24,6 +24,7 @@ import (
 	"github.com/the-web3/s78-market-services/services/http/service"
 	"github.com/the-web3/s78-market-services/services/http/systemstatus"
 	tradinggateway "github.com/the-web3/s78-market-services/trading/gateway"
+	"github.com/the-web3/s78-market-services/trading/recovery"
 )
 
 const (
@@ -106,6 +107,13 @@ func (a *API) initTrading(ctx context.Context, cfg *config.Config) {
 		DiskPath:       "/",
 		MinWriteBytes:  15 << 30,
 		RecoveryGate:   cfg.Trading.RecoveryGate,
+		RecoveryProvenance: recovery.Provenance{
+			ProductionOrigin: cfg.Trading.ProductionOrigin,
+			DeploymentID:     cfg.Trading.DeploymentID,
+			DeploymentURL:    cfg.Trading.DeploymentURL,
+			ReleaseCommit:    cfg.Trading.ReleaseCommit,
+			SourceDigest:     cfg.Trading.SourceDigest,
+		},
 	})
 	if err != nil {
 		log.Warn("virtual trading gateway unavailable; market-data API remains healthy", "err", err)

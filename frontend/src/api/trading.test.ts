@@ -7,6 +7,14 @@ import {
   tradingEventMode,
 } from './trading'
 
+const recoveryProvenance = {
+  production_origin: 'https://qiu-market.vercel.app',
+  deployment_id: 'dpl_PreviewFixture123',
+  deployment_url: 'https://qiu-market-preview-fixture.vercel.app',
+  release_commit: 'd'.repeat(40),
+  source_digest: 'e'.repeat(64),
+}
+
 describe('trading API', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -111,7 +119,8 @@ describe('trading API', () => {
 
   it('normalizes public recovery proof without treating numeric sequences as arithmetic', () => {
     const status = normalizeRecoveryStatus({
-      schema_version: 1,
+      schema_version: 2,
+      provenance: recoveryProvenance,
       market_id: 'BTC-USDT',
       epoch_id: 'epoch-1',
       phase: 'transport_warmup',
@@ -136,7 +145,8 @@ describe('trading API', () => {
 
   it('rejects an already unsafe numeric recovery sequence instead of stringifying it', () => {
     expect(() => normalizeRecoveryStatus({
-      schema_version: 1,
+      schema_version: 2,
+      provenance: recoveryProvenance,
       market_id: 'BTC-USDT',
       epoch_id: 'epoch-unsafe',
       phase: 'read_only',
@@ -147,9 +157,10 @@ describe('trading API', () => {
     })).toThrow('runtime_sequence is not a safe decimal value')
   })
 
-  it('binds recovery evidence to schema one, BTC-USDT and a positive version', () => {
+  it('binds recovery evidence to schema two, provenance, BTC-USDT and a positive version', () => {
     const valid = {
-      schema_version: 1,
+      schema_version: 2,
+      provenance: recoveryProvenance,
       market_id: 'BTC-USDT',
       epoch_id: 'epoch-bound',
       phase: 'read_only',
@@ -164,8 +175,14 @@ describe('trading API', () => {
       continuity_uncertain: false,
       version: '1',
     }
-    expect(() => normalizeRecoveryStatus({ ...valid, schema_version: 2 }))
+    expect(() => normalizeRecoveryStatus({ ...valid, schema_version: 1 }))
       .toThrow('status is malformed')
+    expect(() => normalizeRecoveryStatus({ ...valid, provenance: undefined }))
+      .toThrow('provenance is malformed')
+    expect(() => normalizeRecoveryStatus({
+      ...valid,
+      provenance: { ...recoveryProvenance, deployment_url: recoveryProvenance.production_origin },
+    })).toThrow('provenance is malformed')
     expect(() => normalizeRecoveryStatus({ ...valid, market_id: 'ETH-USDT' }))
       .toThrow('status is malformed')
     expect(() => normalizeRecoveryStatus({ ...valid, version: '0' }))
@@ -180,7 +197,8 @@ describe('trading API', () => {
 
   it('rejects an unsafe numeric recovery version symmetrically', () => {
     expect(() => normalizeRecoveryStatus({
-      schema_version: 1,
+      schema_version: 2,
+      provenance: recoveryProvenance,
       market_id: 'BTC-USDT',
       epoch_id: 'epoch-unsafe-version',
       phase: 'read_only',

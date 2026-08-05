@@ -12,6 +12,9 @@ epoch_id="qiu-market-fixture-epoch"
 deployment_id="dpl_FixtureRelease123"
 deployment_url="https://qiu-market-fixture-release.vercel.app"
 deployment_commit="19928325f9a1104d1dd3505a004dffb9fe52a714"
+runtime_release_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+binary_sha256="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+runtime_bundle_sha256="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 production_origin="https://qiu-market.vercel.app"
 window_start=1785196800
 window_last_slot=$((window_start + 7 * 24 * 60 * 60 - 60))
@@ -27,14 +30,20 @@ jq -n \
   --arg deployment_id "$deployment_id" \
   --arg deployment_url "$deployment_url" \
   --arg deployment_commit "$deployment_commit" \
+  --arg runtime_release_commit "$runtime_release_commit" \
+  --arg binary_sha256 "$binary_sha256" \
+  --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
   --argjson start "$window_start" '{
-    schema_version: 2,
+    schema_version: 4,
     epoch_id: $epoch_id,
     status: "active",
     production_origin: $production_origin,
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
     dex_canaries: {
       uniswap: {
         asset_guid: "11111111-1111-4111-8111-111111111111",
@@ -60,6 +69,9 @@ jq -nc \
   --arg deployment_id "$deployment_id" \
   --arg deployment_url "$deployment_url" \
   --arg deployment_commit "$deployment_commit" \
+  --arg runtime_release_commit "$runtime_release_commit" \
+  --arg binary_sha256 "$binary_sha256" \
+  --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
   --argjson start "$window_start" \
   --argjson end "$window_last_slot" '
   def canary($provider):
@@ -76,13 +88,26 @@ jq -nc \
     } end;
   range($start; $end + 1; 60) as $at |
   {
-    schema_version: 4,
+    schema_version: 7,
     acceptance_epoch_id: $epoch_id,
     acceptance_eligible: true,
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
     production_origin: $production_origin,
+    release_provenance: {recovery: {
+      full_match: true,
+      body: {
+        production_origin: $production_origin,
+        deployment_id: $deployment_id,
+        deployment_url: $deployment_url,
+        release_commit: $deployment_commit,
+        source_digest: $binary_sha256
+      }
+    }},
     scheduled_at: ($at | todateiso8601),
     started_at: (($at + 1) | todateiso8601),
     finished_at: (($at + 10) | todateiso8601),
@@ -90,7 +115,9 @@ jq -nc \
     duration_ms: 9000,
     current_checks_status: "passed",
     checks: {
+      recovery_provenance_match: true,
       trading_bff_http: 200,
+      recovery_bff_http: 200,
       system_bff_http: 200,
       uniswap_bff_http: 200,
       pancakeswap_bff_http: 200,
@@ -98,6 +125,7 @@ jq -nc \
     },
     latency_ms: {
       trading_bff: 100,
+      recovery_bff: 100,
       system_bff: 100,
       uniswap_bff: 100,
       pancakeswap_bff: 100
@@ -124,6 +152,9 @@ jq -nc \
   --arg deployment_id "$deployment_id" \
   --arg deployment_url "$deployment_url" \
   --arg deployment_commit "$deployment_commit" \
+  --arg runtime_release_commit "$runtime_release_commit" \
+  --arg binary_sha256 "$binary_sha256" \
+  --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
   --argjson start "$window_start" '
   {
     schema_version: 3,
@@ -137,24 +168,83 @@ jq -nc \
     current_checks_status: "passed"
   },
   {
-    schema_version: 4,
+    schema_version: 7,
     acceptance_epoch_id: $epoch_id,
     acceptance_eligible: true,
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: "0000000000000000000000000000000000000000",
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
     production_origin: $production_origin,
     scheduled_at: ($start | todateiso8601),
     current_checks_status: "passed"
   },
   {
-    schema_version: 4,
+    schema_version: 7,
     acceptance_epoch_id: "qiu-market-other-epoch",
     acceptance_eligible: true,
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
     production_origin: $production_origin,
+    scheduled_at: ($start | todateiso8601),
+    current_checks_status: "passed"
+  },
+  {
+    schema_version: 7,
+    acceptance_epoch_id: $epoch_id,
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    runtime_release_commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
+    production_origin: $production_origin,
+    scheduled_at: ($start | todateiso8601),
+    current_checks_status: "passed"
+  },
+  {
+    schema_version: 7,
+    acceptance_epoch_id: $epoch_id,
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    runtime_bundle_sha256: $runtime_bundle_sha256,
+    production_origin: $production_origin,
+    scheduled_at: ($start | todateiso8601),
+    current_checks_status: "passed"
+  },
+  {
+    schema_version: 7,
+    acceptance_epoch_id: $epoch_id,
+    acceptance_eligible: true,
+    deployment_id: $deployment_id,
+    deployment_url: $deployment_url,
+    deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
+    production_origin: $production_origin,
+    release_provenance: {recovery: {
+      full_match: true,
+      body: {
+        production_origin: $production_origin,
+        deployment_id: $deployment_id,
+        deployment_url: $deployment_url,
+        release_commit: $deployment_commit,
+        source_digest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    }},
+    checks: {recovery_provenance_match: true},
     scheduled_at: ($start | todateiso8601),
     current_checks_status: "passed"
   }
@@ -170,8 +260,11 @@ jq -e '
   .status == "production-recommendation" and
   .acceptance_epoch_id == "qiu-market-fixture-epoch" and
   .deployment_commit == "19928325f9a1104d1dd3505a004dffb9fe52a714" and
+  .runtime_release_commit == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" and
+  .binary_sha256 == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" and
+  .runtime_bundle_sha256 == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" and
   .raw_eligible_samples == 10080 and
-  .rejected_epoch_samples == 2 and
+  .rejected_epoch_samples == 5 and
   .observed_minutes == 10080 and
   .missing_minutes == 0 and
   .availability_percent == 100 and
@@ -213,17 +306,33 @@ jq -nc \
   --arg deployment_id "$deployment_id" \
   --arg deployment_url "$deployment_url" \
   --arg deployment_commit "$deployment_commit" \
+  --arg runtime_release_commit "$runtime_release_commit" \
+  --arg binary_sha256 "$binary_sha256" \
+  --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
   --argjson start "$window_start" '
   range(300; 306) as $offset |
   ($start + ($offset * 60)) as $at |
   {
-    schema_version: 4,
+    schema_version: 7,
     acceptance_epoch_id: $epoch_id,
     acceptance_eligible: true,
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
     production_origin: $production_origin,
+    release_provenance: {recovery: {
+      full_match: true,
+      body: {
+        production_origin: $production_origin,
+        deployment_id: $deployment_id,
+        deployment_url: $deployment_url,
+        release_commit: $deployment_commit,
+        source_digest: $binary_sha256
+      }
+    }},
     scheduled_at: ($at | todateiso8601),
     started_at: (($at + 20) | todateiso8601),
     finished_at: (($at + 30) | todateiso8601),
@@ -231,7 +340,9 @@ jq -nc \
     duration_ms: 10000,
     current_checks_status: "failed",
     checks: {
+      recovery_provenance_match: true,
       trading_bff_http: 504,
+      recovery_bff_http: 200,
       system_bff_http: 200,
       uniswap_bff_http: 200,
       pancakeswap_bff_http: 200,
@@ -239,6 +350,7 @@ jq -nc \
     },
     latency_ms: {
       trading_bff: 8000,
+      recovery_bff: 100,
       system_bff: 100,
       uniswap_bff: 100,
       pancakeswap_bff: 100
@@ -264,7 +376,7 @@ window_last_slot_iso="$(
   jq -nr --argjson epoch "$window_last_slot" '$epoch | todateiso8601'
 )"
 jq -c --arg scheduled_at "$window_last_slot_iso" '
-  if .schema_version == 4 and
+  if .schema_version == 7 and
     .acceptance_epoch_id == "qiu-market-fixture-epoch" and
     .scheduled_at == $scheduled_at
   then .historical_windows[0].canary.route_key = "changed-route"

@@ -23,18 +23,19 @@ import (
 )
 
 type Config struct {
-	PostgresURL    string
-	GRPCAddress    string
-	BindAddress    string
-	AllowedOrigins []string
-	LocalAuth      bool
-	SecureCookies  bool
-	GitHubClientID string
-	GitHubSecret   string
-	GitHubRedirect string
-	DiskPath       string
-	MinWriteBytes  int64
-	RecoveryGate   bool
+	PostgresURL        string
+	GRPCAddress        string
+	BindAddress        string
+	AllowedOrigins     []string
+	LocalAuth          bool
+	SecureCookies      bool
+	GitHubClientID     string
+	GitHubSecret       string
+	GitHubRedirect     string
+	DiskPath           string
+	MinWriteBytes      int64
+	RecoveryGate       bool
+	RecoveryProvenance recovery.Provenance
 }
 
 // Gateway owns browser authentication and protocol adaptation, but no trading
@@ -47,6 +48,15 @@ type Gateway struct {
 }
 
 func New(ctx context.Context, config Config) (*Gateway, error) {
+	if config.RecoveryGate {
+		var err error
+		config.RecoveryProvenance, err = recovery.BindExecutableSourceDigest(
+			config.RecoveryProvenance,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("bind trading gateway executable: %w", err)
+		}
+	}
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
@@ -124,6 +134,7 @@ func New(ctx context.Context, config Config) (*Gateway, error) {
 		recoveryCoordinator, storeErr = recovery.NewCoordinator(
 			recoveryStore,
 			"BTC-USDT",
+			config.RecoveryProvenance,
 		)
 		if storeErr != nil {
 			return nil, storeErr
@@ -159,6 +170,11 @@ func validateConfig(config Config) error {
 	if config.MinWriteBytes < 0 ||
 		(config.MinWriteBytes > 0 && strings.TrimSpace(config.DiskPath) == "") {
 		return fmt.Errorf("trading disk write guard requires a path and non-negative floor")
+	}
+	if config.RecoveryGate {
+		if _, err := recovery.NormalizeProvenance(config.RecoveryProvenance); err != nil {
+			return fmt.Errorf("invalid trading gateway recovery provenance: %w", err)
+		}
 	}
 	return nil
 }
@@ -290,30 +306,32 @@ func writeRecoveryStatus(
 		UpdatedAt:           status.UpdatedAt,
 		ContinuityUncertain: status.ContinuityUncertain,
 		ContinuityError:     status.ContinuityError,
+		Provenance:          status.Provenance,
 	})
 }
 
 // recoveryStatusDTO keeps counters as decimal strings at the browser boundary;
 // internal CAS types remain uint64 and never depend on JavaScript precision.
 type recoveryStatusDTO struct {
-	SchemaVersion       int       `json:"schema_version"`
-	MarketID            string    `json:"market_id"`
-	EpochID             string    `json:"epoch_id"`
-	Phase               string    `json:"phase"`
-	RuntimeSequence     string    `json:"runtime_sequence"`
-	StateHash           string    `json:"state_hash"`
-	LedgerBalanced      bool      `json:"ledger_balanced"`
-	EventContinuous     bool      `json:"event_continuous"`
-	ProjectionCaughtUp  bool      `json:"projection_caught_up"`
-	OutboxCaughtUp      bool      `json:"outbox_caught_up"`
-	TransportHealthy    bool      `json:"transport_healthy"`
-	WritesEnabled       bool      `json:"writes_enabled"`
-	LastError           string    `json:"last_error,omitempty"`
-	Version             string    `json:"version"`
-	StartedAt           time.Time `json:"started_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
-	ContinuityUncertain bool      `json:"continuity_uncertain"`
-	ContinuityError     string    `json:"continuity_error,omitempty"`
+	SchemaVersion       int                 `json:"schema_version"`
+	MarketID            string              `json:"market_id"`
+	EpochID             string              `json:"epoch_id"`
+	Phase               string              `json:"phase"`
+	RuntimeSequence     string              `json:"runtime_sequence"`
+	StateHash           string              `json:"state_hash"`
+	LedgerBalanced      bool                `json:"ledger_balanced"`
+	EventContinuous     bool                `json:"event_continuous"`
+	ProjectionCaughtUp  bool                `json:"projection_caught_up"`
+	OutboxCaughtUp      bool                `json:"outbox_caught_up"`
+	TransportHealthy    bool                `json:"transport_healthy"`
+	WritesEnabled       bool                `json:"writes_enabled"`
+	LastError           string              `json:"last_error,omitempty"`
+	Version             string              `json:"version"`
+	StartedAt           time.Time           `json:"started_at"`
+	UpdatedAt           time.Time           `json:"updated_at"`
+	ContinuityUncertain bool                `json:"continuity_uncertain"`
+	ContinuityError     string              `json:"continuity_error,omitempty"`
+	Provenance          recovery.Provenance `json:"provenance"`
 }
 
 func writeRecoveryBlocked(

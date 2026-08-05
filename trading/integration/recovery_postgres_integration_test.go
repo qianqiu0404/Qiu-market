@@ -168,7 +168,7 @@ func TestPostgresRecoveryGateAcrossOutageAndProcessRebuild(t *testing.T) {
 	if _, err := coordinator.Promote(
 		ctx,
 		recoveryBinding(firstWarmup),
-		validTransportEvidence(),
+		validTransportEvidence(firstWarmup.Provenance),
 	); !errors.Is(err, recovery.ErrBindingMismatch) {
 		t.Fatalf("stale recovery epoch public promotion error = %v", err)
 	}
@@ -223,11 +223,14 @@ func startRecoveryIntegratedStack(
 ) *integratedStack {
 	t.Helper()
 	appContext, appCancel := context.WithCancel(parent)
+	server := httptest.NewUnstartedServer(nil)
+	productionOrigin := "https://" + server.Listener.Addr().String()
 	backend, err := tradingservice.New(appContext, tradingservice.Config{
-		PostgresURL:      dsn,
-		GRPCAddress:      "127.0.0.1:0",
-		DemoMakerEnabled: false,
-		RecoveryGate:     true,
+		PostgresURL:        dsn,
+		GRPCAddress:        "127.0.0.1:0",
+		DemoMakerEnabled:   false,
+		RecoveryGate:       true,
+		RecoveryProvenance: integratedRecoveryProvenance(productionOrigin),
 	}, func(error) { appCancel() })
 	if err != nil {
 		appCancel()
@@ -238,20 +241,29 @@ func startRecoveryIntegratedStack(
 		t.Fatal(err)
 	}
 	tradingGateway, err := gateway.New(appContext, gateway.Config{
-		PostgresURL:    dsn,
-		GRPCAddress:    backend.GRPCAddress(),
-		BindAddress:    "127.0.0.1:0",
-		AllowedOrigins: []string{integratedOrigin},
-		LocalAuth:      true,
-		SecureCookies:  false,
-		RecoveryGate:   true,
+		PostgresURL:        dsn,
+		GRPCAddress:        backend.GRPCAddress(),
+		BindAddress:        "127.0.0.1:0",
+		AllowedOrigins:     []string{integratedOrigin},
+		LocalAuth:          true,
+		SecureCookies:      false,
+		RecoveryGate:       true,
+		RecoveryProvenance: integratedRecoveryProvenance(productionOrigin),
 	})
 	if err != nil {
 		stopBackend(t, backend)
 		appCancel()
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(tradingGateway.Handler())
+	provenance := integratedRecoveryProvenance(productionOrigin)
+	server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("X-Qiu-Market-Provenance", "VERIFIED")
+		writer.Header().Set("X-Qiu-Market-Deployment-ID", provenance.DeploymentID)
+		writer.Header().Set("X-Qiu-Market-Deployment-URL", provenance.DeploymentURL)
+		writer.Header().Set("X-Qiu-Market-Release-Commit", provenance.ReleaseCommit)
+		tradingGateway.Handler().ServeHTTP(writer, request)
+	})
+	server.StartTLS()
 	return &integratedStack{
 		backend: backend,
 		gateway: tradingGateway,
@@ -270,6 +282,7 @@ func applyRecoveryMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Po
 		"2026082300025.sql",
 		"2026082400026.sql",
 		"2026082500027.sql",
+		"2026082600028.sql",
 	} {
 		migrationPath := filepath.Join(filepath.Dir(filename), "..", "..", "migrations", migrationName)
 		migration, err := os.ReadFile(migrationPath)
@@ -334,7 +347,7 @@ func promoteRecoveryEpoch(
 	promoted, err := coordinator.Promote(
 		ctx,
 		recoveryBinding(current),
-		validTransportEvidence(),
+		validTransportEvidence(current.Provenance),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -355,17 +368,37 @@ func recoveryBinding(status recovery.Status) recovery.Binding {
 		Version:         status.Version,
 		RuntimeSequence: status.Proof.RuntimeSequence,
 		StateHash:       status.Proof.StateHash,
+		Provenance:      status.Provenance,
 	}
 }
 
-func validTransportEvidence() recovery.TransportEvidence {
+func validTransportEvidence(values ...recovery.Provenance) recovery.TransportEvidence {
 	now := time.Now().UTC()
+	provenance := integratedRecoveryProvenance("https://qiu-market.example")
+	if len(values) == 1 {
+		provenance = values[0]
+	}
 	return recovery.TransportEvidence{
 		SampleCount:    recovery.MinimumTransportSamples,
 		FirstSampleAt:  now.Add(-recovery.MinimumTransportWindow - time.Second),
 		LastSampleAt:   now,
 		MaximumGapMS:   int64((recovery.MaximumTransportGap - time.Second) / time.Millisecond),
 		EvidenceSHA256: strings.Repeat("a", 64),
+		Provenance:     provenance,
+	}
+}
+
+func integratedRecoveryProvenance(origin string) recovery.Provenance {
+	digest, err := recovery.ExecutableSourceDigest()
+	if err != nil {
+		panic(err)
+	}
+	return recovery.Provenance{
+		ProductionOrigin: origin,
+		DeploymentID:     "dpl_integrationdeployment",
+		DeploymentURL:    "https://qiu-market-integration-deployment.vercel.app",
+		ReleaseCommit:    strings.Repeat("d", 40),
+		SourceDigest:     digest,
 	}
 }
 
@@ -416,10 +449,11 @@ func assertBackendRecoveryFailsClosed(
 	t.Helper()
 	appContext, appCancel := context.WithCancel(ctx)
 	backend, err := tradingservice.New(appContext, tradingservice.Config{
-		PostgresURL:      dsn,
-		GRPCAddress:      "127.0.0.1:0",
-		DemoMakerEnabled: false,
-		RecoveryGate:     true,
+		PostgresURL:        dsn,
+		GRPCAddress:        "127.0.0.1:0",
+		DemoMakerEnabled:   false,
+		RecoveryGate:       true,
+		RecoveryProvenance: integratedRecoveryProvenance("https://qiu-market.example"),
 	}, func(error) { appCancel() })
 	appCancel()
 	if err == nil {

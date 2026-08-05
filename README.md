@@ -97,6 +97,8 @@ K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 s
 - `integration-verified`：一次性真实 PostgreSQL 上执行正式 migration，启动真实 gRPC + REST，完成虚拟入金、挂单、撤单、优雅快照、整套重启、session 延续、跨重启幂等，并确认 snapshot/event state hash 完全一致。
 - `production-pending`：真实资金、充值提现、私钥、实盘下单不在目标内；生产 HTTPS/OAuth 回调、容量压测、备份恢复演练、监控告警和长期 soak 仍未验收。
 - `implemented / build-verified / integration-verified (isolated local PostgreSQL + loopback gRPC) / activation-pending`：持久化 Recovery Coordinator、runner 权威写门禁、30 秒 TransportProbe、loopback gRPC status/promote、store 连续性粘性熔断和 demo-maker 受控恢复已落地，且随机隔离数据库中的 migration/CAS/fault 与真实 loopback gRPC 集成已通过。兼容开关默认关闭；Mac mini production PostgreSQL/epoch、实际外部 HTTPS、Production origin/deployment provenance、浏览器 cursor 和断电故障注入完成前不得在生产启用。
+- `implemented / build-verified / activation-pending`：Mac mini 候选发布由 [交易系统文档](docs/trading-system.md#mac-mini-版本化发布) 中的 `manage-release-candidate.sh` 统一绑定同一精确 Git SHA 的 binary、完整 migration set 与 runtime bundle；默认命令不切换服务，激活和回滚必须显式 `--execute`。本轮只有 fixture 证明，尚未读取生产配置、恢复生产备份或切换 Mac mini。
+- `implemented / build-verified / environment-pending`：正式 observer 只有在 runner/outbox ready、Recovery Coordinator 已到 `writable` 且 continuity 确定、recovery JSON 完整 provenance 与 Vercel headers/epoch 对齐、Mac mini binary/runtime commit 及两份产物 SHA-256 全部匹配时才累计分钟；observer sample 使用 schema v7、7 天 epoch 使用 schema v4，旧样本不会升级证据。GitHub CI 只提供 build/vet/unit/race、前端 unit/build 和 shell syntax，不能替代 PostgreSQL、OAuth、Vercel、Mac mini 或公网 soak。
 
 ### 价格精度
 

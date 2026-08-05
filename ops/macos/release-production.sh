@@ -7,22 +7,31 @@ requested_revision="${2:-HEAD}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck disable=SC1091
 source "$repo_root/ops/macos/production-lib.sh"
-qiu_load_production_environment "$repo_root"
-
-support_dir="$QIU_MARKET_SUPPORT_DIR"
+support_dir="${QIU_MARKET_SUPPORT_DIR:-$HOME/Library/Application Support/Qiu Market}"
 release_root="$support_dir/releases"
 binary_dir="$support_dir/bin"
 managed_binary="$binary_dir/market-services"
 state_dir="$support_dir/release-state"
 lock_dir="$state_dir/deploy.lock"
-migration_name="2026082300025.sql"
-migration_path="$repo_root/migrations/$migration_name"
-minimum_deploy_bytes="${QIU_MARKET_MINIMUM_DEPLOY_BYTES:-35000000000}"
 
 temporary_release=""
+temporary_source=""
 owns_lock=false
 deploy_switched=false
 previous_target=""
+production_environment_loaded=false
+prepare_lock=""
+owns_prepare_lock=false
+
+load_production_environment() {
+  if [ "$production_environment_loaded" = true ]; then
+    return
+  fi
+  QIU_MARKET_SUPPORT_DIR="$support_dir"
+  export QIU_MARKET_SUPPORT_DIR
+  qiu_load_production_environment "$repo_root"
+  production_environment_loaded=true
+}
 
 atomic_state_write() {
   local target="$1"
@@ -88,8 +97,14 @@ cleanup() {
   if [ -n "$temporary_release" ] && [ -d "$temporary_release" ]; then
     find "$temporary_release" -depth -delete 2>/dev/null || true
   fi
+  if [ -n "$temporary_source" ] && [ -d "$temporary_source" ]; then
+    find "$temporary_source" -depth -delete 2>/dev/null || true
+  fi
   if [ "$owns_lock" = "true" ] && [ -d "$lock_dir" ]; then
     rmdir "$lock_dir" 2>/dev/null || true
+  fi
+  if [ "$owns_prepare_lock" = true ] && [ -n "$prepare_lock" ] && [ -d "$prepare_lock" ]; then
+    rmdir "$prepare_lock" 2>/dev/null || true
   fi
   exit "$exit_code"
 }
@@ -156,11 +171,12 @@ verify_rollback_target() {
 }
 
 migration_set_sha256() {
+  local migration_dir="${1:-$repo_root/migrations}"
   while IFS= read -r migration_file; do
     printf '%s  %s\n' \
       "$(qiu_sha256 "$migration_file")" \
       "$(basename "$migration_file")"
-  done < <(find "$repo_root/migrations" -maxdepth 1 -type f -name '*.sql' -print | sort) |
+  done < <(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' -print | sort) |
     shasum -a 256 |
     awk '{print $1}'
 }
@@ -170,18 +186,27 @@ verify_release() {
   local release_dir
   local manifest
   local binary
+  local migration_dir
   local expected_binary_sha
-  local expected_migration_sha
   local expected_migration_set_sha
+  local expected_migration_count
+  local expected_migration_last
+  local actual_migration_count
+  local actual_migration_last
   release_dir="$(release_dir_for "$commit")"
   manifest="$release_dir/manifest.env"
   binary="$release_dir/market-services"
-  if [ ! -x "$binary" ] || [ ! -f "$manifest" ]; then
+  migration_dir="$release_dir/migrations"
+  if [ ! -x "$binary" ] || [ ! -f "$manifest" ] || [ ! -d "$migration_dir" ]; then
     echo "Prepared release is incomplete: $release_dir" >&2
     return 1
   fi
   if [ "$(manifest_value "$manifest" git_commit)" != "$commit" ]; then
     echo "Release manifest commit does not match $commit." >&2
+    return 1
+  fi
+  if [ "$(manifest_value "$manifest" schema_version)" != "2" ]; then
+    echo "Release manifest schema is unsupported." >&2
     return 1
   fi
   expected_binary_sha="$(manifest_value "$manifest" binary_sha256)"
@@ -190,16 +215,27 @@ verify_release() {
     echo "Release binary checksum does not match its manifest." >&2
     return 1
   fi
-  expected_migration_sha="$(manifest_value "$manifest" migration_sha256)"
-  if [ -z "$expected_migration_sha" ] ||
-    [ "$(qiu_sha256 "$migration_path")" != "$expected_migration_sha" ]; then
-    echo "Release migration checksum does not match its manifest." >&2
-    return 1
-  fi
   expected_migration_set_sha="$(manifest_value "$manifest" migration_set_sha256)"
   if [ -z "$expected_migration_set_sha" ] ||
-    [ "$(migration_set_sha256)" != "$expected_migration_set_sha" ]; then
+    [ "$(migration_set_sha256 "$migration_dir")" != "$expected_migration_set_sha" ]; then
     echo "Release migration-set checksum does not match its manifest." >&2
+    return 1
+  fi
+  expected_migration_count="$(manifest_value "$manifest" migration_count)"
+  expected_migration_last="$(manifest_value "$manifest" migration_last)"
+  actual_migration_count="$(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
+  actual_migration_last="$(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' -print | sort | tail -1 | xargs basename)"
+  if find "$migration_dir" -mindepth 1 -type d -print -quit | grep -q . ||
+    find "$migration_dir" -maxdepth 1 -type f ! -name '*.sql' -print -quit | grep -q .; then
+    echo "Release migrations must be a flat directory containing SQL files only." >&2
+    return 1
+  fi
+  if [ -z "$expected_migration_count" ] ||
+    [ "$expected_migration_count" -le 0 ] ||
+    [ "$expected_migration_count" != "$actual_migration_count" ] ||
+    [ -z "$expected_migration_last" ] ||
+    [ "$expected_migration_last" != "$actual_migration_last" ]; then
+    echo "Release migration inventory does not match its manifest." >&2
     return 1
   fi
   if [ "$(manifest_value "$manifest" cursor_source)" != "event-feed" ]; then
@@ -213,7 +249,6 @@ prepare_release() {
   local release_dir
   local git_timestamp
   local binary_sha
-  local migration_sha
   local migration_set_sha
   release_dir="$(release_dir_for "$commit")"
   install -d -m 700 "$release_root" "$state_dir"
@@ -222,35 +257,49 @@ prepare_release() {
     echo "Release already prepared and verified: $release_dir"
     return
   fi
+  prepare_lock="$release_root/.prepare.${commit}.lock"
+  if ! mkdir "$prepare_lock" 2>/dev/null; then
+    echo "Another process is preparing release $commit." >&2
+    return 1
+  fi
+  owns_prepare_lock=true
 
   temporary_release="$(mktemp -d "$release_root/.prepare.${commit}.XXXXXX")"
+  temporary_source="$(mktemp -d "$release_root/.source.${commit}.XXXXXX")"
+  git -C "$repo_root" archive "$commit" | tar -xf - -C "$temporary_source"
   git_timestamp="$(git -C "$repo_root" show -s --format='%ct' "$commit")"
   (
-    cd "$repo_root"
+    cd "$temporary_source"
     go build -trimpath \
       -ldflags "-X main.GitCommit=$commit -X main.GitData=$git_timestamp" \
       -o "$temporary_release/market-services" \
       ./cmd/market-services
   )
   chmod 700 "$temporary_release/market-services"
+  cp -R "$temporary_source/migrations" "$temporary_release/migrations"
+  find "$temporary_release/migrations" -type d -exec chmod 700 {} +
+  find "$temporary_release/migrations" -type f -exec chmod 600 {} +
   binary_sha="$(qiu_sha256 "$temporary_release/market-services")"
-  migration_sha="$(qiu_sha256 "$migration_path")"
-  migration_set_sha="$(migration_set_sha256)"
+  migration_set_sha="$(migration_set_sha256 "$temporary_release/migrations")"
   {
-    printf 'schema_version=1\n'
+    printf 'schema_version=2\n'
     printf 'git_commit=%s\n' "$commit"
     printf 'git_timestamp=%s\n' "$git_timestamp"
     printf 'binary_sha256=%s\n' "$binary_sha"
-    printf 'migration_name=%s\n' "$migration_name"
-    printf 'migration_sha256=%s\n' "$migration_sha"
     printf 'migration_set_sha256=%s\n' "$migration_set_sha"
+    printf 'migration_count=%s\n' "$(find "$temporary_release/migrations" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
+    printf 'migration_last=%s\n' "$(find "$temporary_release/migrations" -maxdepth 1 -type f -name '*.sql' -print | sort | tail -1 | xargs basename)"
     printf 'cursor_source=event-feed\n'
     printf 'built_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   } > "$temporary_release/manifest.env"
   chmod 600 "$temporary_release/manifest.env"
   mv "$temporary_release" "$release_dir"
   temporary_release=""
+  find "$temporary_source" -depth -delete
+  temporary_source=""
   verify_release "$commit"
+  rmdir "$prepare_lock"
+  owns_prepare_lock=false
   echo "Prepared immutable release: $release_dir"
 }
 
@@ -258,8 +307,10 @@ verify_source_and_release() {
   local commit="$1"
   local release_dir
   local binary
+  local migration_dir
   release_dir="$(release_dir_for "$commit")"
   binary="$release_dir/market-services"
+  migration_dir="$release_dir/migrations"
 
   (
     cd "$repo_root"
@@ -277,11 +328,13 @@ verify_source_and_release() {
     npm test -- --run
     npm run build
   )
-  QIU_MARKET_BINARY="$binary" "$repo_root/ops/macos/restore-drill.sh"
+  MARKET_MIGRATIONS_DIR="$migration_dir" \
+    QIU_MARKET_BINARY="$binary" "$repo_root/ops/macos/restore-drill.sh"
   {
     printf 'schema_version=1\n'
     printf 'git_commit=%s\n' "$commit"
     printf 'binary_sha256=%s\n' "$(qiu_sha256 "$binary")"
+    printf 'migration_set_sha256=%s\n' "$(migration_set_sha256 "$migration_dir")"
     printf 'verified_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf 'checks=go-test,go-race,go-vet,frontend-test,frontend-build,slo-fixtures,shell-syntax,diff-check,restore-drill\n'
   } > "$release_dir/verification.env"
@@ -300,7 +353,9 @@ require_verified_release() {
   verify_release "$commit"
   if [ ! -f "$verification" ] ||
     [ "$(manifest_value "$verification" git_commit)" != "$commit" ] ||
-    [ "$(manifest_value "$verification" binary_sha256)" != "$(qiu_sha256 "$binary")" ]; then
+    [ "$(manifest_value "$verification" binary_sha256)" != "$(qiu_sha256 "$binary")" ] ||
+    [ "$(manifest_value "$verification" migration_set_sha256)" != \
+      "$(migration_set_sha256 "$release_dir/migrations")" ]; then
     echo "Release has not passed the exact-artifact verification gate: $release_dir" >&2
     return 1
   fi
@@ -308,6 +363,7 @@ require_verified_release() {
 
 preflight_production() {
   local available_bytes
+  local minimum_deploy_bytes="${QIU_MARKET_MINIMUM_DEPLOY_BYTES:-35000000000}"
   for command_name in curl git go jq launchctl nc npm pg_dump pg_isready pg_restore psql shasum; do
     qiu_require_command "$command_name"
   done
@@ -393,12 +449,14 @@ capture_current_target() {
 }
 
 verify_migration_ledger_contract() {
+  local migration_dir="${1:-$repo_root/migrations}"
   local filename
   local recorded_checksum
   local local_path
   local local_checksum
   local pending_count=0
-  local pending_name=""
+  local pending_names=()
+  local seen_pending=false
   local ledger_exists
 
   ledger_exists="$(qiu_psql -c "
@@ -410,7 +468,7 @@ SELECT to_regclass('public.s78_schema_migrations') IS NOT NULL
   fi
 
   while IFS='|' read -r filename recorded_checksum; do
-    local_path="$repo_root/migrations/$filename"
+    local_path="$migration_dir/$filename"
     if [[ ! "$filename" =~ ^[0-9]+\.sql$ ]] || [ ! -f "$local_path" ]; then
       echo "Production migration ledger contains an unknown file: $filename" >&2
       return 1
@@ -428,6 +486,10 @@ ORDER BY filename
 
   while IFS= read -r local_path; do
     filename="$(basename "$local_path")"
+    if [[ ! "$filename" =~ ^[0-9]+\.sql$ ]]; then
+      echo "Candidate migration filename is unsafe: $filename" >&2
+      return 1
+    fi
     recorded_checksum="$(qiu_psql -c "
 SELECT checksum_sha256
 FROM s78_schema_migrations
@@ -435,30 +497,35 @@ WHERE filename='$filename'
 ")"
     if [ -z "$recorded_checksum" ]; then
       pending_count=$((pending_count + 1))
-      pending_name="$filename"
+      pending_names+=("$filename")
+      seen_pending=true
+    elif [ "$seen_pending" = true ]; then
+      echo "Migration ledger is not a contiguous prefix; applied migration follows pending $filename." >&2
+      return 1
     fi
-  done < <(find "$repo_root/migrations" -maxdepth 1 -type f -name '*.sql' -print | sort)
+  done < <(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' -print | sort)
 
-  if [ "$pending_count" -gt 1 ] ||
-    { [ "$pending_count" -eq 1 ] && [ "$pending_name" != "$migration_name" ]; }; then
-    echo "Unexpected pending migration set: count=$pending_count last=${pending_name:-none}" >&2
-    return 1
-  fi
-  echo "Migration ledger contract passed: pending=${pending_name:-none}"
+  echo "Migration ledger contract passed: pending_count=$pending_count pending=${pending_names[*]:-none}"
 }
 
 verify_migration() {
+  local migration_dir="$1"
+  local filename
+  local migration_file
   local expected_sha
   local recorded_sha
   local table_state
-  verify_migration_ledger_contract
-  expected_sha="$(qiu_sha256 "$migration_path")"
-  recorded_sha="$(qiu_psql -c \
-    "SELECT checksum_sha256 FROM s78_schema_migrations WHERE filename='$migration_name'")"
-  if [ "$recorded_sha" != "$expected_sha" ]; then
-    echo "Production migration ledger checksum mismatch for $migration_name." >&2
-    return 1
-  fi
+  verify_migration_ledger_contract "$migration_dir"
+  while IFS= read -r migration_file; do
+    filename="$(basename "$migration_file")"
+    expected_sha="$(qiu_sha256 "$migration_file")"
+    recorded_sha="$(qiu_psql -c \
+      "SELECT checksum_sha256 FROM s78_schema_migrations WHERE filename='$filename'")"
+    if [ "$recorded_sha" != "$expected_sha" ]; then
+      echo "Production migration ledger checksum mismatch for $filename." >&2
+      return 1
+    fi
+  done < <(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' -print | sort)
   table_state="$(qiu_psql -F '|' -c "
 SELECT
   to_regclass('public.trading_event_feed') IS NOT NULL,
@@ -507,13 +574,15 @@ deploy_release() {
   local commit="$1"
   local release_dir
   local release_binary
+  local migration_dir
   local full_backup
   release_dir="$(release_dir_for "$commit")"
   release_binary="$release_dir/market-services"
+  migration_dir="$release_dir/migrations"
 
   require_verified_release "$commit"
   preflight_production
-  verify_migration_ledger_contract
+  verify_migration_ledger_contract "$migration_dir"
   acquire_deploy_lock
   capture_current_target
 
@@ -523,15 +592,17 @@ deploy_release() {
   )"
   QIU_MARKET_DEFER_BACKUP_RETENTION=true \
     "$repo_root/ops/macos/backup-production.sh" trading >/dev/null
-  QIU_MARKET_BINARY="$release_binary" \
+  MARKET_MIGRATIONS_DIR="$migration_dir" \
+    QIU_MARKET_BINARY="$release_binary" \
     QIU_MARKET_BACKUP="$full_backup" \
     "$repo_root/ops/macos/restore-drill.sh"
 
   (
-    cd "$repo_root"
+    cd "$release_dir"
+    export MARKET_MIGRATIONS_DIR="$migration_dir"
     "$release_binary" migrate
   )
-  verify_migration
+  verify_migration "$migration_dir"
 
   switch_managed_binary "$release_binary"
   deploy_switched=true
@@ -620,7 +691,7 @@ WHERE source.market_id IS NULL
 show_status() {
   local current_target="unmanaged"
   local current_sha="unavailable"
-  local migration_state="not-applied"
+  local migration_state="unavailable"
   local feed_state="absent"
   local outbox_stats="unavailable"
   if [ -L "$managed_binary" ]; then
@@ -635,10 +706,8 @@ show_status() {
     --host="$QIU_MARKET_DB_HOST" \
     --port="$QIU_MARKET_DB_PORT" \
     --dbname="$QIU_MARKET_DB_NAME"; then
-    migration_state="$(qiu_psql -c "
-SELECT CASE WHEN EXISTS (
-  SELECT 1 FROM s78_schema_migrations WHERE filename='$migration_name'
-) THEN 'applied' ELSE 'not-applied' END
+    migration_state="$(qiu_psql -F ',' -c "
+SELECT count(*), COALESCE(max(filename),'none') FROM s78_schema_migrations
 ")"
     feed_state="$(qiu_psql -c "
 SELECT CASE WHEN to_regclass('public.trading_event_feed') IS NOT NULL
@@ -655,7 +724,7 @@ SELECT
   fi
   echo "managed_target=$current_target"
   echo "managed_binary_sha256=$current_sha"
-  echo "migration_$migration_name=$migration_state"
+  echo "migration_count,latest=$migration_state"
   echo "event_feed=$feed_state"
   echo "outbox_unpublished,feed_rows,checkpoint_sequence=$outbox_stats"
   if payload="$(qiu_signed_trading_status 2>/dev/null)"; then
@@ -669,8 +738,9 @@ SELECT
 case "$action" in
   preflight)
     require_clean_revision "$requested_revision" >/dev/null
+    load_production_environment
     preflight_production
-    verify_migration_ledger_contract
+    verify_migration_ledger_contract "$repo_root/migrations"
     ;;
   prepare)
     commit="$(require_clean_revision "$requested_revision")"
@@ -679,20 +749,41 @@ case "$action" in
   verify)
     commit="$(require_clean_revision "$requested_revision")"
     prepare_release "$commit"
+    load_production_environment
     verify_source_and_release "$commit"
     ;;
-  deploy)
+  artifact)
     commit="$(require_clean_revision "$requested_revision")"
+    verify_release "$commit"
+    echo "Immutable release artifact verified: $(release_dir_for "$commit")"
+    ;;
+  deploy)
+    if [ "${3:-}" != "--execute" ]; then
+      echo "Deploy is side-effecting; rerun with: $0 deploy $requested_revision --execute" >&2
+      exit 2
+    fi
+    commit="$(require_clean_revision "$requested_revision")"
+    QIU_MARKET_SUPPORT_DIR="$support_dir" \
+      qiu_require_release_coordination release-deploy "$commit"
+    load_production_environment
     deploy_release "$commit"
     ;;
   rollback)
+    if [ "${3:-}" != "--execute" ]; then
+      echo "Rollback is side-effecting; rerun with: $0 rollback ${2:-<release>} --execute" >&2
+      exit 2
+    fi
+    QIU_MARKET_SUPPORT_DIR="$support_dir" \
+      qiu_require_release_coordination release-rollback "${2:-}"
+    load_production_environment
     rollback_release "${2:-}"
     ;;
   status)
+    load_production_environment
     show_status
     ;;
   *)
-    echo "Usage: $0 preflight|prepare|verify|deploy|rollback|status [revision-or-release]" >&2
+    echo "Usage: $0 preflight|prepare|artifact|verify|status [revision] | deploy <revision> --execute | rollback <release> --execute" >&2
     exit 2
     ;;
 esac

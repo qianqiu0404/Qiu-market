@@ -81,6 +81,36 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 			phase, writesEnabled, transportHealthy, lastError)
 	}
 
+	legacyProvenanceEpoch := "legacy-writable-with-transport-without-provenance"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO trading_recovery_epoch (
+			schema_version, market_id, epoch_id, phase, runtime_sequence,
+			state_hash, ledger_balanced, event_continuous, projection_caught_up,
+			outbox_caught_up, transport_healthy, writes_enabled,
+			transport_sample_count, transport_first_sample_at,
+			transport_last_sample_at, transport_maximum_gap_ms,
+			transport_evidence_sha256, last_error, version, started_at, updated_at
+		) VALUES (1,$1,$2,'writable',0,$3,TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,
+			7,$4,$5,5000,$6,'',1,$5,$5)
+	`, market.ID, legacyProvenanceEpoch, strings.Repeat("a", 64),
+		now.Add(-31*time.Second), now, strings.Repeat("b", 64)); err != nil {
+		t.Fatal(err)
+	}
+	applyMigrationOnce(t, ctx, pool, "2026082600028.sql")
+	if err := pool.QueryRow(ctx, `
+		SELECT phase, writes_enabled, transport_healthy, last_error
+		FROM trading_recovery_epoch WHERE market_id=$1 AND epoch_id=$2
+	`, market.ID, legacyProvenanceEpoch).Scan(
+		&phase, &writesEnabled, &transportHealthy, &lastError,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if phase != recovery.PhaseManualReview || writesEnabled || transportHealthy ||
+		!strings.Contains(lastError, "legacy writable epoch lacks production provenance") {
+		t.Fatalf("legacy provenance migration result phase=%s writes=%v transport=%v error=%q",
+			phase, writesEnabled, transportHealthy, lastError)
+	}
+
 	// The real migration constraint must reject a writable row whose claimed
 	// maximum gap exceeds the recovery contract.
 	_, err := pool.Exec(ctx, `
@@ -101,6 +131,7 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 	// Applying migration 27 again is expected to be safe after its legacy-data
 	// rewrite and constraint installation.
 	applyMigrationOnce(t, ctx, pool, "2026082500027.sql")
+	applyMigrationOnce(t, ctx, pool, "2026082600028.sql")
 	for _, table := range []string{"trading_recovery_current", "trading_recovery_epoch"} {
 		if _, err := pool.Exec(ctx, `DELETE FROM `+table+` WHERE market_id=$1`, market.ID); err != nil {
 			t.Fatal(err)
@@ -111,7 +142,8 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := recovery.NewCoordinator(primaryStore, market.ID)
+	provenance := integratedRecoveryProvenance("https://qiu-market.example")
+	coordinator, err := recovery.NewCoordinator(primaryStore, market.ID, provenance)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,13 +155,13 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 	}
 	barrier := newTwoPartyLoadBarrier()
 	firstContender, _ := recovery.NewCoordinator(
-		&barrierRecoveryStore{next: primaryStore, barrier: barrier}, market.ID,
+		&barrierRecoveryStore{next: primaryStore, barrier: barrier}, market.ID, provenance,
 	)
 	secondContender, _ := recovery.NewCoordinator(
-		&barrierRecoveryStore{next: secondaryStore, barrier: barrier}, market.ID,
+		&barrierRecoveryStore{next: secondaryStore, barrier: barrier}, market.ID, provenance,
 	)
 	binding := recoveryBinding(warmup)
-	evidence := validTransportEvidence()
+	evidence := validTransportEvidence(warmup.Provenance)
 	results := make(chan error, 2)
 	var contenders sync.WaitGroup
 	for _, contender := range []*recovery.Coordinator{firstContender, secondContender} {
@@ -203,7 +235,7 @@ func TestTransportProbeLoopbackGRPCPostgresVertical(t *testing.T) {
 	warmup := waitRecoveryPhase(t, ctx, coordinator, recovery.PhaseTransportWarmup)
 	binding := recoveryBinding(warmup)
 	publicStatus := readRecoveryStatusDocument(
-		t, stack.server.URL+"/api/v1/trading/recovery/status",
+		t, stack.server.Client(), stack.server.URL+"/api/v1/trading/recovery/status",
 	)
 
 	for _, testCase := range []struct {
@@ -228,10 +260,13 @@ func TestTransportProbeLoopbackGRPCPostgresVertical(t *testing.T) {
 			testCase.mutate(document)
 			fixture := recoveryStatusFixture(t, document)
 			defer fixture.Close()
+			fixtureBinding := binding
+			fixtureBinding.Provenance.ProductionOrigin = fixture.URL
 			probe := newOperatorProbe(
-				t, ctx, binding,
+				t, ctx, fixtureBinding,
 				fixture.URL+"/api/v1/trading/recovery/status",
 				stack.backend.GRPCAddress(),
+				fixture.Client(),
 			)
 			defer probe.Close()
 			if _, samples, err := tradingoperator.CollectTransportEvidence(
@@ -246,6 +281,7 @@ func TestTransportProbeLoopbackGRPCPostgresVertical(t *testing.T) {
 		t, ctx, binding,
 		stack.server.URL+"/api/v1/trading/recovery/status",
 		stack.backend.GRPCAddress(),
+		stack.server.Client(),
 	)
 	defer probe.Close()
 	evidence, samples, err := tradingoperator.CollectTransportEvidence(
@@ -462,13 +498,13 @@ func (s *barrierRecoveryStore) Save(
 	return s.next.Save(ctx, expectedVersion, next)
 }
 
-func readRecoveryStatusDocument(t *testing.T, endpoint string) map[string]any {
+func readRecoveryStatusDocument(t *testing.T, client *http.Client, endpoint string) map[string]any {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +529,7 @@ func cloneJSONDocument(source map[string]any) map[string]any {
 
 func recoveryStatusFixture(t *testing.T, document map[string]any) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	return httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet ||
 			request.URL.Path != "/api/v1/trading/recovery/status" {
 			http.NotFound(writer, request)
@@ -513,12 +549,13 @@ func newOperatorProbe(
 	binding recovery.Binding,
 	statusURL string,
 	grpcAddress string,
+	httpClient *http.Client,
 ) *tradingoperator.TransportProbe {
 	t.Helper()
 	connectContext, connectCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer connectCancel()
 	probe, err := tradingoperator.NewTransportProbe(
-		connectContext, binding, statusURL, grpcAddress, nil,
+		connectContext, binding, statusURL, grpcAddress, httpClient,
 	)
 	if err != nil {
 		t.Fatal(err)

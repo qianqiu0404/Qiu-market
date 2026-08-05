@@ -17,6 +17,7 @@ funnel_origin="${QIU_MARKET_FUNNEL_ORIGIN:-https://xiuqiudemac-mini.tail2e4386.t
 tailscale_socket="$support_dir/tailscale/tailscaled.sock"
 tailscale_cli="/opt/homebrew/bin/tailscale"
 runtime_link="$support_dir/runtime-current"
+managed_binary="$support_dir/bin/market-services"
 guardian_last_restart_file="$support_dir/guardian/last-automatic-restart-at"
 lock_dir="$observation_dir/.observer.lock"
 lock_archive_dir="$observation_dir/archive/observer-locks"
@@ -63,7 +64,7 @@ trap 'on_signal hup 129' HUP
 trap 'on_signal int 130' INT
 trap 'on_signal term 143' TERM
 
-for command in curl jq psql; do
+for command in curl find jq psql shasum; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required observer dependency is unavailable: $command" >&2
     exit 1
@@ -133,6 +134,29 @@ header_value() {
   ' "$header_file"
 }
 
+manifest_value() {
+  local manifest="$1"
+  local key="$2"
+  sed -n "s/^${key}=//p" "$manifest" | head -1
+}
+
+sha256_file() {
+  shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+}
+
+runtime_bundle_hash() {
+  local root="$1"
+  (
+    cd "$root" || exit 1
+    find ops migrations -type f -print 2>/dev/null | LC_ALL=C sort |
+      while IFS= read -r file; do
+        shasum -a 256 "$file" || exit 1
+      done |
+      shasum -a 256 |
+      awk '{print $1}'
+  ) 2>/dev/null
+}
+
 dashboard_body() {
   local venue="$1"
   jq -nc --arg venue "$venue" '{
@@ -194,11 +218,15 @@ curl_code "$temp_dir/unsigned.json" \
 curl_code "$temp_dir/trading.json" \
   "$production_origin/api/v1/trading/markets/BTC-USDT/status" \
   > "$temp_dir/trading.http"
+curl_code "$temp_dir/recovery.json" \
+  "$production_origin/api/v1/trading/recovery/status" \
+  > "$temp_dir/recovery.http"
 
 site_http="$(cat "$temp_dir/site.http")"
 funnel_health_http="$(cat "$temp_dir/funnel-health.http")"
 unsigned_http="$(cat "$temp_dir/unsigned.http")"
 trading_http="$(cat "$temp_dir/trading.http")"
+recovery_http="$(cat "$temp_dir/recovery.http")"
 system_http="$(cat "$temp_dir/system.http")"
 uniswap_http="$(cat "$temp_dir/uniswap.http")"
 pancake_http="$(cat "$temp_dir/pancakeswap.http")"
@@ -224,10 +252,33 @@ if [ -x "$tailscale_cli" ] && [ -S "$tailscale_socket" ]; then
 fi
 
 runtime_release_commit="unmanaged"
+runtime_bundle_manifest_sha256="unmanaged"
+runtime_bundle_sha256="unmanaged"
 if [ -L "$runtime_link" ] && [ -f "$runtime_link/runtime-manifest.env" ]; then
-  runtime_release_commit="$(
-    sed -n 's/^git_commit=//p' "$runtime_link/runtime-manifest.env" | head -1
-  )"
+  runtime_release_commit="$(manifest_value "$runtime_link/runtime-manifest.env" git_commit)"
+  runtime_bundle_manifest_sha256="$(manifest_value "$runtime_link/runtime-manifest.env" bundle_sha256)"
+  runtime_bundle_sha256="$(runtime_bundle_hash "$runtime_link" || true)"
+fi
+binary_release_commit="unmanaged"
+binary_manifest_sha256="unmanaged"
+binary_sha256="unmanaged"
+if [ -L "$managed_binary" ] && [ -x "$managed_binary" ]; then
+  managed_binary_target="$(readlink "$managed_binary")"
+  managed_binary_manifest="$(dirname "$managed_binary_target")/manifest.env"
+  if [ -f "$managed_binary_manifest" ]; then
+    binary_release_commit="$(manifest_value "$managed_binary_manifest" git_commit)"
+    binary_manifest_sha256="$(manifest_value "$managed_binary_manifest" binary_sha256)"
+    binary_sha256="$(sha256_file "$managed_binary" || true)"
+  fi
+fi
+runtime_candidate_match=false
+if [[ "$runtime_release_commit" =~ ^[0-9a-f]{40}$ ]] &&
+  [ "$binary_release_commit" = "$runtime_release_commit" ] &&
+  [[ "$runtime_bundle_manifest_sha256" =~ ^[0-9a-f]{64}$ ]] &&
+  [ "$runtime_bundle_sha256" = "$runtime_bundle_manifest_sha256" ] &&
+  [[ "$binary_manifest_sha256" =~ ^[0-9a-f]{64}$ ]] &&
+  [ "$binary_sha256" = "$binary_manifest_sha256" ]; then
+  runtime_candidate_match=true
 fi
 guardian_last_automatic_restart_at="$(
   cat "$guardian_last_restart_file" 2>/dev/null || echo 0
@@ -252,6 +303,10 @@ trading_provenance="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market
 trading_release_commit="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Release-Commit)"
 trading_deployment_id="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Deployment-ID)"
 trading_deployment_url="$(header_value "$temp_dir/trading.json.headers" X-Qiu-Market-Deployment-URL)"
+recovery_provenance="$(header_value "$temp_dir/recovery.json.headers" X-Qiu-Market-Provenance)"
+recovery_release_commit="$(header_value "$temp_dir/recovery.json.headers" X-Qiu-Market-Release-Commit)"
+recovery_deployment_id="$(header_value "$temp_dir/recovery.json.headers" X-Qiu-Market-Deployment-ID)"
+recovery_deployment_url="$(header_value "$temp_dir/recovery.json.headers" X-Qiu-Market-Deployment-URL)"
 system_provenance="$(header_value "$temp_dir/system.json.headers" X-Qiu-Market-Provenance)"
 system_release_commit="$(header_value "$temp_dir/system.json.headers" X-Qiu-Market-Release-Commit)"
 system_deployment_id="$(header_value "$temp_dir/system.json.headers" X-Qiu-Market-Deployment-ID)"
@@ -269,18 +324,24 @@ acceptance_epoch_id=""
 expected_deployment_id=""
 expected_deployment_url=""
 expected_deployment_commit=""
+expected_runtime_release_commit=""
+expected_binary_sha256=""
+expected_runtime_bundle_sha256=""
 epoch_started_at=""
 epoch_canaries="{}"
 epoch_active=false
 if [ -s "$epoch_file" ] &&
   jq -e '
     . as $root |
-    .schema_version == 2 and
+    .schema_version == 4 and
     .status == "active" and
     (.epoch_id | type == "string" and length >= 8) and
     (.deployment_id | type == "string" and startswith("dpl_")) and
     (.deployment_url | type == "string" and startswith("https://")) and
     (.deployment_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+    (.runtime_release_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+    (.binary_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.runtime_bundle_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.started_at | type == "string") and
     (.started_at | try fromdateiso8601 catch null | type == "number") and
     (.dex_canaries | keys | sort) == ["pancakeswap", "uniswap"] and
@@ -295,6 +356,9 @@ if [ -s "$epoch_file" ] &&
   expected_deployment_id="$(jq -r '.deployment_id' "$epoch_file")"
   expected_deployment_url="$(jq -r '.deployment_url' "$epoch_file")"
   expected_deployment_commit="$(jq -r '.deployment_commit' "$epoch_file")"
+  expected_runtime_release_commit="$(jq -r '.runtime_release_commit' "$epoch_file")"
+  expected_binary_sha256="$(jq -r '.binary_sha256' "$epoch_file")"
+  expected_runtime_bundle_sha256="$(jq -r '.runtime_bundle_sha256' "$epoch_file")"
   epoch_started_at="$(jq -r '.started_at' "$epoch_file")"
   epoch_canaries="$(jq -c '.dex_canaries' "$epoch_file")"
   if [ "$scheduled_epoch" -ge "$(jq -r '.started_at | fromdateiso8601' "$epoch_file")" ]; then
@@ -302,25 +366,72 @@ if [ -s "$epoch_file" ] &&
   fi
 fi
 
+recovery_body_production_origin=""
+recovery_body_deployment_id=""
+recovery_body_deployment_url=""
+recovery_body_release_commit=""
+recovery_body_source_digest=""
+if [ "$recovery_http" = 200 ]; then
+  recovery_body_production_origin="$(jq -r '.provenance.production_origin // ""' "$temp_dir/recovery.json" 2>/dev/null || true)"
+  recovery_body_deployment_id="$(jq -r '.provenance.deployment_id // ""' "$temp_dir/recovery.json" 2>/dev/null || true)"
+  recovery_body_deployment_url="$(jq -r '.provenance.deployment_url // ""' "$temp_dir/recovery.json" 2>/dev/null || true)"
+  recovery_body_release_commit="$(jq -r '.provenance.release_commit // "" | ascii_downcase' "$temp_dir/recovery.json" 2>/dev/null || true)"
+  recovery_body_source_digest="$(jq -r '.provenance.source_digest // "" | ascii_downcase' "$temp_dir/recovery.json" 2>/dev/null || true)"
+fi
+recovery_body_epoch_match=true
+if [ "$epoch_active" = true ] && {
+  [ "$recovery_body_production_origin" != "$production_origin" ] ||
+    [ "$recovery_body_deployment_id" != "$expected_deployment_id" ] ||
+    [ "${recovery_body_deployment_url%/}" != "$expected_deployment_url" ] ||
+    [ "$recovery_body_release_commit" != "$expected_deployment_commit" ] ||
+    [ "$recovery_body_source_digest" != "$expected_binary_sha256" ];
+}; then
+  recovery_body_epoch_match=false
+fi
+recovery_body_provenance_match=false
+if [ "$recovery_body_production_origin" = "$production_origin" ] &&
+  [[ "$recovery_body_production_origin" =~ ^https://[A-Za-z0-9.-]+$ ]] &&
+  [ "$recovery_body_deployment_id" = "$recovery_deployment_id" ] &&
+  [[ "$recovery_body_deployment_id" =~ ^dpl_[A-Za-z0-9]{8,128}$ ]] &&
+  [ "${recovery_body_deployment_url%/}" = "${recovery_deployment_url%/}" ] &&
+  [[ "$recovery_body_deployment_url" =~ ^https://[A-Za-z0-9.-]+\.vercel\.app$ ]] &&
+  [ "$recovery_body_release_commit" = "$recovery_release_commit" ] &&
+  [[ "$recovery_body_release_commit" =~ ^[0-9a-f]{40}$ ]] &&
+  [ "$recovery_body_source_digest" = "$binary_sha256" ] &&
+  [[ "$recovery_body_source_digest" =~ ^[0-9a-f]{64}$ ]] &&
+  [ "$runtime_candidate_match" = true ] &&
+  [ "$recovery_body_epoch_match" = true ]; then
+  recovery_body_provenance_match=true
+fi
+
 release_provenance_match=false
 if [ "$epoch_active" = true ] &&
   [ "$(jq -r '.production_origin' "$epoch_file")" = "$production_origin" ] &&
   [ "$trading_provenance" = VERIFIED ] &&
+  [ "$recovery_provenance" = VERIFIED ] &&
   [ "$system_provenance" = VERIFIED ] &&
   [ "$uniswap_provenance" = VERIFIED ] &&
   [ "$pancake_provenance" = VERIFIED ] &&
   [ "$trading_release_commit" = "$expected_deployment_commit" ] &&
+  [ "$recovery_release_commit" = "$expected_deployment_commit" ] &&
   [ "$system_release_commit" = "$expected_deployment_commit" ] &&
   [ "$uniswap_release_commit" = "$expected_deployment_commit" ] &&
   [ "$pancake_release_commit" = "$expected_deployment_commit" ] &&
   [ "$trading_deployment_id" = "$expected_deployment_id" ] &&
+  [ "$recovery_deployment_id" = "$expected_deployment_id" ] &&
   [ "$system_deployment_id" = "$expected_deployment_id" ] &&
   [ "$uniswap_deployment_id" = "$expected_deployment_id" ] &&
   [ "$pancake_deployment_id" = "$expected_deployment_id" ] &&
   [ "${trading_deployment_url%/}" = "$expected_deployment_url" ] &&
+  [ "${recovery_deployment_url%/}" = "$expected_deployment_url" ] &&
   [ "${system_deployment_url%/}" = "$expected_deployment_url" ] &&
   [ "${uniswap_deployment_url%/}" = "$expected_deployment_url" ] &&
-  [ "${pancake_deployment_url%/}" = "$expected_deployment_url" ]; then
+  [ "${pancake_deployment_url%/}" = "$expected_deployment_url" ] &&
+  [ "$runtime_release_commit" = "$expected_runtime_release_commit" ] &&
+  [ "$binary_sha256" = "$expected_binary_sha256" ] &&
+  [ "$runtime_bundle_sha256" = "$expected_runtime_bundle_sha256" ] &&
+  [ "$recovery_body_provenance_match" = true ] &&
+  [ "$runtime_candidate_match" = true ]; then
   release_provenance_match=true
 fi
 
@@ -366,12 +477,28 @@ trading_sequence=""
 trading_last_error=""
 trading_outbox_state=""
 trading_outbox_last_error=""
+recovery_schema_version=""
+recovery_phase=""
+recovery_writes_enabled=false
+recovery_continuity_uncertain=true
+recovery_last_error=""
 if [ "$trading_http" = 200 ]; then
   trading_state="$(jq -r '.state // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_sequence="$(jq -r '.sequence // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_last_error="$(jq -r '.last_error // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_outbox_state="$(jq -r '.outbox_state // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
   trading_outbox_last_error="$(jq -r '.outbox_last_error // ""' "$temp_dir/trading.json" 2>/dev/null || true)"
+fi
+if [ "$recovery_http" = 200 ]; then
+  recovery_schema_version="$(jq -r '.schema_version // ""' "$temp_dir/recovery.json" 2>/dev/null || true)"
+  recovery_phase="$(jq -r '.phase // ""' "$temp_dir/recovery.json" 2>/dev/null || true)"
+  recovery_writes_enabled="$(jq -r '.writes_enabled // false' "$temp_dir/recovery.json" 2>/dev/null || echo false)"
+  recovery_continuity_uncertain="$(jq -r '.continuity_uncertain // true' "$temp_dir/recovery.json" 2>/dev/null || echo true)"
+  recovery_last_error="$(jq -r '
+    [(.last_error // ""), (.continuity_error // "")] |
+    map(select(type == "string" and length > 0)) |
+    join("; ")
+  ' "$temp_dir/recovery.json" 2>/dev/null || true)"
 fi
 
 disk_free_bytes=0
@@ -651,6 +778,7 @@ if [ "$site_http" = 200 ] &&
   [ "$funnel_health_http" = 200 ] &&
   [ "$unsigned_http" = 401 ] &&
   [ "$trading_http" = 200 ] &&
+  [ "$recovery_http" = 200 ] &&
   [ "$system_http" = 200 ] &&
   [ "$uniswap_http" = 200 ] &&
   [ "$pancake_http" = 200 ] &&
@@ -658,6 +786,13 @@ if [ "$site_http" = 200 ] &&
   [ -z "$trading_last_error" ] &&
   { [ -z "$trading_outbox_state" ] || [ "$trading_outbox_state" = ready ]; } &&
   [ -z "$trading_outbox_last_error" ] &&
+  [ "$recovery_schema_version" = 2 ] &&
+  [ "$recovery_phase" = writable ] &&
+  [ "$recovery_writes_enabled" = true ] &&
+  [ "$recovery_continuity_uncertain" = false ] &&
+  [ -z "$recovery_last_error" ] &&
+  [ "$recovery_body_provenance_match" = true ] &&
+  [ "$runtime_candidate_match" = true ] &&
   [ "$tailscale_health_ok" = true ] &&
   [ "$disk_free_bytes" -ge $((25 * 1024 * 1024 * 1024)) ] &&
   [ -z "$retention_last_error" ] &&
@@ -687,6 +822,7 @@ observed_at="$finished_at"
 site_latency_ms="$(cat "$temp_dir/site.html.latency-ms")"
 funnel_latency_ms="$(cat "$temp_dir/funnel-health.txt.latency-ms")"
 trading_latency_ms="$(cat "$temp_dir/trading.json.latency-ms")"
+recovery_latency_ms="$(cat "$temp_dir/recovery.json.latency-ms")"
 system_latency_ms="$(cat "$temp_dir/system.json.latency-ms")"
 uniswap_latency_ms="$(cat "$temp_dir/uniswap.json.latency-ms")"
 pancake_latency_ms="$(cat "$temp_dir/pancakeswap.json.latency-ms")"
@@ -694,6 +830,7 @@ site_transport_error="$(error_summary "$temp_dir/site.html.error")"
 funnel_transport_error="$(error_summary "$temp_dir/funnel-health.txt.error")"
 unsigned_transport_error="$(error_summary "$temp_dir/unsigned.json.error")"
 trading_transport_error="$(error_summary "$temp_dir/trading.json.error")"
+recovery_transport_error="$(error_summary "$temp_dir/recovery.json.error")"
 system_transport_error="$(error_summary "$temp_dir/system.json.error")"
 uniswap_transport_error="$(error_summary "$temp_dir/uniswap.json.error")"
 pancake_transport_error="$(error_summary "$temp_dir/pancakeswap.json.error")"
@@ -704,6 +841,7 @@ if [ "$sample_ok" != true ]; then
   elif [ "$site_http" = 000 ] &&
     [ "$funnel_health_http" = 000 ] &&
     [ "$trading_http" = 000 ] &&
+    [ "$recovery_http" = 000 ] &&
     [ "$system_http" = 000 ] &&
     [ "$uniswap_http" = 000 ] &&
     [ "$pancake_http" = 000 ]; then
@@ -711,6 +849,7 @@ if [ "$sample_ok" != true ]; then
   elif [ "$site_http" = 200 ] && {
     [ "$funnel_health_http" != 200 ] ||
       [ "$trading_http" = 502 ] || [ "$trading_http" = 504 ] ||
+      [ "$recovery_http" = 502 ] || [ "$recovery_http" = 504 ] ||
       [ "$system_http" = 502 ] || [ "$system_http" = 504 ] ||
       [ "$uniswap_http" = 502 ] || [ "$uniswap_http" = 504 ] ||
       [ "$pancake_http" = 502 ] || [ "$pancake_http" = 504 ];
@@ -731,6 +870,9 @@ jq -n \
   --arg expected_deployment_id "$expected_deployment_id" \
   --arg expected_deployment_url "$expected_deployment_url" \
   --arg expected_deployment_commit "$expected_deployment_commit" \
+  --arg expected_runtime_release_commit "$expected_runtime_release_commit" \
+  --arg expected_binary_sha256 "$expected_binary_sha256" \
+  --arg expected_runtime_bundle_sha256 "$expected_runtime_bundle_sha256" \
   --arg epoch_started_at "$epoch_started_at" \
   --argjson epoch_canaries "$epoch_canaries" \
   --arg epoch_active "$epoch_active" \
@@ -739,6 +881,10 @@ jq -n \
   --arg trading_release_commit "$trading_release_commit" \
   --arg trading_deployment_id "$trading_deployment_id" \
   --arg trading_deployment_url "$trading_deployment_url" \
+  --arg recovery_provenance "$recovery_provenance" \
+  --arg recovery_release_commit "$recovery_release_commit" \
+  --arg recovery_deployment_id "$recovery_deployment_id" \
+  --arg recovery_deployment_url "$recovery_deployment_url" \
   --arg system_provenance "$system_provenance" \
   --arg system_release_commit "$system_release_commit" \
   --arg system_deployment_id "$system_deployment_id" \
@@ -759,12 +905,25 @@ jq -n \
   --arg funnel_health_http "$funnel_health_http" \
   --arg unsigned_http "$unsigned_http" \
   --arg trading_http "$trading_http" \
+  --arg recovery_http "$recovery_http" \
   --arg system_http "$system_http" \
   --arg trading_state "$trading_state" \
   --arg trading_sequence "$trading_sequence" \
   --arg trading_last_error "$trading_last_error" \
   --arg trading_outbox_state "$trading_outbox_state" \
   --arg trading_outbox_last_error "$trading_outbox_last_error" \
+  --arg recovery_schema_version "$recovery_schema_version" \
+  --arg recovery_phase "$recovery_phase" \
+  --arg recovery_writes_enabled "$recovery_writes_enabled" \
+  --arg recovery_continuity_uncertain "$recovery_continuity_uncertain" \
+  --arg recovery_last_error "$recovery_last_error" \
+  --arg recovery_body_production_origin "$recovery_body_production_origin" \
+  --arg recovery_body_deployment_id "$recovery_body_deployment_id" \
+  --arg recovery_body_deployment_url "$recovery_body_deployment_url" \
+  --arg recovery_body_release_commit "$recovery_body_release_commit" \
+  --arg recovery_body_source_digest "$recovery_body_source_digest" \
+  --arg recovery_body_epoch_match "$recovery_body_epoch_match" \
+  --arg recovery_body_provenance_match "$recovery_body_provenance_match" \
   --arg sample_ok "$sample_ok" \
   --arg database_ok "$database_ok" \
   --arg historical_complete "$historical_complete" \
@@ -776,6 +935,7 @@ jq -n \
   --arg site_latency_ms "$site_latency_ms" \
   --arg funnel_latency_ms "$funnel_latency_ms" \
   --arg trading_latency_ms "$trading_latency_ms" \
+  --arg recovery_latency_ms "$recovery_latency_ms" \
   --arg system_latency_ms "$system_latency_ms" \
   --arg uniswap_latency_ms "$uniswap_latency_ms" \
   --arg pancake_latency_ms "$pancake_latency_ms" \
@@ -784,6 +944,7 @@ jq -n \
   --arg funnel_transport_error "$funnel_transport_error" \
   --arg unsigned_transport_error "$unsigned_transport_error" \
   --arg trading_transport_error "$trading_transport_error" \
+  --arg recovery_transport_error "$recovery_transport_error" \
   --arg system_transport_error "$system_transport_error" \
   --arg uniswap_transport_error "$uniswap_transport_error" \
   --arg pancake_transport_error "$pancake_transport_error" \
@@ -791,6 +952,12 @@ jq -n \
   --arg tailscale_health_ok "$tailscale_health_ok" \
   --argjson tailscale_health "$tailscale_health_json" \
   --arg runtime_release_commit "$runtime_release_commit" \
+  --arg binary_release_commit "$binary_release_commit" \
+  --arg runtime_bundle_manifest_sha256 "$runtime_bundle_manifest_sha256" \
+  --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
+  --arg binary_manifest_sha256 "$binary_manifest_sha256" \
+  --arg binary_sha256 "$binary_sha256" \
+  --arg runtime_candidate_match "$runtime_candidate_match" \
   --arg guardian_last_automatic_restart_at "$guardian_last_automatic_restart_at" \
   --arg network_interface "$network_interface" \
   --arg network_gateway "$network_gateway" \
@@ -799,7 +966,7 @@ jq -n \
   --argjson pancakeswap "$pancake_summary" \
   --argjson coverage "$coverage_json" \
   '{
-    schema_version: 4,
+    schema_version: 7,
     acceptance_epoch_id: (
       if $acceptance_epoch_id == "" then null else $acceptance_epoch_id end
     ),
@@ -816,6 +983,8 @@ jq -n \
       if $trading_release_commit == "" then null else $trading_release_commit end
     ),
     runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
     scheduled_at: $scheduled_at,
     started_at: $started_at,
     finished_at: $finished_at,
@@ -838,6 +1007,7 @@ jq -n \
       funnel_health: (if $funnel_transport_error == "" then null else $funnel_transport_error end),
       unsigned_funnel_rest: (if $unsigned_transport_error == "" then null else $unsigned_transport_error end),
       trading_bff: (if $trading_transport_error == "" then null else $trading_transport_error end),
+      recovery_bff: (if $recovery_transport_error == "" then null else $recovery_transport_error end),
       system_bff: (if $system_transport_error == "" then null else $system_transport_error end),
       uniswap_bff: (if $uniswap_transport_error == "" then null else $uniswap_transport_error end),
       pancakeswap_bff: (if $pancake_transport_error == "" then null else $pancake_transport_error end)
@@ -864,6 +1034,15 @@ jq -n \
       expected_deployment_commit: (
         if $expected_deployment_commit == "" then null else $expected_deployment_commit end
       ),
+      expected_runtime_release_commit: (
+        if $expected_runtime_release_commit == "" then null else $expected_runtime_release_commit end
+      ),
+      expected_binary_sha256: (
+        if $expected_binary_sha256 == "" then null else $expected_binary_sha256 end
+      ),
+      expected_runtime_bundle_sha256: (
+        if $expected_runtime_bundle_sha256 == "" then null else $expected_runtime_bundle_sha256 end
+      ),
       dex_canaries: (
         if $epoch_active == "true" then $epoch_canaries else null end
       )
@@ -875,6 +1054,21 @@ jq -n \
         commit: $trading_release_commit,
         deployment_id: $trading_deployment_id,
         deployment_url: $trading_deployment_url
+      },
+      recovery: {
+        status: $recovery_provenance,
+        commit: $recovery_release_commit,
+        deployment_id: $recovery_deployment_id,
+        deployment_url: $recovery_deployment_url,
+        body: {
+          production_origin: $recovery_body_production_origin,
+          deployment_id: $recovery_body_deployment_id,
+          deployment_url: $recovery_body_deployment_url,
+          release_commit: $recovery_body_release_commit,
+          source_digest: $recovery_body_source_digest
+        },
+        epoch_match: ($recovery_body_epoch_match == "true"),
+        full_match: ($recovery_body_provenance_match == "true")
       },
       system: {
         status: $system_provenance,
@@ -900,6 +1094,7 @@ jq -n \
       funnel_health_http: ($funnel_health_http | tonumber? // 0),
       unsigned_funnel_rest_http: ($unsigned_http | tonumber? // 0),
       trading_bff_http: ($trading_http | tonumber? // 0),
+      recovery_bff_http: ($recovery_http | tonumber? // 0),
       system_bff_http: ($system_http | tonumber? // 0),
       uniswap_bff_http: ($uniswap.http_status // 0),
       pancakeswap_bff_http: ($pancakeswap.http_status // 0),
@@ -908,6 +1103,12 @@ jq -n \
       trading_last_error: $trading_last_error,
       trading_outbox_state: $trading_outbox_state,
       trading_outbox_last_error: $trading_outbox_last_error,
+      recovery_schema_version: ($recovery_schema_version | tonumber? // 0),
+      recovery_phase: $recovery_phase,
+      recovery_writes_enabled: ($recovery_writes_enabled == "true"),
+      recovery_continuity_uncertain: ($recovery_continuity_uncertain != "false"),
+      recovery_last_error: $recovery_last_error,
+      recovery_provenance_match: ($recovery_body_provenance_match == "true"),
       database_ok: ($database_ok == "true"),
       disk_free_bytes: ($disk_free_bytes | tonumber? // 0),
       disk_state: $disk_state,
@@ -919,6 +1120,13 @@ jq -n \
       guardian_last_automatic_restart_at: (
         $guardian_last_automatic_restart_at | tonumber? // 0
       ),
+      runtime_bundle_commit: $runtime_release_commit,
+      managed_binary_commit: $binary_release_commit,
+      runtime_bundle_manifest_sha256: $runtime_bundle_manifest_sha256,
+      runtime_bundle_sha256: $runtime_bundle_sha256,
+      managed_binary_manifest_sha256: $binary_manifest_sha256,
+      managed_binary_sha256: $binary_sha256,
+      runtime_candidate_match: ($runtime_candidate_match == "true"),
       network_interface: $network_interface,
       network_gateway: $network_gateway,
       network_ipv4: $network_ipv4
@@ -927,6 +1135,7 @@ jq -n \
       production_page: ($site_latency_ms | tonumber? // 20000),
       funnel_health: ($funnel_latency_ms | tonumber? // 20000),
       trading_bff: ($trading_latency_ms | tonumber? // 20000),
+      recovery_bff: ($recovery_latency_ms | tonumber? // 20000),
       system_bff: ($system_latency_ms | tonumber? // 20000),
       uniswap_bff: ($uniswap_latency_ms | tonumber? // 20000),
       pancakeswap_bff: ($pancake_latency_ms | tonumber? // 20000)

@@ -6,13 +6,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const (
 	MinimumTransportSamples = 7
@@ -63,14 +66,27 @@ type Binding struct {
 	Version         uint64          `json:"version"`
 	RuntimeSequence uint64          `json:"runtime_sequence"`
 	StateHash       string          `json:"state_hash"`
+	Provenance      Provenance      `json:"provenance"`
 }
 
 type TransportEvidence struct {
-	SampleCount    int       `json:"sample_count"`
-	FirstSampleAt  time.Time `json:"first_sample_at"`
-	LastSampleAt   time.Time `json:"last_sample_at"`
-	MaximumGapMS   int64     `json:"maximum_gap_ms"`
-	EvidenceSHA256 string    `json:"evidence_sha256"`
+	SampleCount    int        `json:"sample_count"`
+	FirstSampleAt  time.Time  `json:"first_sample_at"`
+	LastSampleAt   time.Time  `json:"last_sample_at"`
+	MaximumGapMS   int64      `json:"maximum_gap_ms"`
+	EvidenceSHA256 string     `json:"evidence_sha256"`
+	Provenance     Provenance `json:"provenance"`
+}
+
+// Provenance identifies the exact public production surface and immutable
+// backend release that an epoch is allowed to promote. It is configured by the
+// service at epoch creation, not learned from operator-supplied observations.
+type Provenance struct {
+	ProductionOrigin string `json:"production_origin"`
+	DeploymentID     string `json:"deployment_id"`
+	DeploymentURL    string `json:"deployment_url"`
+	ReleaseCommit    string `json:"release_commit"`
+	SourceDigest     string `json:"source_digest"`
 }
 
 type AdmissionMode string
@@ -101,6 +117,7 @@ type Status struct {
 	Phase               Phase             `json:"phase"`
 	Proof               Proof             `json:"proof"`
 	Transport           TransportEvidence `json:"transport_evidence"`
+	Provenance          Provenance        `json:"provenance"`
 	WritesEnabled       bool              `json:"writes_enabled"`
 	LastError           string            `json:"last_error,omitempty"`
 	Version             uint64            `json:"version"`
@@ -125,21 +142,41 @@ type Coordinator struct {
 	continuityEpoch     string
 	continuityUncertain bool
 	continuityError     string
+	expectedProvenance  Provenance
 }
 
-func NewCoordinator(store Store, marketID domain.MarketID) (*Coordinator, error) {
+func NewCoordinator(
+	store Store,
+	marketID domain.MarketID,
+	expected ...Provenance,
+) (*Coordinator, error) {
 	if store == nil || marketID == "" {
 		return nil, fmt.Errorf("recovery store and market id are required")
 	}
+	if len(expected) > 1 {
+		return nil, fmt.Errorf("at most one recovery provenance is supported")
+	}
+	var provenance Provenance
+	if len(expected) == 1 {
+		var err error
+		provenance, err = NormalizeProvenance(expected[0])
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &Coordinator{
-		store:    store,
-		marketID: marketID,
-		now:      func() time.Time { return time.Now().UTC() },
-		newID:    newEpochID,
+		store:              store,
+		marketID:           marketID,
+		now:                func() time.Time { return time.Now().UTC() },
+		newID:              newEpochID,
+		expectedProvenance: provenance,
 	}, nil
 }
 
 func (c *Coordinator) Begin(ctx context.Context) (Status, error) {
+	if !validProvenance(c.expectedProvenance) {
+		return Status{}, fmt.Errorf("%w: recovery provenance is required", ErrProofIncomplete)
+	}
 	current, found, err := c.store.Load(ctx, c.marketID)
 	if err != nil {
 		c.markContinuityUncertain(err)
@@ -165,6 +202,7 @@ func (c *Coordinator) Begin(ctx context.Context) (Status, error) {
 		Version:       expected + 1,
 		StartedAt:     now,
 		UpdatedAt:     now,
+		Provenance:    c.expectedProvenance,
 	}
 	if err := c.store.Save(ctx, expected, next); err != nil {
 		c.markContinuityUncertain(err)
@@ -256,7 +294,8 @@ func (c *Coordinator) Promote(
 			current.Proof.StateHash,
 		)
 	}
-	if !localProofComplete(current.Proof) || !validTransportEvidence(evidence, c.now()) {
+	if !localProofComplete(current.Proof) ||
+		!validTransportEvidence(evidence, current.Provenance, c.now()) {
 		return Status{}, ErrTransportEvidence
 	}
 	next := current
@@ -307,7 +346,8 @@ func (c *Coordinator) RequireWritable(ctx context.Context) error {
 		return errors.Join(ErrWriteBlocked, err)
 	}
 	if current.Phase != PhaseWritable || !current.WritesEnabled ||
-		!localProofComplete(current.Proof) || !current.Proof.TransportHealthy {
+		!localProofComplete(current.Proof) || !current.Proof.TransportHealthy ||
+		!validProvenance(current.Provenance) {
 		return fmt.Errorf("%w: phase=%s epoch=%s", ErrWriteBlocked, current.Phase, current.EpochID)
 	}
 	return nil
@@ -354,7 +394,8 @@ func authorize(current Status, mode AdmissionMode, accountID domain.AccountID) e
 	switch mode {
 	case AdmissionNormal:
 		if current.Phase == PhaseWritable && current.WritesEnabled &&
-			localProofComplete(current.Proof) && current.Proof.TransportHealthy {
+			localProofComplete(current.Proof) && current.Proof.TransportHealthy &&
+			validProvenance(current.Provenance) {
 			return nil
 		}
 	case AdmissionSafetyCancel:
@@ -432,6 +473,16 @@ func (c *Coordinator) observeNewEpoch(epochID string) {
 func (c *Coordinator) effectiveStatus(current Status) Status {
 	c.continuityMu.RLock()
 	defer c.continuityMu.RUnlock()
+	if validProvenance(c.expectedProvenance) && current.Provenance != c.expectedProvenance {
+		current.WritesEnabled = false
+		current.Proof.TransportHealthy = false
+		current.ContinuityUncertain = true
+		current.ContinuityError = "durable recovery provenance does not match trusted service configuration"
+		if current.LastError == "" {
+			current.LastError = current.ContinuityError
+		}
+		return current
+	}
 	if !c.continuityUncertain ||
 		(c.continuityEpoch != "" && c.continuityEpoch != current.EpochID) {
 		return current
@@ -485,11 +536,17 @@ func matchesBinding(status Status, binding Binding) bool {
 		binding.EpochID != "" && binding.EpochID == status.EpochID &&
 		binding.Version == status.Version &&
 		binding.RuntimeSequence == status.Proof.RuntimeSequence &&
-		len(binding.StateHash) == 64 && binding.StateHash == status.Proof.StateHash
+		len(binding.StateHash) == 64 && binding.StateHash == status.Proof.StateHash &&
+		binding.Provenance == status.Provenance && validProvenance(binding.Provenance)
 }
 
-func validTransportEvidence(evidence TransportEvidence, now time.Time) bool {
+func validTransportEvidence(
+	evidence TransportEvidence,
+	expected Provenance,
+	now time.Time,
+) bool {
 	if evidence.SampleCount < MinimumTransportSamples ||
+		evidence.Provenance != expected || !validProvenance(evidence.Provenance) ||
 		evidence.FirstSampleAt.IsZero() ||
 		evidence.LastSampleAt.Before(evidence.FirstSampleAt) ||
 		evidence.MaximumGapMS <= 0 ||
@@ -512,6 +569,62 @@ func validTransportEvidence(evidence TransportEvidence, now time.Time) bool {
 		requiredIntervals++
 	}
 	return requiredIntervals <= int64(evidence.SampleCount-1)
+}
+
+var deploymentIdentifier = regexp.MustCompile(`^dpl_[A-Za-z0-9]{8,128}$`)
+
+// NormalizeProvenance canonicalizes the trusted release configuration. Public
+// recovery evidence is HTTPS-only, including local integration environments.
+func NormalizeProvenance(value Provenance) (Provenance, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value.ProductionOrigin))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
+		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return Provenance{}, fmt.Errorf("invalid recovery production origin")
+	}
+	if parsed.Scheme != "https" {
+		return Provenance{}, fmt.Errorf("recovery production origin must use HTTPS")
+	}
+	parsed.Path = ""
+	value.ProductionOrigin = strings.TrimSuffix(parsed.String(), "/")
+	value.DeploymentID = strings.TrimSpace(value.DeploymentID)
+	deploymentURL, deploymentErr := url.Parse(strings.TrimSpace(value.DeploymentURL))
+	if deploymentErr != nil || deploymentURL.Scheme != "https" ||
+		!strings.HasSuffix(strings.ToLower(deploymentURL.Hostname()), ".vercel.app") ||
+		deploymentURL.User != nil || deploymentURL.RawQuery != "" || deploymentURL.Fragment != "" ||
+		(deploymentURL.Path != "" && deploymentURL.Path != "/") {
+		return Provenance{}, fmt.Errorf("recovery deployment URL must be an HTTPS vercel.app origin")
+	}
+	deploymentURL.Path = ""
+	value.DeploymentURL = strings.TrimSuffix(deploymentURL.String(), "/")
+	if value.DeploymentURL == value.ProductionOrigin {
+		return Provenance{}, fmt.Errorf("immutable deployment URL must differ from production origin")
+	}
+	value.ReleaseCommit = strings.ToLower(strings.TrimSpace(value.ReleaseCommit))
+	value.SourceDigest = strings.ToLower(strings.TrimSpace(value.SourceDigest))
+	if !validProvenance(value) {
+		return Provenance{}, fmt.Errorf("invalid recovery deployment provenance")
+	}
+	return value, nil
+}
+
+func validProvenance(value Provenance) bool {
+	production, productionErr := url.Parse(value.ProductionOrigin)
+	deployment, deploymentErr := url.Parse(value.DeploymentURL)
+	validProduction := productionErr == nil && production.Host != "" && production.User == nil &&
+		production.RawQuery == "" && production.Fragment == "" && production.Path == "" &&
+		production.Scheme == "https"
+	validDeployment := deploymentErr == nil && deployment.Scheme == "https" &&
+		deployment.Host != "" && deployment.Port() == "" && deployment.User == nil && deployment.RawQuery == "" &&
+		deployment.Fragment == "" && deployment.Path == "" &&
+		strings.HasSuffix(strings.ToLower(deployment.Hostname()), ".vercel.app")
+	if !validProduction || !validDeployment || value.DeploymentURL == value.ProductionOrigin ||
+		!deploymentIdentifier.MatchString(value.DeploymentID) || value.DeploymentURL == "" ||
+		len(value.ReleaseCommit) != 40 || len(value.SourceDigest) != 64 {
+		return false
+	}
+	commit, commitErr := hex.DecodeString(value.ReleaseCommit)
+	digest, digestErr := hex.DecodeString(value.SourceDigest)
+	return commitErr == nil && len(commit) == 20 && digestErr == nil && len(digest) == 32
 }
 
 func mergeProof(current, update Proof) Proof {

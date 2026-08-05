@@ -8,6 +8,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 support_dir="${QIU_MARKET_SUPPORT_DIR:-$HOME/Library/Application Support/Qiu Market}"
 release_root="$support_dir/runtime-releases"
 current_link="$support_dir/runtime-current"
+previous_link="$support_dir/runtime-previous"
 launch_dir="$HOME/Library/LaunchAgents"
 database_env="$support_dir/database.env"
 production_env="$support_dir/production.env"
@@ -24,6 +25,7 @@ runtime_paths=(
   ops/macos/guardian.sh
   ops/macos/manage-funnel.sh
   ops/macos/manage-observer.sh
+  ops/macos/manage-release-candidate.sh
   ops/macos/manage-acceptance-epoch.sh
   ops/macos/manage-runtime-release.sh
   ops/macos/manage-services.sh
@@ -33,6 +35,7 @@ runtime_paths=(
   ops/macos/observer-lock.sh
   ops/macos/production-lib.sh
   ops/macos/proxy-env.sh
+  ops/macos/release-production.sh
   ops/macos/restore-drill.sh
   ops/macos/run-role.sh
   ops/macos/run-tailscaled.sh
@@ -78,6 +81,7 @@ prepare_bundle() {
   local commit
   local target
   local temporary
+  local prepare_lock
   local sha
   commit="$(git -C "$repo_root" rev-parse --verify "$revision^{commit}")"
   target="$release_root/$commit"
@@ -87,10 +91,18 @@ prepare_bundle() {
     echo "Immutable runtime release already verified: $target"
     return
   fi
+  prepare_lock="$release_root/.prepare.$commit.lock"
+  if ! mkdir "$prepare_lock" 2>/dev/null; then
+    echo "Another process is preparing runtime release $commit." >&2
+    return 1
+  fi
   temporary="$(mktemp -d "$release_root/.prepare.XXXXXX")"
   cleanup_prepare() {
     if [ -d "$temporary" ]; then
       find "$temporary" -depth -delete 2>/dev/null || true
+    fi
+    if [ -d "$prepare_lock" ]; then
+      rmdir "$prepare_lock" 2>/dev/null || true
     fi
   }
   trap cleanup_prepare RETURN
@@ -106,8 +118,9 @@ prepare_bundle() {
   } > "$temporary/runtime-manifest.env"
   chmod 600 "$temporary/runtime-manifest.env"
   mv "$temporary" "$target"
-  trap - RETURN
   verify_bundle "$target"
+  rmdir "$prepare_lock"
+  trap - RETURN
   echo "Prepared immutable runtime release: $target"
 }
 
@@ -115,9 +128,12 @@ backup_plists() {
   local backup_dir="$1"
   local plist
   install -d -m 700 "$backup_dir"
+  : > "$backup_dir/plist-set.txt"
+  chmod 600 "$backup_dir/plist-set.txt"
   for plist in "$launch_dir"/com.qiumarket*.plist; do
     [ -f "$plist" ] || continue
     install -m 600 "$plist" "$backup_dir/$(basename "$plist")"
+    basename "$plist" >> "$backup_dir/plist-set.txt"
   done
 }
 
@@ -125,20 +141,67 @@ restore_plists() {
   local backup_dir="$1"
   local plist
   local label
-  # A failed first activation can leave the newly introduced DW LaunchAgent
-  # behind because no previous DW plist exists in the backup. Remove that
-  # candidate before restoring the complete previous plist set.
-  launchctl bootout "gui/$UID/com.qiumarket.dw" >/dev/null 2>&1 || true
-  if [ -f "$launch_dir/com.qiumarket.dw.plist" ]; then
-    find "$launch_dir/com.qiumarket.dw.plist" -maxdepth 0 -type f -delete
-  fi
+  local restore_failed=false
+  # Restore the exact previous plist set. A failed candidate may introduce any
+  # new role, not only DW, so retaining unmatched com.qiumarket plists would
+  # leave a mixed release active after rollback.
+  for plist in "$launch_dir"/com.qiumarket*.plist; do
+    [ -f "$plist" ] || continue
+    label="$(basename "$plist" .plist)"
+    launchctl bootout "gui/$UID/$label" >/dev/null 2>&1 || true
+    find "$plist" -maxdepth 0 -type f -delete
+  done
   for plist in "$backup_dir"/com.qiumarket*.plist; do
     [ -f "$plist" ] || continue
     label="$(basename "$plist" .plist)"
     install -m 600 "$plist" "$launch_dir/$label.plist"
     launchctl bootout "gui/$UID/$label" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$UID" "$launch_dir/$label.plist" >/dev/null 2>&1 || true
+    if ! launchctl bootstrap "gui/$UID" "$launch_dir/$label.plist" >/dev/null 2>&1; then
+      echo "Failed to restore previous LaunchAgent: $label" >&2
+      restore_failed=true
+    fi
   done
+  [ "$restore_failed" = false ]
+}
+
+verify_active_runtime() {
+  local target
+  local label
+  [ -L "$current_link" ] || {
+    echo "Current runtime symlink is unavailable." >&2
+    return 1
+  }
+  target="$(readlink "$current_link")"
+  verify_bundle "$target" || {
+    echo "Current runtime bundle failed verification: $target" >&2
+    return 1
+  }
+  for label in "${labels[@]}"; do
+    launchctl print "gui/$UID/com.qiumarket.$label" >/dev/null 2>&1 || {
+      echo "Current runtime role is not loaded: $label" >&2
+      return 1
+    }
+    launchctl print "gui/$UID/com.qiumarket.$label" 2>/dev/null |
+      grep -F "$target" >/dev/null || {
+        echo "Current runtime role does not reference its immutable bundle: $label" >&2
+        return 1
+      }
+    plutil -p "$launch_dir/com.qiumarket.$label.plist" 2>/dev/null |
+      grep -F "$target" >/dev/null || {
+        echo "Current runtime plist does not reference its immutable bundle: $label" >&2
+        return 1
+      }
+  done
+  echo "Active runtime and rollback baseline verified: $target"
+}
+
+restore_after_activation_failure() {
+  local backup_dir="$1"
+  if ! restore_plists "$backup_dir"; then
+    echo "CRITICAL: previous LaunchAgent definitions could not be completely restored." >&2
+    return 1
+  fi
+  return 0
 }
 
 activate_bundle() {
@@ -146,7 +209,12 @@ activate_bundle() {
   local target
   local plist_backup
   local activation_status
-  commit="$(git -C "$repo_root" rev-parse --verify "$revision^{commit}")"
+  local old_target=""
+  if [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+    commit="$revision"
+  else
+    commit="$(git -C "$repo_root" rev-parse --verify "$revision^{commit}")"
+  fi
   target="$release_root/$commit"
   verify_bundle "$target" || {
     echo "Runtime bundle is missing or failed checksum verification: $target" >&2
@@ -160,6 +228,13 @@ activate_bundle() {
     echo "Private production environment is missing or not mode 0600/0400: $production_env" >&2
     return 1
   }
+  if [ -L "$current_link" ]; then
+    old_target="$(readlink "$current_link")"
+    verify_bundle "$old_target" || {
+      echo "Current runtime bundle is invalid; refusing an activation without a safe rollback target." >&2
+      return 1
+    }
+  fi
   plist_backup="$release_root/plist-backup-$(date -u '+%Y%m%dT%H%M%SZ')-$$"
   backup_plists "$plist_backup"
   set +e
@@ -175,27 +250,38 @@ activate_bundle() {
   set -e
   if [ "$activation_status" -ne 0 ]; then
     echo "Runtime activation failed; restoring previous LaunchAgent definitions." >&2
-    restore_plists "$plist_backup"
+    if ! restore_after_activation_failure "$plist_backup"; then
+      return 2
+    fi
     return 1
   fi
   for label in "${labels[@]}"; do
     launchctl print "gui/$UID/com.qiumarket.$label" >/dev/null 2>&1 || {
       echo "Managed runtime role is not loaded: $label" >&2
-      restore_plists "$plist_backup"
+      if ! restore_after_activation_failure "$plist_backup"; then
+        return 2
+      fi
       return 1
     }
     if ! launchctl print "gui/$UID/com.qiumarket.$label" 2>/dev/null |
       grep -F "$target" >/dev/null; then
       echo "Loaded runtime role does not reference the immutable bundle: $label" >&2
-      restore_plists "$plist_backup"
+      if ! restore_after_activation_failure "$plist_backup"; then
+        return 2
+      fi
       return 1
     fi
     if ! plutil -p "$launch_dir/com.qiumarket.$label.plist" | grep -F "$target" >/dev/null; then
       echo "Managed runtime role does not reference the immutable bundle: $label" >&2
-      restore_plists "$plist_backup"
+      if ! restore_after_activation_failure "$plist_backup"; then
+        return 2
+      fi
       return 1
     fi
   done
+  if [ -n "$old_target" ]; then
+    ln -sfn "$old_target" "$previous_link"
+  fi
   ln -sfn "$target" "$current_link"
   echo "Activated immutable runtime release: $target"
   echo "Previous LaunchAgent definitions preserved at: $plist_backup"
@@ -206,7 +292,33 @@ case "$action" in
     prepare_bundle
     ;;
   activate)
+    if [ "${3:-}" != "--execute" ]; then
+      echo "Runtime activation is side-effecting; rerun with: $0 activate $revision --execute" >&2
+      exit 2
+    fi
+    # shellcheck disable=SC1091
+    source "$repo_root/ops/macos/production-lib.sh"
+    if [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+      coordinated_commit="$revision"
+    else
+      coordinated_commit="$(git -C "$repo_root" rev-parse --verify "$revision^{commit}")"
+    fi
+    QIU_MARKET_SUPPORT_DIR="$support_dir" \
+      qiu_require_release_coordination runtime-activate "$coordinated_commit"
     activate_bundle
+    ;;
+  verify)
+    if [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+      commit="$revision"
+    else
+      commit="$(git -C "$repo_root" rev-parse --verify "$revision^{commit}")"
+    fi
+    target="$release_root/$commit"
+    verify_bundle "$target"
+    echo "Verified immutable runtime release: $target"
+    ;;
+  active)
+    verify_active_runtime
     ;;
   status)
     if [ -L "$current_link" ]; then
@@ -222,7 +334,7 @@ case "$action" in
     fi
     ;;
   *)
-    echo "Usage: $0 prepare|activate|status [revision]" >&2
+    echo "Usage: $0 prepare|verify|active|status [revision] | activate <revision> --execute" >&2
     exit 2
     ;;
 esac

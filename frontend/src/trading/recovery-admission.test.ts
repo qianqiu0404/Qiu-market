@@ -11,7 +11,7 @@ function recoveryStatus(
   return {
     ...recoveryNotEnabled(),
     supported: true,
-    schema_version: 1,
+    schema_version: 2,
     market_id: 'BTC-USDT',
     epoch_id: '0123456789abcdef0123456789abcdef',
     phase: 'transport_warmup',
@@ -23,6 +23,13 @@ function recoveryStatus(
       projection_caught_up: true,
       outbox_caught_up: true,
       transport_healthy: false,
+    },
+    provenance: {
+      production_origin: 'https://qiu-market.vercel.app',
+      deployment_id: 'dpl_PreviewFixture123',
+      deployment_url: 'https://qiu-market-preview-fixture.vercel.app',
+      release_commit: 'd'.repeat(40),
+      source_digest: 'e'.repeat(64),
     },
     ...overrides,
   }
@@ -142,5 +149,22 @@ describe('recovery admission evidence', () => {
     })).toBe('recovery_version_conflict')
     expect(recoveryStatusRegression(current, recoveryNotEnabled()))
       .toBe('recovery_status_downgraded_to_legacy')
+  })
+
+  it('rejects same-epoch provenance changes even when version advances', () => {
+    const current = recoveryStatus({ version: '8' })
+    const candidate = recoveryStatus({
+      version: '9',
+      provenance: {
+        ...current.provenance!,
+        deployment_url: 'https://other-immutable-deployment.vercel.app',
+      },
+    })
+    expect(recoveryStatusRegression(current, candidate))
+      .toBe('recovery_provenance_conflict')
+    expect(recoveryStatusRegression(current, {
+      ...candidate,
+      epoch_id: 'fedcba9876543210fedcba9876543210',
+    })).toBe('')
   })
 })

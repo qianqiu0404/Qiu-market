@@ -106,6 +106,7 @@ function recoveryFingerprint(status: TradingRecoveryStatus): string {
     epoch_id: status.epoch_id,
     phase: status.phase,
     proof: status.proof,
+    provenance: status.provenance,
     writes_enabled: status.writes_enabled,
     last_error: status.last_error,
     continuity_uncertain: status.continuity_uncertain,
@@ -129,6 +130,12 @@ export function recoveryStatusRegression(
     return 'recovery_status_downgraded_to_legacy'
   }
   if (!previous.supported || !candidate.supported) return ''
+  if (
+    previous.epoch_id === candidate.epoch_id &&
+    JSON.stringify(previous.provenance) !== JSON.stringify(candidate.provenance)
+  ) {
+    return 'recovery_provenance_conflict'
+  }
   const previousVersion = BigInt(previous.version)
   const candidateVersion = BigInt(candidate.version)
   if (candidateVersion < previousVersion) return 'recovery_version_regressed'

@@ -36,12 +36,13 @@ const (
 )
 
 type Config struct {
-	PostgresURL      string
-	GRPCAddress      string
-	DemoMakerEnabled bool
-	DiskPath         string
-	MinWriteBytes    int64
-	RecoveryGate     bool
+	PostgresURL        string
+	GRPCAddress        string
+	DemoMakerEnabled   bool
+	DiskPath           string
+	MinWriteBytes      int64
+	RecoveryGate       bool
+	RecoveryProvenance recovery.Provenance
 }
 
 // Backend is the only integrated process that owns the in-memory matching
@@ -81,6 +82,15 @@ func New(
 	config Config,
 	shutdown context.CancelCauseFunc,
 ) (*Backend, error) {
+	if config.RecoveryGate {
+		var err error
+		config.RecoveryProvenance, err = recovery.BindExecutableSourceDigest(
+			config.RecoveryProvenance,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("bind trading recovery executable: %w", err)
+		}
+	}
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
@@ -109,7 +119,9 @@ func New(
 		if recoveryErr != nil {
 			return nil, recoveryErr
 		}
-		recoveryCoordinator, recoveryErr = recovery.NewCoordinator(recoveryStore, market.ID)
+		recoveryCoordinator, recoveryErr = recovery.NewCoordinator(
+			recoveryStore, market.ID, config.RecoveryProvenance,
+		)
 		if recoveryErr != nil {
 			return nil, recoveryErr
 		}
@@ -323,6 +335,11 @@ func validateConfig(config Config) error {
 	if config.MinWriteBytes < 0 ||
 		(config.MinWriteBytes > 0 && config.DiskPath == "") {
 		return fmt.Errorf("demo maker disk guard requires a path and non-negative floor")
+	}
+	if config.RecoveryGate {
+		if _, err := recovery.NormalizeProvenance(config.RecoveryProvenance); err != nil {
+			return fmt.Errorf("invalid trading recovery provenance: %w", err)
+		}
 	}
 	return nil
 }

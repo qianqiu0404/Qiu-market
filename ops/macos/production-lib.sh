@@ -14,7 +14,8 @@ qiu_load_production_environment() {
   QIU_MARKET_DATABASE_ENV_FILE="${QIU_MARKET_DATABASE_ENV_FILE:-$QIU_MARKET_SUPPORT_DIR/database.env}"
 
   set -a
-  if [ -f "$QIU_MARKET_DATABASE_ENV_FILE" ]; then
+  if [ -n "${QIU_MARKET_DATABASE_ENV_FILE:-}" ] &&
+    [ -f "$QIU_MARKET_DATABASE_ENV_FILE" ]; then
     # shellcheck disable=SC1090
     source "$QIU_MARKET_DATABASE_ENV_FILE"
   elif [ -f "$repo_root/.env" ]; then
@@ -27,7 +28,7 @@ qiu_load_production_environment() {
   fi
   set +a
 
-  if [ -d "$repo_root/migrations" ]; then
+  if [ -z "${MARKET_MIGRATIONS_DIR:-}" ] && [ -d "$repo_root/migrations" ]; then
     MARKET_MIGRATIONS_DIR="$repo_root/migrations"
     export MARKET_MIGRATIONS_DIR
   fi
@@ -42,6 +43,7 @@ qiu_load_production_environment() {
 qiu_require_private_environment() {
   local permissions
   local database_permissions
+  local database_env_file="${QIU_MARKET_DATABASE_ENV_FILE:-}"
   if [ ! -f "$QIU_MARKET_ENV_FILE" ]; then
     echo "Private production environment is missing: $QIU_MARKET_ENV_FILE" >&2
     return 1
@@ -51,10 +53,10 @@ qiu_require_private_environment() {
     echo "Private production environment must have mode 0600 or 0400: $QIU_MARKET_ENV_FILE" >&2
     return 1
   fi
-  if [ -f "$QIU_MARKET_DATABASE_ENV_FILE" ]; then
-    database_permissions="$(stat -f '%Lp' "$QIU_MARKET_DATABASE_ENV_FILE")"
+  if [ -n "$database_env_file" ] && [ -f "$database_env_file" ]; then
+    database_permissions="$(stat -f '%Lp' "$database_env_file")"
     if [ "$database_permissions" != "600" ] && [ "$database_permissions" != "400" ]; then
-      echo "Private database environment must have mode 0600 or 0400: $QIU_MARKET_DATABASE_ENV_FILE" >&2
+      echo "Private database environment must have mode 0600 or 0400: $database_env_file" >&2
       return 1
     fi
   fi
@@ -66,6 +68,64 @@ qiu_require_command() {
     echo "Required command is unavailable: $command_name" >&2
     return 1
   fi
+}
+
+qiu_require_release_coordination() {
+  local expected_operation="$1"
+  local expected_subject="$2"
+  local support_dir="${QIU_MARKET_SUPPORT_DIR:-$HOME/Library/Application Support/Qiu Market}"
+  local expected_context="$support_dir/release-state/candidate-activation.lock/context.env"
+  local context="${QIU_MARKET_COORDINATOR_CONTEXT:-}"
+  local token="${QIU_MARKET_COORDINATOR_TOKEN:-}"
+  local permissions
+  local owner_uid
+  local schema_version
+  local operation
+  local subject
+  local coordinator_pid
+  local expires_epoch
+  local recorded_nonce
+  local now
+
+  if [ "$context" != "$expected_context" ] || [ ! -f "$context" ]; then
+    echo "A live release coordinator context is required for $expected_operation." >&2
+    return 1
+  fi
+  permissions="$(stat -f '%Lp' "$context")"
+  owner_uid="$(stat -f '%u' "$context")"
+  if { [ "$permissions" != 600 ] && [ "$permissions" != 400 ]; } ||
+    [ "$owner_uid" != "$(id -u)" ]; then
+    echo "Release coordinator context has unsafe ownership or permissions." >&2
+    return 1
+  fi
+  if [[ ! "$token" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Release coordinator token is invalid." >&2
+    return 1
+  fi
+  schema_version="$(sed -n 's/^schema_version=//p' "$context" | head -1)"
+  operation="$(sed -n 's/^operation=//p' "$context" | head -1)"
+  subject="$(sed -n 's/^subject=//p' "$context" | head -1)"
+  coordinator_pid="$(sed -n 's/^coordinator_pid=//p' "$context" | head -1)"
+  expires_epoch="$(sed -n 's/^expires_epoch=//p' "$context" | head -1)"
+  recorded_nonce="$(sed -n 's/^nonce=//p' "$context" | head -1)"
+  now="$(date '+%s')"
+  if [ "$schema_version" != 1 ] ||
+    [ "$operation" != "$expected_operation" ] ||
+    [ "$subject" != "$expected_subject" ] ||
+    [[ ! "$coordinator_pid" =~ ^[0-9]+$ ]] ||
+    [ "$coordinator_pid" != "$PPID" ] ||
+    ! kill -0 "$coordinator_pid" >/dev/null 2>&1 ||
+    [[ ! "$expires_epoch" =~ ^[0-9]+$ ]] ||
+    [ "$expires_epoch" -lt "$now" ] ||
+    [ "$expires_epoch" -gt $((now + 300)) ] ||
+    [ "$recorded_nonce" != "$token" ]; then
+    echo "Release coordinator context does not match this exact operation." >&2
+    return 1
+  fi
+
+  # One context authorizes one child action only. Consume it before any
+  # production mutation so retries must return through the coordinator.
+  find "$context" -maxdepth 0 -type f -delete
 }
 
 qiu_psql() {

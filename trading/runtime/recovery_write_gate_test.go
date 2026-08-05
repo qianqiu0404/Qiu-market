@@ -40,6 +40,7 @@ func TestMarketRunnerRecoveryGateBlocksEveryMutationButLeavesReadsAvailable(t *t
 	coordinator, err := recovery.NewCoordinator(
 		recovery.NewMemoryStore(),
 		domain.MarketID("BTC-USDT"),
+		runtimeTestProvenance(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -144,11 +145,13 @@ func TestMarketRunnerRecoveryGateBlocksEveryMutationButLeavesReadsAvailable(t *t
 	if _, err := coordinator.Promote(ctx, recovery.Binding{
 		MarketID: status.MarketID, EpochID: status.EpochID, Version: status.Version,
 		RuntimeSequence: status.Proof.RuntimeSequence, StateHash: status.Proof.StateHash,
+		Provenance: status.Provenance,
 	}, recovery.TransportEvidence{
 		SampleCount:   recovery.MinimumTransportSamples,
 		FirstSampleAt: first, LastSampleAt: time.Now().UTC(),
 		MaximumGapMS:   recovery.MaximumTransportGap.Milliseconds(),
 		EvidenceSHA256: strings.Repeat("b", 64),
+		Provenance:     status.Provenance,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +173,7 @@ func TestQueuedCommandCannotCrossRecoveryVersionChange(t *testing.T) {
 	coordinator, err := recovery.NewCoordinator(
 		recovery.NewMemoryStore(),
 		domain.MarketID("BTC-USDT"),
+		runtimeTestProvenance(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -220,11 +224,13 @@ func TestQueuedCommandCannotCrossRecoveryVersionChange(t *testing.T) {
 	if _, err := coordinator.Promote(ctx, recovery.Binding{
 		MarketID: warmup.MarketID, EpochID: warmup.EpochID, Version: warmup.Version,
 		RuntimeSequence: warmup.Proof.RuntimeSequence, StateHash: warmup.Proof.StateHash,
+		Provenance: warmup.Provenance,
 	}, recovery.TransportEvidence{
 		SampleCount:   recovery.MinimumTransportSamples,
 		FirstSampleAt: last.Add(-recovery.MinimumTransportWindow), LastSampleAt: last,
 		MaximumGapMS:   recovery.MaximumTransportGap.Milliseconds(),
 		EvidenceSHA256: strings.Repeat("b", 64),
+		Provenance:     warmup.Provenance,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -276,5 +282,13 @@ func TestQueuedCommandCannotCrossRecoveryVersionChange(t *testing.T) {
 	}
 	if bob.Available != 0 || bob.Held != 0 {
 		t.Fatalf("stale queued command changed balance = %+v", bob)
+	}
+}
+
+func runtimeTestProvenance() recovery.Provenance {
+	return recovery.Provenance{
+		ProductionOrigin: "https://qiu-market.example", DeploymentID: "dpl_runtimetest",
+		DeploymentURL: "https://qiu-market-runtime-test.vercel.app",
+		ReleaseCommit: strings.Repeat("d", 40), SourceDigest: strings.Repeat("e", 64),
 	}
 }

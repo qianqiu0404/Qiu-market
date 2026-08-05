@@ -41,32 +41,34 @@ func DefaultObservationPolicy() ObservationPolicy {
 }
 
 type Sample struct {
-	ObservedAt                   time.Time       `json:"observed_at"`
-	MarketID                     domain.MarketID `json:"market_id"`
-	EpochID                      string          `json:"epoch_id"`
-	RecoveryVersion              uint64          `json:"recovery_version"`
-	RecoveryPhase                recovery.Phase  `json:"recovery_phase"`
-	RecoveryWritesEnabled        bool            `json:"recovery_writes_enabled"`
-	AuthorityEpochID             string          `json:"authority_epoch_id"`
-	AuthorityVersion             uint64          `json:"authority_version"`
-	AuthorityPhase               recovery.Phase  `json:"authority_phase"`
-	AuthorityRuntimeSequence     uint64          `json:"authority_runtime_sequence"`
-	AuthorityStateHash           string          `json:"authority_state_hash"`
-	AuthorityWritesEnabled       bool            `json:"authority_writes_enabled"`
-	AuthorityContinuityUncertain bool            `json:"authority_continuity_uncertain"`
-	PublicRuntimeSequence        uint64          `json:"public_runtime_sequence"`
-	PublicStateHash              string          `json:"public_state_hash"`
-	PublicLocalProof             bool            `json:"public_local_proof"`
-	PublicTransportHealthy       bool            `json:"public_transport_healthy"`
-	PublicContinuityUncertain    bool            `json:"public_continuity_uncertain"`
-	RuntimeState                 string          `json:"runtime_state"`
-	RuntimeSequence              uint64          `json:"runtime_sequence"`
-	RuntimeStateHash             string          `json:"runtime_state_hash"`
-	RuntimeQueueDepth            uint32          `json:"runtime_queue_depth"`
-	RuntimeLastError             string          `json:"runtime_last_error,omitempty"`
-	OutboxState                  string          `json:"outbox_state"`
-	OutboxSequence               uint64          `json:"outbox_sequence"`
-	OutboxLastError              string          `json:"outbox_last_error,omitempty"`
+	ObservedAt                   time.Time           `json:"observed_at"`
+	MarketID                     domain.MarketID     `json:"market_id"`
+	EpochID                      string              `json:"epoch_id"`
+	RecoveryVersion              uint64              `json:"recovery_version"`
+	RecoveryPhase                recovery.Phase      `json:"recovery_phase"`
+	RecoveryWritesEnabled        bool                `json:"recovery_writes_enabled"`
+	AuthorityEpochID             string              `json:"authority_epoch_id"`
+	AuthorityVersion             uint64              `json:"authority_version"`
+	AuthorityPhase               recovery.Phase      `json:"authority_phase"`
+	AuthorityRuntimeSequence     uint64              `json:"authority_runtime_sequence"`
+	AuthorityStateHash           string              `json:"authority_state_hash"`
+	AuthorityWritesEnabled       bool                `json:"authority_writes_enabled"`
+	AuthorityContinuityUncertain bool                `json:"authority_continuity_uncertain"`
+	PublicRuntimeSequence        uint64              `json:"public_runtime_sequence"`
+	PublicStateHash              string              `json:"public_state_hash"`
+	PublicLocalProof             bool                `json:"public_local_proof"`
+	PublicTransportHealthy       bool                `json:"public_transport_healthy"`
+	PublicContinuityUncertain    bool                `json:"public_continuity_uncertain"`
+	RuntimeState                 string              `json:"runtime_state"`
+	RuntimeSequence              uint64              `json:"runtime_sequence"`
+	RuntimeStateHash             string              `json:"runtime_state_hash"`
+	RuntimeQueueDepth            uint32              `json:"runtime_queue_depth"`
+	RuntimeLastError             string              `json:"runtime_last_error,omitempty"`
+	OutboxState                  string              `json:"outbox_state"`
+	OutboxSequence               uint64              `json:"outbox_sequence"`
+	OutboxLastError              string              `json:"outbox_last_error,omitempty"`
+	AuthorityProvenance          recovery.Provenance `json:"authority_provenance"`
+	PublicProvenance             recovery.Provenance `json:"public_provenance"`
 }
 
 type SampleSource interface {
@@ -136,6 +138,7 @@ func (c *RecoveryClient) Promote(
 			Version:         strconv.FormatUint(binding.Version, 10),
 			RuntimeSequence: strconv.FormatUint(binding.RuntimeSequence, 10),
 			StateHash:       binding.StateHash,
+			Provenance:      toProtoProvenance(binding.Provenance),
 		},
 		TransportEvidence: &tradingv1.RecoveryTransportEvidence{
 			SampleCount:    uint32(evidence.SampleCount),
@@ -143,6 +146,7 @@ func (c *RecoveryClient) Promote(
 			LastSampleAt:   evidence.LastSampleAt.UTC().Format(time.RFC3339Nano),
 			MaximumGapMs:   strconv.FormatInt(evidence.MaximumGapMS, 10),
 			EvidenceSha256: evidence.EvidenceSHA256,
+			Provenance:     toProtoProvenance(evidence.Provenance),
 		},
 	})
 }
@@ -157,14 +161,19 @@ func NewTransportProbe(
 	if err := validateStatusURL(statusURL); err != nil {
 		return nil, err
 	}
+	if err := validateBoundStatusURL(statusURL, binding.Provenance); err != nil {
+		return nil, err
+	}
 	if httpClient == nil {
 		httpClient = &http.Client{
 			Timeout: 5 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
 		}
 	}
+	clientCopy := *httpClient
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	httpClient = &clientCopy
 	operatorClient, err := DialRecoveryClient(ctx, grpcAddress)
 	if err != nil {
 		return nil, err
@@ -214,6 +223,9 @@ func (p *TransportProbe) Sample(ctx context.Context) (Sample, error) {
 		return Sample{}, fmt.Errorf("probe public recovery status: %w", err)
 	}
 	defer response.Body.Close()
+	if err := validateProvenanceHeaders(response.Header, p.binding.Provenance); err != nil {
+		return Sample{}, err
+	}
 	if response.StatusCode != http.StatusOK {
 		return Sample{}, fmt.Errorf("public recovery status returned HTTP %d", response.StatusCode)
 	}
@@ -274,23 +286,26 @@ func (p *TransportProbe) Sample(ctx context.Context) (Sample, error) {
 		OutboxState:               runtimeStatus.GetOutboxState(),
 		OutboxSequence:            outboxSequence,
 		OutboxLastError:           runtimeStatus.GetOutboxLastError(),
+		AuthorityProvenance:       fromProtoProvenance(authorityStatus.GetProvenance()),
+		PublicProvenance:          publicStatus.Provenance,
 	}, nil
 }
 
 type publicRecoveryStatus struct {
-	MarketID            string `json:"market_id"`
-	EpochID             string `json:"epoch_id"`
-	Phase               string `json:"phase"`
-	RuntimeSequence     string `json:"runtime_sequence"`
-	StateHash           string `json:"state_hash"`
-	LedgerBalanced      bool   `json:"ledger_balanced"`
-	EventContinuous     bool   `json:"event_continuous"`
-	ProjectionCaughtUp  bool   `json:"projection_caught_up"`
-	OutboxCaughtUp      bool   `json:"outbox_caught_up"`
-	TransportHealthy    bool   `json:"transport_healthy"`
-	WritesEnabled       bool   `json:"writes_enabled"`
-	Version             string `json:"version"`
-	ContinuityUncertain bool   `json:"continuity_uncertain"`
+	MarketID            string              `json:"market_id"`
+	EpochID             string              `json:"epoch_id"`
+	Phase               string              `json:"phase"`
+	RuntimeSequence     string              `json:"runtime_sequence"`
+	StateHash           string              `json:"state_hash"`
+	LedgerBalanced      bool                `json:"ledger_balanced"`
+	EventContinuous     bool                `json:"event_continuous"`
+	ProjectionCaughtUp  bool                `json:"projection_caught_up"`
+	OutboxCaughtUp      bool                `json:"outbox_caught_up"`
+	TransportHealthy    bool                `json:"transport_healthy"`
+	WritesEnabled       bool                `json:"writes_enabled"`
+	Version             string              `json:"version"`
+	ContinuityUncertain bool                `json:"continuity_uncertain"`
+	Provenance          recovery.Provenance `json:"provenance"`
 }
 
 func CollectTransportEvidence(
@@ -343,6 +358,7 @@ func CollectTransportEvidence(
 				LastSampleAt:   sample.ObservedAt,
 				MaximumGapMS:   durationMillisecondsCeil(maximumGap),
 				EvidenceSHA256: hex.EncodeToString(digest[:]),
+				Provenance:     binding.Provenance,
 			}, samples, nil
 		}
 		select {
@@ -384,8 +400,56 @@ func validateSample(binding recovery.Binding, sample Sample) error {
 		sample.RuntimeLastError != "" ||
 		sample.OutboxState != "ready" ||
 		sample.OutboxSequence != binding.RuntimeSequence ||
-		sample.OutboxLastError != "" {
+		sample.OutboxLastError != "" ||
+		sample.AuthorityProvenance != binding.Provenance ||
+		sample.PublicProvenance != binding.Provenance {
 		return fmt.Errorf("transport sample changed the bound recovery state")
+	}
+	return nil
+}
+
+func validateBoundStatusURL(value string, provenance recovery.Provenance) error {
+	normalized, err := recovery.NormalizeProvenance(provenance)
+	if err != nil {
+		return err
+	}
+	parsed, _ := url.Parse(value)
+	origin := parsed.Scheme + "://" + parsed.Host
+	if origin != normalized.ProductionOrigin {
+		return fmt.Errorf("status URL origin does not match recovery production origin")
+	}
+	return nil
+}
+
+func toProtoProvenance(value recovery.Provenance) *tradingv1.RecoveryProvenance {
+	return &tradingv1.RecoveryProvenance{
+		ProductionOrigin: value.ProductionOrigin,
+		DeploymentId:     value.DeploymentID,
+		DeploymentUrl:    value.DeploymentURL,
+		ReleaseCommit:    value.ReleaseCommit,
+		SourceDigest:     value.SourceDigest,
+	}
+}
+
+func fromProtoProvenance(value *tradingv1.RecoveryProvenance) recovery.Provenance {
+	if value == nil {
+		return recovery.Provenance{}
+	}
+	return recovery.Provenance{
+		ProductionOrigin: value.GetProductionOrigin(),
+		DeploymentID:     value.GetDeploymentId(),
+		DeploymentURL:    value.GetDeploymentUrl(),
+		ReleaseCommit:    value.GetReleaseCommit(),
+		SourceDigest:     value.GetSourceDigest(),
+	}
+}
+
+func validateProvenanceHeaders(header http.Header, expected recovery.Provenance) error {
+	if header.Get("X-Qiu-Market-Provenance") != "VERIFIED" ||
+		header.Get("X-Qiu-Market-Deployment-ID") != expected.DeploymentID ||
+		header.Get("X-Qiu-Market-Deployment-URL") != expected.DeploymentURL ||
+		header.Get("X-Qiu-Market-Release-Commit") != expected.ReleaseCommit {
+		return fmt.Errorf("public recovery response provenance headers do not match epoch binding")
 	}
 	return nil
 }
@@ -408,15 +472,10 @@ func validateStatusURL(value string) error {
 		parsed.Path != "/api/v1/trading/recovery/status" || parsed.RawQuery != "" {
 		return fmt.Errorf("status URL must be the exact recovery status endpoint")
 	}
-	if parsed.Scheme == "https" {
-		return nil
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("status URL must use HTTPS")
 	}
-	host := parsed.Hostname()
-	if parsed.Scheme == "http" && (strings.EqualFold(host, "localhost") ||
-		(net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())) {
-		return nil
-	}
-	return fmt.Errorf("status URL must use HTTPS unless it is explicit loopback")
+	return nil
 }
 
 func loopbackAddress(address string) bool {

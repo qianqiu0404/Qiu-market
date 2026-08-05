@@ -102,7 +102,7 @@ else
 fi
 
 signed_trading_status() {
-  local request_path="/api/v1/trading/markets/BTC-USDT/status"
+  local request_path="${1:-/api/v1/trading/markets/BTC-USDT/status}"
   local secret="${MARKET_PUBLIC_PROXY_HMAC_SECRET:-}"
   if [ -z "$secret" ]; then
     curl --fail --silent --max-time 5 "http://127.0.0.1:9092$request_path"
@@ -130,6 +130,9 @@ signed_trading_status() {
 trading_healthy=false
 trading_health_known=true
 trading_state="unavailable"
+recovery_attention_required=false
+recovery_phase="disabled"
+recovery_last_error=""
 if nc -z 127.0.0.1 9094 >/dev/null 2>&1; then
   if [ "$api_healthy" != true ]; then
     # Do not restart a healthy TCP listener merely because the API adapter is
@@ -154,6 +157,30 @@ if nc -z 127.0.0.1 9094 >/dev/null 2>&1; then
   fi
 fi
 
+if [ "${MARKET_TRADING_RECOVERY_GATE_ENABLED:-false}" = true ] &&
+  [ "$trading_healthy" = true ]; then
+  recovery_payload="$(
+    signed_trading_status /api/v1/trading/recovery/status 2>/dev/null || true
+  )"
+  recovery_schema_version="$(jq -r '.schema_version // ""' <<<"$recovery_payload" 2>/dev/null || true)"
+  recovery_phase="$(jq -r '.phase // "unavailable"' <<<"$recovery_payload" 2>/dev/null || echo unavailable)"
+  recovery_writes_enabled="$(jq -r '.writes_enabled // false' <<<"$recovery_payload" 2>/dev/null || echo false)"
+  recovery_continuity_uncertain="$(jq -r '.continuity_uncertain // true' <<<"$recovery_payload" 2>/dev/null || echo true)"
+  recovery_last_error="$(jq -r '
+    [(.last_error // ""), (.continuity_error // "")] |
+    map(select(type == "string" and length > 0)) |
+    join("; ")
+  ' <<<"$recovery_payload" 2>/dev/null || true)"
+  if [ "$recovery_schema_version" != 2 ] ||
+    [ "$recovery_phase" != writable ] ||
+    [ "$recovery_writes_enabled" != true ] ||
+    [ "$recovery_continuity_uncertain" != false ] ||
+    [ -n "$recovery_last_error" ]; then
+    trading_healthy=false
+    recovery_attention_required=true
+  fi
+fi
+
 trading_restart="$state_dir/trading-restart-at"
 trading_stable_since="$state_dir/trading-stable-since"
 trading_failures_file="$state_dir/trading-failures"
@@ -163,6 +190,13 @@ if [ "$trading_health_known" != true ]; then
     "trading-status-unobservable" \
     900 \
     "trading TCP listener is present but API status is unavailable; deferring restart to avoid a false positive"
+elif [ "$recovery_attention_required" = true ]; then
+  echo 0 > "$trading_failures_file"
+  find "$trading_stable_since" -maxdepth 0 -type f -delete 2>/dev/null || true
+  record_throttled \
+    "trading-recovery-attention" \
+    900 \
+    "trading recovery phase=$recovery_phase is fail-closed; operator proof is required and restart is intentionally suppressed; error=${recovery_last_error:-none}"
 elif [ "$trading_healthy" = true ]; then
   echo 0 > "$trading_failures_file"
   if [ ! -f "$trading_stable_since" ]; then

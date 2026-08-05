@@ -16,7 +16,14 @@ function writableRecoveryStatus(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
-    schema_version: 1,
+    schema_version: 2,
+	provenance: {
+	  production_origin: 'https://qiu-market.vercel.app',
+	  deployment_id: 'dpl_PreviewFixture123',
+	  deployment_url: 'https://qiu-market-preview-fixture.vercel.app',
+	  release_commit: 'd'.repeat(40),
+	  source_digest: 'e'.repeat(64),
+	},
     market_id: 'BTC-USDT',
     epoch_id: '0123456789abcdef0123456789abcdef',
     phase: 'writable',
@@ -603,7 +610,8 @@ test('trade page does not probe a session when every login method is disabled', 
 test('recovery admission exposes proof, blocks writes and switches to Chinese', async ({ page }) => {
   await installHarness(page, {
     recoveryStatus: {
-      schema_version: 1,
+      schema_version: 2,
+	  provenance: writableRecoveryStatus().provenance,
       market_id: 'BTC-USDT',
       epoch_id: '0123456789abcdef0123456789abcdef',
       phase: 'transport_warmup',

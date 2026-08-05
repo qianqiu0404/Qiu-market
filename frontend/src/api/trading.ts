@@ -127,6 +127,14 @@ export interface TradingRecoveryProof {
   transport_healthy: boolean
 }
 
+export interface TradingRecoveryProvenance {
+  production_origin: string
+  deployment_id: string
+  deployment_url: string
+  release_commit: string
+  source_digest: string
+}
+
 export interface TradingRecoveryStatus {
   supported: boolean
   schema_version: number | null
@@ -134,6 +142,7 @@ export interface TradingRecoveryStatus {
   epoch_id: string
   phase: TradingRecoveryPhase
   proof: TradingRecoveryProof
+  provenance: TradingRecoveryProvenance | null
   writes_enabled: boolean
   last_error: string
   continuity_uncertain: boolean
@@ -173,6 +182,7 @@ export function recoveryNotEnabled(): TradingRecoveryStatus {
     epoch_id: '',
     phase: 'not_enabled',
     proof: { ...EMPTY_RECOVERY_PROOF },
+    provenance: null,
     writes_enabled: false,
     last_error: '',
     continuity_uncertain: false,
@@ -222,8 +232,9 @@ export function normalizeRecoveryStatus(value: unknown): TradingRecoveryStatus {
   const nestedProof = record(raw.proof)
   const proof = Object.keys(nestedProof).length ? nestedProof : raw
   const phase = text(raw.phase) as TradingRecoveryPhase
+  const provenance = record(raw.provenance)
   if (
-    raw.schema_version !== 1 ||
+    raw.schema_version !== 2 ||
     text(raw.market_id) !== 'BTC-USDT' ||
     !RECOVERY_PHASES.has(phase) ||
     !text(raw.epoch_id) ||
@@ -235,9 +246,32 @@ export function normalizeRecoveryStatus(value: unknown): TradingRecoveryStatus {
   if (!/^[1-9]\d*$/.test(version)) {
     throw new Error('Trading recovery version must be a positive decimal value')
   }
+  const productionOrigin = text(provenance.production_origin)
+  const deploymentID = text(provenance.deployment_id)
+  const deploymentURL = text(provenance.deployment_url)
+  const releaseCommit = text(provenance.release_commit).toLowerCase()
+  const sourceDigest = text(provenance.source_digest).toLowerCase()
+  let production: URL
+  let deployment: URL
+  try {
+    production = new URL(productionOrigin)
+    deployment = new URL(deploymentURL)
+  } catch {
+    throw new Error('Trading recovery provenance is malformed')
+  }
+  if (
+    production.protocol !== 'https:' || production.origin !== productionOrigin ||
+    deployment.protocol !== 'https:' || deployment.origin !== deploymentURL ||
+    deployment.port !== '' || !deployment.hostname.endsWith('.vercel.app') ||
+    deploymentURL === productionOrigin ||
+    !/^dpl_[A-Za-z0-9]{8,128}$/.test(deploymentID) ||
+    !/^[0-9a-f]{40}$/.test(releaseCommit) || !/^[0-9a-f]{64}$/.test(sourceDigest)
+  ) {
+    throw new Error('Trading recovery provenance is malformed')
+  }
   return {
     supported: true,
-    schema_version: 1,
+    schema_version: 2,
     market_id: text(raw.market_id),
     epoch_id: text(raw.epoch_id),
     phase,
@@ -249,6 +283,13 @@ export function normalizeRecoveryStatus(value: unknown): TradingRecoveryStatus {
       projection_caught_up: bool(proof.projection_caught_up),
       outbox_caught_up: bool(proof.outbox_caught_up),
       transport_healthy: bool(proof.transport_healthy),
+    },
+    provenance: {
+      production_origin: productionOrigin,
+      deployment_id: deploymentID,
+      deployment_url: deploymentURL,
+      release_commit: releaseCommit,
+      source_digest: sourceDigest,
     },
     writes_enabled: bool(raw.writes_enabled),
     last_error: text(raw.last_error),

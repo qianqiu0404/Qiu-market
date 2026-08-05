@@ -222,6 +222,26 @@ var (
 		Value:   false,
 		EnvVars: prefixEnvVars("TRADING_RECOVERY_GATE_ENABLED"),
 	}
+	TradingProductionOriginFlag = &cli.StringFlag{
+		Name: "trading-production-origin", Usage: "trusted public origin bound to writable recovery epochs",
+		EnvVars: prefixEnvVars("TRADING_PRODUCTION_ORIGIN"),
+	}
+	TradingDeploymentIDFlag = &cli.StringFlag{
+		Name: "trading-deployment-id", Usage: "immutable public deployment identifier for recovery provenance",
+		EnvVars: prefixEnvVars("TRADING_DEPLOYMENT_ID"),
+	}
+	TradingDeploymentURLFlag = &cli.StringFlag{
+		Name: "trading-deployment-url", Usage: "immutable Vercel deployment URL for recovery provenance",
+		EnvVars: prefixEnvVars("TRADING_DEPLOYMENT_URL"),
+	}
+	TradingReleaseCommitFlag = &cli.StringFlag{
+		Name: "trading-release-commit", Usage: "40-character Git commit of the trading release",
+		EnvVars: prefixEnvVars("TRADING_RELEASE_COMMIT"),
+	}
+	TradingSourceDigestFlag = &cli.StringFlag{
+		Name: "trading-source-digest", Usage: "optional expected SHA-256 of the running executable; mismatch refuses startup",
+		EnvVars: prefixEnvVars("TRADING_SOURCE_DIGEST"),
+	}
 
 	// Doris OLAP 数仓（全部可选）：默认值与 docker-compose 的 doris 服务匹配。
 	// 显式将 MARKET_DORIS_HOST 置空可禁用数仓；Doris 未运行时 dw 模式与
@@ -303,6 +323,11 @@ var optionalFlags = []cli.Flag{
 	TradingGitHubRedirectFlag,
 	TradingDemoMakerFlag,
 	TradingRecoveryGateFlag,
+	TradingProductionOriginFlag,
+	TradingDeploymentIDFlag,
+	TradingDeploymentURLFlag,
+	TradingReleaseCommitFlag,
+	TradingSourceDigestFlag,
 	DorisHostFlag,
 	DorisHttpPortFlag,
 	DorisQueryPortFlag,

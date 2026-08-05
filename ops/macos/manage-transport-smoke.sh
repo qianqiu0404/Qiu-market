@@ -11,6 +11,7 @@ epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoc
 smoke_file="${QIU_MARKET_TRANSPORT_SMOKE_FILE:-$observation_dir/transport-smoke.json}"
 gate_file="${QIU_MARKET_PRODUCTION_GATE_FILE:-$support_dir/vercel-release/last.json}"
 runtime_link="${QIU_MARKET_RUNTIME_LINK:-$support_dir/runtime-current}"
+managed_binary="${QIU_MARKET_MANAGED_BINARY:-$support_dir/bin/market-services}"
 guardian_dir="${QIU_MARKET_GUARDIAN_DIR:-$support_dir/guardian}"
 
 now_epoch() {
@@ -31,10 +32,49 @@ write_state() {
   mv "$temporary" "$smoke_file"
 }
 
-runtime_commit() {
-  local manifest="$runtime_link/runtime-manifest.env"
-  [ -L "$runtime_link" ] && [ -f "$manifest" ] || return 1
-  sed -n 's/^git_commit=//p' "$manifest" | head -1
+manifest_value() {
+  local manifest="$1"
+  local key="$2"
+  sed -n "s/^${key}=//p" "$manifest" | head -1
+}
+
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+runtime_bundle_hash() {
+  local root="$1"
+  (
+    cd "$root"
+    find ops migrations -type f -print | LC_ALL=C sort |
+      while IFS= read -r file; do
+        shasum -a 256 "$file"
+      done |
+      shasum -a 256 |
+      awk '{print $1}'
+  )
+}
+
+current_artifact_pair() {
+  local runtime_manifest="$runtime_link/runtime-manifest.env"
+  local binary_target
+  local binary_manifest
+  local runtime_sha
+  local binary_sha
+  [ -L "$runtime_link" ] && [ -f "$runtime_manifest" ] || return 1
+  [ -L "$managed_binary" ] && [ -x "$managed_binary" ] || return 1
+  binary_target="$(readlink "$managed_binary")"
+  binary_manifest="$(dirname "$binary_target")/manifest.env"
+  [ -f "$binary_manifest" ] || return 1
+  runtime_sha="$(runtime_bundle_hash "$runtime_link")"
+  binary_sha="$(sha256_file "$managed_binary")"
+  [ "$runtime_sha" = "$(manifest_value "$runtime_manifest" bundle_sha256)" ] || return 1
+  [ "$binary_sha" = "$(manifest_value "$binary_manifest" binary_sha256)" ] || return 1
+  [ "$(manifest_value "$runtime_manifest" git_commit)" = "$(manifest_value "$binary_manifest" git_commit)" ] || return 1
+  printf '%s %s %s\n' \
+    "$(manifest_value "$runtime_manifest" git_commit)" \
+    "$binary_sha" \
+    "$runtime_sha"
 }
 
 evaluate() {
@@ -43,12 +83,15 @@ evaluate() {
     return
   fi
   if ! jq -e '
-    .schema_version == 1 and
+    .schema_version == 2 and
     (.status == "active" or .status == "passed" or .status == "failed") and
     (.deployment_id | type == "string" and startswith("dpl_")) and
     (.deployment_url | type == "string" and startswith("https://")) and
     (.deployment_commit | type == "string" and test("^[0-9a-f]{40}$")) and
     (.runtime_release_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+    (.binary_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.runtime_bundle_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+    (.production_origin | type == "string" and startswith("https://")) and
     (.network_interface | type == "string" and length > 0) and
     (.network_gateway | type == "string" and length > 0) and
     (.started_at | fromdateiso8601 | type == "number") and
@@ -116,17 +159,27 @@ evaluate() {
       if ($sorted | length) == 0 then null
       else $sorted[((($sorted | length) - 1) * 0.95 | floor)] end;
     def matching:
-      .schema_version == 4 and
+      .schema_version == 7 and
       .deployment_id == $state.deployment_id and
       .deployment_url == $state.deployment_url and
       .deployment_commit == $state.deployment_commit and
       .runtime_release_commit == $state.runtime_release_commit and
+      .binary_sha256 == $state.binary_sha256 and
+      .runtime_bundle_sha256 == $state.runtime_bundle_sha256 and
+      .production_origin == $state.production_origin and
+      .release_provenance.recovery.full_match == true and
+      .release_provenance.recovery.body.production_origin == $state.production_origin and
+      .release_provenance.recovery.body.deployment_id == $state.deployment_id and
+      .release_provenance.recovery.body.deployment_url == $state.deployment_url and
+      .release_provenance.recovery.body.release_commit == $state.deployment_commit and
+      .release_provenance.recovery.body.source_digest == $state.binary_sha256 and
       (.scheduled_at | type == "string") and
       ((.scheduled_at | fromdateiso8601) >= $window_start) and
       ((.scheduled_at | fromdateiso8601) <= $evaluation_end);
     def rest_probes:
       [
         {http:(.checks.trading_bff_http // 0),latency:(.latency_ms.trading_bff // null)},
+        {http:(.checks.recovery_bff_http // 0),latency:(.latency_ms.recovery_bff // null)},
         {http:(.checks.system_bff_http // 0),latency:(.latency_ms.system_bff // null)},
         {http:(.checks.uniswap_bff_http // 0),latency:(.latency_ms.uniswap_bff // null)},
         {http:(.checks.pancakeswap_bff_http // 0),latency:(.latency_ms.pancakeswap_bff // null)}
@@ -140,6 +193,14 @@ evaluate() {
         .checks.tailscale_backend_state == "Running" and
         .checks.tailscale_health_ok == true and
         (.checks.tailscale_health | length) == 0 and
+        .checks.runtime_candidate_match == true and
+        .checks.recovery_provenance_match == true and
+        .checks.runtime_bundle_commit == $state.runtime_release_commit and
+        .checks.managed_binary_commit == $state.runtime_release_commit and
+        .checks.runtime_bundle_sha256 == $state.runtime_bundle_sha256 and
+        .checks.runtime_bundle_manifest_sha256 == $state.runtime_bundle_sha256 and
+        .checks.managed_binary_sha256 == $state.binary_sha256 and
+        .checks.managed_binary_manifest_sha256 == $state.binary_sha256 and
         .checks.guardian_last_automatic_restart_at == $state.guardian_restart_baseline and
         .checks.network_interface == $state.network_interface and
         .checks.network_gateway == $state.network_gateway
@@ -164,6 +225,9 @@ evaluate() {
       deployment_url:$state.deployment_url,
       deployment_commit:$state.deployment_commit,
       runtime_release_commit:$state.runtime_release_commit,
+      binary_sha256:$state.binary_sha256,
+      runtime_bundle_sha256:$state.runtime_bundle_sha256,
+      production_origin:$state.production_origin,
       started_at:$state.started_at,
       last_scheduled_at:$state.last_scheduled_at,
       evaluated_through:(if $expected == 0 then null else ($evaluation_end | todateiso8601) end),
@@ -220,11 +284,14 @@ case "$action" in
       echo "Guardian restart budget has not completed its 15-minute stable reset." >&2
       exit 1
     fi
-    observed_runtime="$(runtime_commit || true)"
+    artifact_pair="$(current_artifact_pair || true)"
+    read -r observed_runtime observed_binary_sha256 observed_runtime_bundle_sha256 <<<"$artifact_pair"
     [[ "$observed_runtime" =~ ^[0-9a-f]{40}$ ]] || {
-      echo "The immutable runtime release is unavailable." >&2
+      echo "The verified immutable binary/runtime artifact pair is unavailable." >&2
       exit 1
     }
+    [[ "$observed_binary_sha256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+    [[ "$observed_runtime_bundle_sha256" =~ ^[0-9a-f]{64}$ ]] || exit 1
     if ! jq -e '
       .status == "production-gate-passed" and
       (.candidate.commit | test("^[0-9a-f]{40}$")) and
@@ -246,17 +313,36 @@ case "$action" in
       --arg url "$deployment_url" \
       --arg commit "$deployment_commit" \
       --arg runtime "$observed_runtime" \
+      --arg binary_sha256 "$observed_binary_sha256" \
+      --arg runtime_bundle_sha256 "$observed_runtime_bundle_sha256" \
       --argjson guardian "$guardian_baseline" '
-        .schema_version == 4 and
+        .schema_version == 7 and
         .deployment_id == $id and
         .deployment_url == $url and
         .deployment_commit == $commit and
         .runtime_release_commit == $runtime and
+        .binary_sha256 == $binary_sha256 and
+        .runtime_bundle_sha256 == $runtime_bundle_sha256 and
+        (.production_origin | type == "string" and startswith("https://")) and
+        .release_provenance.recovery.full_match == true and
+        .release_provenance.recovery.body.production_origin == .production_origin and
+        .release_provenance.recovery.body.deployment_id == $id and
+        .release_provenance.recovery.body.deployment_url == $url and
+        .release_provenance.recovery.body.release_commit == $commit and
+        .release_provenance.recovery.body.source_digest == $binary_sha256 and
         .current_checks_status == "passed" and
         .failure_scope == "none" and
         .checks.tailscale_backend_state == "Running" and
         .checks.tailscale_health_ok == true and
         (.checks.tailscale_health | length) == 0 and
+        .checks.runtime_candidate_match == true and
+        .checks.recovery_provenance_match == true and
+        .checks.runtime_bundle_commit == $runtime and
+        .checks.managed_binary_commit == $runtime and
+        .checks.runtime_bundle_sha256 == $runtime_bundle_sha256 and
+        .checks.runtime_bundle_manifest_sha256 == $runtime_bundle_sha256 and
+        .checks.managed_binary_sha256 == $binary_sha256 and
+        .checks.managed_binary_manifest_sha256 == $binary_sha256 and
         .checks.guardian_last_automatic_restart_at == $guardian and
         (.checks.network_interface | type == "string" and length > 0) and
         (.checks.network_gateway | type == "string" and length > 0)
@@ -281,12 +367,16 @@ case "$action" in
     last_epoch=$((started_epoch + 29 * 60))
     network_interface="$(jq -r '.checks.network_interface' "$latest_file")"
     network_gateway="$(jq -r '.checks.network_gateway' "$latest_file")"
+    production_origin="$(jq -r '.production_origin' "$latest_file")"
     payload="$(jq -n \
       --arg smoke_id "qiu-market-transport-$(date -u '+%Y%m%dT%H%M%SZ')-$RANDOM" \
       --arg deployment_id "$deployment_id" \
       --arg deployment_url "$deployment_url" \
       --arg deployment_commit "$deployment_commit" \
       --arg runtime_release_commit "$observed_runtime" \
+      --arg binary_sha256 "$observed_binary_sha256" \
+      --arg runtime_bundle_sha256 "$observed_runtime_bundle_sha256" \
+      --arg production_origin "$production_origin" \
       --arg network_interface "$network_interface" \
       --arg network_gateway "$network_gateway" \
       --arg created_at "$(iso_at "$current_epoch")" \
@@ -294,13 +384,16 @@ case "$action" in
       --arg last_scheduled_at "$(iso_at "$last_epoch")" \
       --argjson guardian_restart_baseline "$guardian_baseline" '
         {
-          schema_version:1,
+          schema_version:2,
           smoke_id:$smoke_id,
           status:"active",
           deployment_id:$deployment_id,
           deployment_url:$deployment_url,
           deployment_commit:$deployment_commit,
           runtime_release_commit:$runtime_release_commit,
+          binary_sha256:$binary_sha256,
+          runtime_bundle_sha256:$runtime_bundle_sha256,
+          production_origin:$production_origin,
           network_interface:$network_interface,
           network_gateway:$network_gateway,
           guardian_restart_baseline:$guardian_restart_baseline,

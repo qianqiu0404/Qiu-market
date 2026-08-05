@@ -1,5 +1,6 @@
 GITCOMMIT := $(shell git rev-parse HEAD)
 GITDATE := $(shell git show -s --format='%ct')
+RELEASE_REV ?= HEAD
 
 LDFLAGSSTRING +=-X main.GitCommit=$(GITCOMMIT)
 LDFLAGSSTRING +=-X main.GitData=$(GITDATE)
@@ -68,7 +69,13 @@ verify-local:
 	bash script/verify-local.sh
 
 mac-production-build:
-	bash ops/macos/manage-services.sh prepare
+	bash ops/macos/manage-release-candidate.sh prepare "$(RELEASE_REV)"
+
+mac-production-verify:
+	bash ops/macos/manage-release-candidate.sh verify "$(RELEASE_REV)"
+
+mac-production-preflight:
+	bash ops/macos/manage-release-candidate.sh preflight "$(RELEASE_REV)"
 
 mac-production-install:
 	bash ops/macos/manage-services.sh install
@@ -110,6 +117,8 @@ proto:
 	dev-restart \
 	verify-local \
 	mac-production-build \
+	mac-production-verify \
+	mac-production-preflight \
 	mac-production-install \
 	mac-production-status \
 	clean \

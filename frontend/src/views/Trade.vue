@@ -1377,6 +1377,11 @@ onBeforeUnmount(() => {
         <span>{{ t('HTTPS transport', 'HTTPS 传输') }} <b>{{ proofLabel(recoveryStatus.proof.transport_healthy) }}</b></span>
         <span>{{ t('Continuity', '存储连续性') }} <b>{{ recoveryStatus.continuity_uncertain ? t('uncertain', '不确定') : t('verified', '已确认') }}</b></span>
         <span>{{ t('Sequence', '运行序列') }} <b>{{ recoveryStatus.proof.runtime_sequence }}</b></span>
+        <span>{{ t('Production origin', '生产入口') }} <b class="mono">{{ recoveryStatus.provenance?.production_origin || '—' }}</b></span>
+        <span>{{ t('Deployment', '部署标识') }} <b class="mono">{{ recoveryStatus.provenance ? shortID(recoveryStatus.provenance.deployment_id) : '—' }}</b></span>
+        <span>{{ t('Immutable deployment', '不可变部署') }} <b class="mono">{{ recoveryStatus.provenance?.deployment_url || '—' }}</b></span>
+        <span>{{ t('Release commit', '发布提交') }} <b class="mono">{{ recoveryStatus.provenance ? shortID(recoveryStatus.provenance.release_commit) : '—' }}</b></span>
+        <span>{{ t('Source digest', '源码摘要') }} <b class="mono">{{ recoveryStatus.provenance ? shortID(recoveryStatus.provenance.source_digest) : '—' }}</b></span>
       </div>
       <p v-if="recoveryStatus.supported && recoveryStatus.continuity_uncertain" class="recovery-admission__warning">
         {{ t('Recovery store continuity is uncertain; a new epoch is required.', '恢复存储连续性不确定；必须启动新的恢复批次。') }}

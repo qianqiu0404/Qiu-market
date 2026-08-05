@@ -39,6 +39,11 @@ func tradingRecoveryCommand() *cli.Command {
 					&cli.Uint64Flag{Name: "runtime-sequence", Required: true},
 					&cli.StringFlag{Name: "state-hash", Required: true},
 					&cli.StringFlag{Name: "status-url", Required: true},
+					&cli.StringFlag{Name: "production-origin", Required: true},
+					&cli.StringFlag{Name: "deployment-id", Required: true},
+					&cli.StringFlag{Name: "deployment-url", Required: true},
+					&cli.StringFlag{Name: "release-commit", Required: true},
+					&cli.StringFlag{Name: "source-digest", Required: true},
 					&cli.StringFlag{Name: "grpc-address", Value: "127.0.0.1:9094"},
 					&cli.IntFlag{Name: "minimum-samples", Value: recovery.MinimumTransportSamples},
 					&cli.DurationFlag{Name: "minimum-window", Value: recovery.MinimumTransportWindow},
@@ -80,6 +85,13 @@ func runTradingRecoveryPromote(ctx *cli.Context) error {
 		Version:         ctx.Uint64("version"),
 		RuntimeSequence: ctx.Uint64("runtime-sequence"),
 		StateHash:       strings.ToLower(strings.TrimSpace(ctx.String("state-hash"))),
+		Provenance: recovery.Provenance{
+			ProductionOrigin: strings.TrimSpace(ctx.String("production-origin")),
+			DeploymentID:     strings.TrimSpace(ctx.String("deployment-id")),
+			DeploymentURL:    strings.TrimSpace(ctx.String("deployment-url")),
+			ReleaseCommit:    strings.TrimSpace(ctx.String("release-commit")),
+			SourceDigest:     strings.TrimSpace(ctx.String("source-digest")),
+		},
 	}
 	if binding.MarketID == "" || binding.EpochID == "" || binding.Version == 0 ||
 		len(binding.StateHash) != 64 {
@@ -87,6 +99,11 @@ func runTradingRecoveryPromote(ctx *cli.Context) error {
 	}
 	if _, err := hex.DecodeString(binding.StateHash); err != nil {
 		return fmt.Errorf("state hash must be 64 lowercase hexadecimal characters")
+	}
+	var err error
+	binding.Provenance, err = recovery.NormalizeProvenance(binding.Provenance)
+	if err != nil {
+		return err
 	}
 	policy := tradingoperator.ObservationPolicy{
 		MinimumSamples: ctx.Int("minimum-samples"),

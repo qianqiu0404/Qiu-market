@@ -1085,6 +1085,8 @@ PY
           .same_request_id_replay_equal == true and
           .ledger_balanced == true and
           .state_hash_consistent == true and
+          .submitted_unknown_evidence == "environment-pending" and
+          .browser_cursor_reconcile_evidence == "environment-pending" and
           .production_logout_204 == true and
           .stale_production_session_401 == true and
           (

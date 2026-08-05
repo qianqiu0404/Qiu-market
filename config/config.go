@@ -47,6 +47,11 @@ type TradingConfig struct {
 	GitHubRedirect   string
 	DemoMakerEnabled bool
 	RecoveryGate     bool
+	ProductionOrigin string
+	DeploymentID     string
+	DeploymentURL    string
+	ReleaseCommit    string
+	SourceDigest     string
 }
 
 // DorisConfig Apache Doris 连接配置。Host 为空表示未配置数仓：
@@ -175,6 +180,11 @@ func NewConfig(ctx *cli.Context) Config {
 			GitHubRedirect:   ctx.String(flags.TradingGitHubRedirectFlag.Name),
 			DemoMakerEnabled: ctx.Bool(flags.TradingDemoMakerFlag.Name),
 			RecoveryGate:     ctx.Bool(flags.TradingRecoveryGateFlag.Name),
+			ProductionOrigin: ctx.String(flags.TradingProductionOriginFlag.Name),
+			DeploymentID:     ctx.String(flags.TradingDeploymentIDFlag.Name),
+			DeploymentURL:    ctx.String(flags.TradingDeploymentURLFlag.Name),
+			ReleaseCommit:    ctx.String(flags.TradingReleaseCommitFlag.Name),
+			SourceDigest:     ctx.String(flags.TradingSourceDigestFlag.Name),
 		},
 		Doris: DorisConfig{
 			Host:      ctx.String(flags.DorisHostFlag.Name),

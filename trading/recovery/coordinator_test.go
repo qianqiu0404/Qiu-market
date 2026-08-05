@@ -15,7 +15,7 @@ import (
 func TestCoordinatorFailsClosedUntilCompleteProof(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	coordinator, err := NewCoordinator(store, domain.MarketID("BTC-USDT"))
+	coordinator, err := NewCoordinator(store, domain.MarketID("BTC-USDT"), testProvenance())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestCoordinatorFailsClosedUntilCompleteProof(t *testing.T) {
 
 func TestCoordinatorPromotionRejectsEveryStaleBindingField(t *testing.T) {
 	ctx := context.Background()
-	coordinator, _ := NewCoordinator(NewMemoryStore(), domain.MarketID("BTC-USDT"))
+	coordinator, _ := NewCoordinator(NewMemoryStore(), domain.MarketID("BTC-USDT"), testProvenance())
 	status, err := coordinator.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestCoordinatorPromotionRejectsEveryStaleBindingField(t *testing.T) {
 
 func TestCoordinatorRejectsMalformedTransportEvidence(t *testing.T) {
 	ctx := context.Background()
-	coordinator, _ := NewCoordinator(NewMemoryStore(), domain.MarketID("BTC-USDT"))
+	coordinator, _ := NewCoordinator(NewMemoryStore(), domain.MarketID("BTC-USDT"), testProvenance())
 	warmup := advanceToWarmup(t, ctx, coordinator)
 	tests := []struct {
 		name   string
@@ -167,7 +167,7 @@ func TestCoordinatorRejectsMalformedTransportEvidence(t *testing.T) {
 func TestCoordinatorFailureRemainsClosedAndNewEpochResetsProof(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()
-	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"))
+	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"), testProvenance())
 	first, err := coordinator.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -210,10 +210,45 @@ func TestMemoryStoreRejectsStaleVersion(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRejectsTamperedDurableProvenance(t *testing.T) {
+	ctx := context.Background()
+	for _, mutate := range []func(*Provenance){
+		func(value *Provenance) { value.ProductionOrigin += "/path" },
+		func(value *Provenance) { value.DeploymentURL = "https://attacker.example" },
+		func(value *Provenance) { value.DeploymentURL = "https://other-valid-deployment.vercel.app" },
+		func(value *Provenance) { value.DeploymentURL = value.ProductionOrigin },
+		func(value *Provenance) { value.DeploymentID = "not-a-vercel-deployment" },
+	} {
+		store := NewMemoryStore()
+		provenance := testProvenance()
+		mutate(&provenance)
+		now := time.Now().UTC()
+		status := Status{
+			SchemaVersion: SchemaVersion, MarketID: "BTC-USDT", EpochID: "tampered",
+			Phase: PhaseWritable, Proof: completeProof(true),
+			Transport: completeTransportEvidence(), Provenance: provenance,
+			WritesEnabled: true, Version: 1, StartedAt: now, UpdatedAt: now,
+		}
+		if err := store.Save(ctx, 0, status); err != nil {
+			t.Fatal(err)
+		}
+		coordinator, err := NewCoordinator(store, "BTC-USDT", testProvenance())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := coordinator.RequireWritable(ctx); !errors.Is(err, ErrWriteBlocked) {
+			t.Fatalf("tampered provenance write gate = %v", err)
+		}
+		if _, err := coordinator.Admit(ctx, AdmissionNormal, "alice"); !errors.Is(err, ErrWriteBlocked) {
+			t.Fatalf("tampered provenance admission = %v", err)
+		}
+	}
+}
+
 func TestCoordinatorStoreContinuityLatchRequiresNewEpoch(t *testing.T) {
 	ctx := context.Background()
 	store := &continuityFaultStore{base: NewMemoryStore()}
-	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"))
+	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"), testProvenance())
 	warmup := advanceToWarmup(t, ctx, coordinator)
 	if _, err := coordinator.Promote(
 		ctx, bindingFromStatus(warmup), completeTransportEvidence(),
@@ -261,7 +296,7 @@ func TestCoordinatorStoreContinuityLatchRequiresNewEpoch(t *testing.T) {
 func TestCoordinatorWarmupOutageCannotReuseOldTransportProof(t *testing.T) {
 	ctx := context.Background()
 	store := &continuityFaultStore{base: NewMemoryStore()}
-	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"))
+	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"), testProvenance())
 	warmup := advanceToWarmup(t, ctx, coordinator)
 	store.setFailLoad(true)
 	if _, err := coordinator.Status(ctx); err == nil {
@@ -282,7 +317,7 @@ func TestCoordinatorWarmupOutageCannotReuseOldTransportProof(t *testing.T) {
 func TestCoordinatorUncertainPromotionCommitLatchesSameEpoch(t *testing.T) {
 	ctx := context.Background()
 	store := &continuityFaultStore{base: NewMemoryStore()}
-	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"))
+	coordinator, _ := NewCoordinator(store, domain.MarketID("BTC-USDT"), testProvenance())
 	warmup := advanceToWarmup(t, ctx, coordinator)
 	store.setFailSave(true)
 	if _, err := coordinator.Promote(
@@ -390,6 +425,7 @@ func bindingFromStatus(status Status) Binding {
 	return Binding{
 		MarketID: status.MarketID, EpochID: status.EpochID, Version: status.Version,
 		RuntimeSequence: status.Proof.RuntimeSequence, StateHash: status.Proof.StateHash,
+		Provenance: status.Provenance,
 	}
 }
 
@@ -402,5 +438,16 @@ func completeTransportEvidence() TransportEvidence {
 		LastSampleAt:   last,
 		MaximumGapMS:   MaximumTransportGap.Milliseconds(),
 		EvidenceSHA256: strings.Repeat("c", 64),
+		Provenance:     testProvenance(),
+	}
+}
+
+func testProvenance() Provenance {
+	return Provenance{
+		ProductionOrigin: "https://qiu-market.example",
+		DeploymentID:     "dpl_testdeployment",
+		DeploymentURL:    "https://qiu-market-test-deployment.vercel.app",
+		ReleaseCommit:    strings.Repeat("d", 40),
+		SourceDigest:     strings.Repeat("e", 64),
 	}
 }

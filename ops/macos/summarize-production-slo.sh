@@ -24,13 +24,16 @@ if [ ! -s "$epoch_file" ]; then
 fi
 if ! jq -e '
   . as $root |
-  .schema_version == 2 and
+  .schema_version == 4 and
   (.status == "active" or .status == "stopped") and
   (.epoch_id | type == "string" and length >= 8) and
   (.production_origin | type == "string" and startswith("https://")) and
   (.deployment_id | type == "string" and startswith("dpl_")) and
   (.deployment_url | type == "string" and startswith("https://")) and
   (.deployment_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+  (.runtime_release_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+  (.binary_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+  (.runtime_bundle_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
   (.started_at | type == "string") and
   (.started_at | try fromdateiso8601 catch null | type == "number") and
   (.dex_canaries | keys | sort) == ["pancakeswap", "uniswap"] and
@@ -55,6 +58,9 @@ production_origin="$(jq -r '.production_origin' "$epoch_file")"
 deployment_id="$(jq -r '.deployment_id' "$epoch_file")"
 deployment_url="$(jq -r '.deployment_url' "$epoch_file")"
 deployment_commit="$(jq -r '.deployment_commit' "$epoch_file")"
+runtime_release_commit="$(jq -r '.runtime_release_commit' "$epoch_file")"
+binary_sha256="$(jq -r '.binary_sha256' "$epoch_file")"
+runtime_bundle_sha256="$(jq -r '.runtime_bundle_sha256' "$epoch_file")"
 dex_canaries="$(jq -c '.dex_canaries' "$epoch_file")"
 window_start_epoch="$(jq -r '.started_at | fromdateiso8601' "$epoch_file")"
 window_last_slot_epoch=$((window_start_epoch + 7 * 24 * 60 * 60 - 60))
@@ -80,6 +86,9 @@ jq -s \
   --arg deployment_id "$deployment_id" \
   --arg deployment_url "$deployment_url" \
   --arg deployment_commit "$deployment_commit" \
+  --arg runtime_release_commit "$runtime_release_commit" \
+  --arg binary_sha256 "$binary_sha256" \
+  --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
   --argjson dex_canaries "$dex_canaries" \
   --argjson window_start "$window_start_epoch" \
   --argjson evaluation_end "$evaluation_end_epoch" \
@@ -98,6 +107,10 @@ jq -s \
         latency: ($sample.latency_ms.trading_bff // null)
       },
       {
+        http: ($sample.checks.recovery_bff_http // 0),
+        latency: ($sample.latency_ms.recovery_bff // null)
+      },
+      {
         http: ($sample.checks.system_bff_http // 0),
         latency: ($sample.latency_ms.system_bff // null)
       },
@@ -111,13 +124,23 @@ jq -s \
       }
     ] | map(select(.http != 0 or .latency != null));
   def same_release:
-    .schema_version == 4 and
+    .schema_version == 7 and
     .acceptance_eligible == true and
     .acceptance_epoch_id == $epoch_id and
     .production_origin == $production_origin and
     .deployment_id == $deployment_id and
     .deployment_url == $deployment_url and
     .deployment_commit == $deployment_commit and
+    .runtime_release_commit == $runtime_release_commit and
+    .binary_sha256 == $binary_sha256 and
+    .runtime_bundle_sha256 == $runtime_bundle_sha256 and
+    .checks.recovery_provenance_match == true and
+    .release_provenance.recovery.full_match == true and
+    .release_provenance.recovery.body.production_origin == $production_origin and
+    .release_provenance.recovery.body.deployment_id == $deployment_id and
+    .release_provenance.recovery.body.deployment_url == $deployment_url and
+    .release_provenance.recovery.body.release_commit == $deployment_commit and
+    .release_provenance.recovery.body.source_digest == $binary_sha256 and
     (.scheduled_at | type == "string");
 
   . as $all |
@@ -195,6 +218,9 @@ jq -s \
     deployment_id: $deployment_id,
     deployment_url: $deployment_url,
     deployment_commit: $deployment_commit,
+    runtime_release_commit: $runtime_release_commit,
+    binary_sha256: $binary_sha256,
+    runtime_bundle_sha256: $runtime_bundle_sha256,
     dex_canaries: $dex_canaries,
     latest_dex_windows: $latestDexWindows,
     window_started_at: ($window_start | todateiso8601),
@@ -240,6 +266,9 @@ jq -s \
           .deployment_id == $deployment_id and
           .deployment_url == $deployment_url and
           .deployment_commit == $deployment_commit
+          and .runtime_release_commit == $runtime_release_commit
+          and .binary_sha256 == $binary_sha256
+          and .runtime_bundle_sha256 == $runtime_bundle_sha256
         )
       ),
       monitoring_coverage_at_least_99_5: (

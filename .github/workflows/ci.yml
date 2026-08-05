@@ -1,0 +1,83 @@
+name: build-verified
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-verified-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go build, vet, test, race
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -p 1 ./...
+      - run: go test -race -p 1 ./trading/...
+
+  frontend:
+    name: Frontend unit and production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  repository-contracts:
+    name: Shell syntax and whitespace
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate shell syntax
+        run: |
+          for script in ops/macos/*.sh; do
+            bash -n "$script"
+          done
+      - name: Validate patch whitespace
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base_commit="$(git merge-base HEAD "origin/$BASE_REF")"
+            git diff --check "$base_commit" HEAD
+          elif [ -n "$BEFORE_SHA" ] &&
+            [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] &&
+            git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            git diff --check "$BEFORE_SHA" "$CURRENT_SHA"
+          else
+            git diff --check
+          fi
+
+# These checks establish build-verified only. They intentionally do not claim
+# PostgreSQL integration, Vercel/OAuth, Mac mini activation, browser reconnect,
+# Production availability, or any real-funds evidence.

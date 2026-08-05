@@ -27,6 +27,7 @@ func TestRecoveryOperatorRPCBindsAndPromotesAuthoritativeCoordinator(t *testing.
 	coordinator, err := recovery.NewCoordinator(
 		recovery.NewMemoryStore(),
 		domain.MarketID("BTC-USDT"),
+		testRecoveryProvenance(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +81,7 @@ func TestRecoveryOperatorRPCBindsAndPromotesAuthoritativeCoordinator(t *testing.
 			Version:         strconv.FormatUint(current.Version, 10),
 			RuntimeSequence: strconv.FormatUint(current.Proof.RuntimeSequence, 10),
 			StateHash:       current.Proof.StateHash,
+			Provenance:      testProtoProvenance(),
 		},
 		TransportEvidence: &tradingv1.RecoveryTransportEvidence{
 			SampleCount:    recovery.MinimumTransportSamples,
@@ -87,6 +89,7 @@ func TestRecoveryOperatorRPCBindsAndPromotesAuthoritativeCoordinator(t *testing.
 			LastSampleAt:   last.Format(time.RFC3339Nano),
 			MaximumGapMs:   strconv.FormatInt(recovery.MaximumTransportGap.Milliseconds(), 10),
 			EvidenceSha256: strings.Repeat("b", 64),
+			Provenance:     testProtoProvenance(),
 		},
 	}
 	promoted, err := service.PromoteRecovery(ctx, request)
@@ -103,6 +106,7 @@ func TestPromoteRecoveryRejectsLiveRuntimeDivergence(t *testing.T) {
 	coordinator, err := recovery.NewCoordinator(
 		recovery.NewMemoryStore(),
 		domain.MarketID("BTC-USDT"),
+		testRecoveryProvenance(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +162,7 @@ func TestPromoteRecoveryRejectsLiveRuntimeDivergence(t *testing.T) {
 			Version:         strconv.FormatUint(current.Version, 10),
 			RuntimeSequence: strconv.FormatUint(observed.Sequence, 10),
 			StateHash:       observed.StateHash,
+			Provenance:      testProtoProvenance(),
 		},
 		TransportEvidence: &tradingv1.RecoveryTransportEvidence{
 			SampleCount:    recovery.MinimumTransportSamples,
@@ -165,6 +170,7 @@ func TestPromoteRecoveryRejectsLiveRuntimeDivergence(t *testing.T) {
 			LastSampleAt:   last.Format(time.RFC3339Nano),
 			MaximumGapMs:   strconv.FormatInt(recovery.MaximumTransportGap.Milliseconds(), 10),
 			EvidenceSha256: strings.Repeat("b", 64),
+			Provenance:     testProtoProvenance(),
 		},
 	})
 	if status.Code(err) != codes.FailedPrecondition {
@@ -176,6 +182,23 @@ func TestPromoteRecoveryRejectsLiveRuntimeDivergence(t *testing.T) {
 	}
 	if after.Phase != recovery.PhaseTransportWarmup || after.WritesEnabled {
 		t.Fatalf("runtime divergence changed recovery state = %+v", after)
+	}
+}
+
+func testRecoveryProvenance() recovery.Provenance {
+	return recovery.Provenance{
+		ProductionOrigin: "https://qiu-market.example", DeploymentID: "dpl_rpctest00",
+		DeploymentURL: "https://qiu-market-rpc-test.vercel.app",
+		ReleaseCommit: strings.Repeat("d", 40), SourceDigest: strings.Repeat("e", 64),
+	}
+}
+
+func testProtoProvenance() *tradingv1.RecoveryProvenance {
+	value := testRecoveryProvenance()
+	return &tradingv1.RecoveryProvenance{
+		ProductionOrigin: value.ProductionOrigin, DeploymentId: value.DeploymentID,
+		DeploymentUrl: value.DeploymentURL,
+		ReleaseCommit: value.ReleaseCommit, SourceDigest: value.SourceDigest,
 	}
 }
 

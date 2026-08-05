@@ -50,6 +50,18 @@ func TestRecoveryWriteGuardKeepsReadsAvailableAndRejectsEveryMutation(t *testing
 	}
 }
 
+func TestGatewayRejectsConfiguredSourceDigestMismatchBeforeStartup(t *testing.T) {
+	_, err := New(context.Background(), Config{
+		RecoveryGate: true,
+		RecoveryProvenance: recovery.Provenance{
+			SourceDigest: strings.Repeat("f", 64),
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match current executable") {
+		t.Fatalf("source digest mismatch error = %v", err)
+	}
+}
+
 func TestRecoveryWriteGuardOpensOnlyAfterWritableProof(t *testing.T) {
 	ctx := context.Background()
 	coordinator := newTestRecoveryCoordinator(t)
@@ -80,11 +92,13 @@ func TestRecoveryWriteGuardOpensOnlyAfterWritableProof(t *testing.T) {
 	if _, err := coordinator.Promote(ctx, recovery.Binding{
 		MarketID: status.MarketID, EpochID: status.EpochID, Version: status.Version,
 		RuntimeSequence: status.Proof.RuntimeSequence, StateHash: status.Proof.StateHash,
+		Provenance: status.Provenance,
 	}, recovery.TransportEvidence{
 		SampleCount:   recovery.MinimumTransportSamples,
 		FirstSampleAt: first, LastSampleAt: time.Now().UTC(),
 		MaximumGapMS:   recovery.MaximumTransportGap.Milliseconds(),
 		EvidenceSHA256: strings.Repeat("b", 64),
+		Provenance:     status.Provenance,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +137,11 @@ func newTestRecoveryCoordinator(t *testing.T) *recovery.Coordinator {
 	coordinator, err := recovery.NewCoordinator(
 		recovery.NewMemoryStore(),
 		domain.MarketID("BTC-USDT"),
+		recovery.Provenance{
+			ProductionOrigin: "https://qiu-market.example", DeploymentID: "dpl_gatewaytest",
+			DeploymentURL: "https://qiu-market-gateway-test.vercel.app",
+			ReleaseCommit: strings.Repeat("d", 40), SourceDigest: strings.Repeat("e", 64),
+		},
 	)
 	if err != nil {
 		t.Fatal(err)

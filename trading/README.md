@@ -105,16 +105,19 @@ Fund/Submit/Cancel 在权威入口统一返回 `recovery_in_progress`；只读�
 `transport_warmup`，不会自行宣称公网健康或开放写入。
 
 受管 `market-services trading-recovery status/promote` 已实现。promote 绑定精确
-market/epoch/version/runtime sequence/state hash，至少连续 30 秒核对运维者指定的 HTTPS
-recovery 正文、loopback recovery/runner gRPC 和 outbox，再由 trading 进程自身 CAS 开放。
+market/epoch/version/runtime sequence/state hash、Production origin、immutable Vercel
+deployment ID/URL、release commit 和 backend source digest，至少连续 30 秒核对锁定的
+Production HTTPS recovery 正文、Vercel provenance 响应头、loopback recovery/runner
+gRPC 和 outbox，再由 trading 进程自身 CAS 开放。
 CLI 不直接写 SQL；store 连续性一旦不确定，同一 epoch 永久关闭并要求新 epoch。
 demo-maker 只在 writable 后启动，退化时经同一 runner 的 safety-cancel 撤单。
 
-当前 operator 只验证 HTTPS 与精确 recovery path，尚未绑定 Production origin 或
-deployment provenance，也不证明浏览器 cursor reconcile。随机隔离数据库中的
+Production provenance 已在 epoch 创建、公开正文、每次 HTTP sample、权威 gRPC 和
+最终 CAS 五处 fail-closed 绑定；旧 epoch 迁移为 manual review。它仍不证明浏览器
+cursor reconcile。随机隔离数据库中的
 migration/CAS/fault 与真实 loopback gRPC TransportProbe 30 秒集成已通过，证据为
 `integration-verified (isolated local PostgreSQL + loopback gRPC)`。开关仍默认关闭；
-Mac mini production PostgreSQL/epoch、实际外部 HTTPS、Production 来源绑定和断电故障
+Mac mini production PostgreSQL/epoch、实际外部 HTTPS provenance 和断电故障
 注入完成前不得在生产开启，仍为 `environment-pending`。
 
 ## 运行

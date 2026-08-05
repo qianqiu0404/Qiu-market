@@ -12,6 +12,7 @@ observation_dir="${QIU_MARKET_OBSERVATION_DIR:-$support_dir/observations}"
 epoch_file="${QIU_MARKET_ACCEPTANCE_EPOCH_FILE:-$observation_dir/acceptance-epoch.json}"
 transport_smoke_file="${QIU_MARKET_TRANSPORT_SMOKE_FILE:-$observation_dir/transport-smoke.json}"
 runtime_link="${QIU_MARKET_RUNTIME_LINK:-$support_dir/runtime-current}"
+managed_binary="${QIU_MARKET_MANAGED_BINARY:-$support_dir/bin/market-services}"
 production_origin="${QIU_MARKET_PRODUCTION_ORIGIN:-https://qiu-market.vercel.app}"
 database_env="${QIU_MARKET_DATABASE_ENV_FILE:-${QIU_MARKET_ENV_FILE:-$support_dir/production.env}}"
 
@@ -67,6 +68,29 @@ header_value() {
   ' "$header_file"
 }
 
+manifest_value() {
+  local manifest="$1"
+  local key="$2"
+  sed -n "s/^${key}=//p" "$manifest" | head -1
+}
+
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+runtime_bundle_hash() {
+  local root="$1"
+  (
+    cd "$root"
+    find ops migrations -type f -print | LC_ALL=C sort |
+      while IFS= read -r file; do
+        shasum -a 256 "$file"
+      done |
+      shasum -a 256 |
+      awk '{print $1}'
+  )
+}
+
 write_epoch() {
   local destination="$1"
   local payload="$2"
@@ -91,6 +115,9 @@ case "$action" in
       deployment_id,
       deployment_url,
       deployment_commit,
+      runtime_release_commit,
+      binary_sha256,
+      runtime_bundle_sha256,
       dex_canaries,
       created_at,
       started_at,
@@ -99,8 +126,10 @@ case "$action" in
     ;;
   start)
     require_command curl
+    require_command find
     require_command jq
     require_command psql
+    require_command shasum
     deployment_id=""
     deployment_url=""
     deployment_commit=""
@@ -159,8 +188,33 @@ case "$action" in
     fi
     runtime_manifest="$runtime_link/runtime-manifest.env"
     runtime_commit=""
+    runtime_bundle_sha256=""
+    observed_runtime_bundle_sha256=""
     if [ -L "$runtime_link" ] && [ -f "$runtime_manifest" ]; then
-      runtime_commit="$(sed -n 's/^git_commit=//p' "$runtime_manifest" | head -1)"
+      runtime_commit="$(manifest_value "$runtime_manifest" git_commit)"
+      runtime_bundle_sha256="$(manifest_value "$runtime_manifest" bundle_sha256)"
+      observed_runtime_bundle_sha256="$(runtime_bundle_hash "$runtime_link")"
+    fi
+    binary_commit=""
+    binary_sha256=""
+    observed_binary_sha256=""
+    if [ -L "$managed_binary" ] && [ -x "$managed_binary" ]; then
+      binary_target="$(readlink "$managed_binary")"
+      binary_manifest="$(dirname "$binary_target")/manifest.env"
+      if [ -f "$binary_manifest" ]; then
+        binary_commit="$(manifest_value "$binary_manifest" git_commit)"
+        binary_sha256="$(manifest_value "$binary_manifest" binary_sha256)"
+        observed_binary_sha256="$(sha256_file "$managed_binary")"
+      fi
+    fi
+    if [[ ! "$runtime_commit" =~ ^[0-9a-f]{40}$ ]] ||
+      [ "$binary_commit" != "$runtime_commit" ] ||
+      [[ ! "$runtime_bundle_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+      [ "$observed_runtime_bundle_sha256" != "$runtime_bundle_sha256" ] ||
+      [[ ! "$binary_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+      [ "$observed_binary_sha256" != "$binary_sha256" ]; then
+      echo "Runtime bundle and managed binary must be the same verified immutable artifact pair." >&2
+      exit 1
     fi
     acceptance_now="${QIU_MARKET_ACCEPTANCE_NOW_EPOCH:-$(date -u '+%s')}"
     if [[ ! "$runtime_commit" =~ ^[0-9a-f]{40}$ ]] ||
@@ -170,16 +224,23 @@ case "$action" in
         --arg deployment_url "$deployment_url" \
         --arg deployment_commit "$deployment_commit" \
         --arg runtime_commit "$runtime_commit" \
+        --arg binary_sha256 "$binary_sha256" \
+        --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
         --argjson now "$acceptance_now" '
-          .schema_version == 1 and
+          .schema_version == 2 and
           .status == "passed" and
           .deployment_id == $deployment_id and
           .deployment_url == $deployment_url and
           .deployment_commit == $deployment_commit and
           .runtime_release_commit == $runtime_commit and
+          .binary_sha256 == $binary_sha256 and
+          .runtime_bundle_sha256 == $runtime_bundle_sha256 and
           (.completed_at | fromdateiso8601) <= $now and
           ($now - (.completed_at | fromdateiso8601)) <= 1800 and
           .result.status == "passed" and
+          .result.runtime_release_commit == $runtime_commit and
+          .result.binary_sha256 == $binary_sha256 and
+          .result.runtime_bundle_sha256 == $runtime_bundle_sha256 and
           ([.result.acceptance[]] | all)
         ' "$transport_smoke_file" >/dev/null 2>&1; then
       echo "A passing 30-minute transport smoke for this exact release is required within the previous 30 minutes." >&2
@@ -392,17 +453,23 @@ SQL
         --arg deployment_id "$deployment_id" \
         --arg deployment_url "$deployment_url" \
         --arg deployment_commit "$deployment_commit" \
+        --arg runtime_release_commit "$runtime_commit" \
+        --arg binary_sha256 "$binary_sha256" \
+        --arg runtime_bundle_sha256 "$runtime_bundle_sha256" \
         --arg created_at "$created_at" \
         --arg started_at "$started_at" \
         --argjson dex_canaries "$dex_canaries" \
         '{
-          schema_version: 2,
+          schema_version: 4,
           epoch_id: $epoch_id,
           status: "active",
           production_origin: $production_origin,
           deployment_id: $deployment_id,
           deployment_url: $deployment_url,
           deployment_commit: $deployment_commit,
+          runtime_release_commit: $runtime_release_commit,
+          binary_sha256: $binary_sha256,
+          runtime_bundle_sha256: $runtime_bundle_sha256,
           dex_canaries: (
             $dex_canaries |
             with_entries(.value += {selected_at: $started_at})

@@ -332,9 +332,9 @@ sequence 和 state hash。`promote` 至少采集 7 个连续健康样本、覆�
 runner ready/hash/sequence/空队列和 outbox checkpoint，而不是只看 HTTP 200 或固定
 sleep。样本摘要和 SHA-256 随 CAS 写入；最终 promote 通过交易进程自身的 loopback
 gRPC 执行，CLI 禁止直接 SQL。任一绑定变化、样本失败或 CAS 冲突都不自动重试。
-当前 operator 只要求精确 recovery path 和 HTTPS，没有把 status URL 锁定到 Production
-origin，也没有验证 deployment provenance；所以 30 秒证据只能称为“指定 HTTPS endpoint
-观察”，不能称为 Production 公网证明。它同样不证明浏览器 cursor 已追平；Trade 页面
+operator 将 status URL 锁定到 epoch 的 Production origin，并逐样本要求 Vercel BFF
+返回 VERIFIED、immutable deployment ID/URL 和 exact release commit；公开 JSON、权威
+gRPC 与最终 CAS 还必须匹配 backend source digest。它仍不证明浏览器 cursor 已追平；Trade 页面
 仍须在 cursor reconcile 完成前独立 fail closed。
 该 operator gRPC 只绑定显式 IP loopback，信任边界是本机 `xiuqiu` 用户、受管 release
 目录和 LaunchDaemon 配置；浏览器与公网无法直接调用，因此当前不另设一套共享 secret。
@@ -352,7 +352,7 @@ review 或 runner/outbox 退化时先停 maker，再沿同一顺序写入口撤�
 
 受管命令已经 `implemented / build-verified`；隔离本地 PostgreSQL + loopback gRPC 的
 30 秒 TransportProbe 已达到 `integration-verified`。但开关仍默认 false，Mac mini
-production PostgreSQL/epoch、实际外部 HTTPS、Production origin/provenance 绑定、断电
+production PostgreSQL/epoch、实际外部 HTTPS provenance、断电
 注入和生产启用仍是 `environment-pending`，所以不得
 把本切片称为 production-verified。
 
@@ -360,7 +360,12 @@ production PostgreSQL/epoch、实际外部 HTTPS、Production origin/provenance 
 market-services trading-recovery status --grpc-address 127.0.0.1:9094
 market-services trading-recovery promote \
   --grpc-address 127.0.0.1:9094 \
-  --status-url https://<operator-specified-https-origin>/api/v1/trading/recovery/status \
+  --status-url https://qiu-market.vercel.app/api/v1/trading/recovery/status \
+  --production-origin https://qiu-market.vercel.app \
+  --deployment-id 'dpl_<exact promoted deployment id>' \
+  --deployment-url 'https://<immutable-deployment>.vercel.app' \
+  --release-commit '<exact 40-char release commit>' \
+  --source-digest '<source_digest copied from current recovery status>' \
   --epoch '<status epoch>' --version '<status version>' \
   --runtime-sequence '<status sequence>' --state-hash '<status hash>'
 ```
@@ -374,7 +379,7 @@ CAS 表示只有持有预期旧 version 的 actor 才能更新。
 关闭写入开始，审计事件、账本、hash、projection 和 outbox 后停在 transport warmup。
 operator 绑定精确 epoch/version/sequence/hash，连续 30 秒同时检查指定 HTTPS endpoint
 正文、权威 gRPC、runner 和 outbox，再让交易进程自身做一次 CAS promote；CLI 不碰 SQL。
-这不代替 Production origin/provenance 绑定或浏览器 cursor reconcile。恢复库一旦断过，
+这不代替浏览器 cursor reconcile。恢复库一旦断过，
 同一 epoch 永久熔断，必须新 epoch 重证。Demo Maker 只在 writable 后启动，退化时经
 runner safety-cancel 撤单。当前默认仍关闭，等待 Mac mini production PostgreSQL/epoch、
 实际外部 HTTPS、Production 来源绑定和断电验收。
@@ -465,41 +470,74 @@ MARKET_TRADING_DEMO_MAKER_ENABLED=false ./market-services trading
 
 ### Mac mini 版本化发布
 
-生产发布不能再用 `manage-services.sh reload` 覆盖唯一二进制。正式流程固定为：
+生产发布不能再用 `manage-services.sh reload` 覆盖唯一二进制，也不能分别手工切换
+binary 与 runtime bundle。正式流程由同 SHA 协调器固定为：
 
 ```bash
-# 只构建到 releases/<git-sha>，不切换线上服务
-ops/macos/release-production.sh prepare
+# 必须在干净、且 HEAD 等于目标 SHA 的工作树执行；只生成不可变产物
+bash ops/macos/manage-release-candidate.sh prepare <40-character-git-sha>
 
-# 对同一个 binary SHA 执行 Go、race、vet、前端、SLO fixture 和临时库真实恢复
-ops/macos/release-production.sh verify
+# 对同一 SHA 的 binary/runtime 做测试，并用真实备份创建临时恢复库
+bash ops/macos/manage-release-candidate.sh verify <40-character-git-sha>
 
-# 只读查看当前 binary、迁移、feed、checkpoint 与 trading/outbox 状态
-ops/macos/release-production.sh status
+# 只读检查生产依赖、迁移 ledger、候选与旧回退点；不改数据库和服务
+bash ops/macos/manage-release-candidate.sh preflight <40-character-git-sha>
 
-# 新建 full + trading 备份、用本次 binary 恢复临时库、应用迁移，
-# 原子切换 symlink，并且只重启 trading/API
-ops/macos/release-production.sh deploy
+# 唯一有生产副作用的激活入口；必须由操作者再次写出 --execute
+bash ops/macos/manage-release-candidate.sh activate <40-character-git-sha> --execute
 
-# 任一上线后门禁失败会自动恢复旧 binary；也可显式执行
-ops/macos/release-production.sh rollback
+# 使用激活前记录的精确 binary/runtime 回退点
+bash ops/macos/manage-release-candidate.sh rollback --execute
 ```
 
-每个 release 保存 Git commit、构建时间、binary SHA-256、目标迁移 SHA-256
-和完整 migration set SHA-256；
-`verify` 的证据也绑定同一个 binary SHA。`deploy` 要求干净工作树、精确 HEAD、
+`prepare` 不读取 `production.env`，从目标 Git object 的 archive 编译，不从可能变化的
+工作目录取源码。每个 release 保存 Git commit、构建时间、binary SHA-256、完整
+migration set SHA-256、迁移数量与最后一个文件；完整 migrations 目录随 release 冻结。
+runtime bundle 另有全包 SHA-256，协调器要求两份 manifest 的 Git commit 完全相同。
+`verify` 的证据同时绑定 binary 与 migration-set SHA。激活要求干净工作树、精确 HEAD、
 PostgreSQL ready、HMAC 已配置和数据盘至少 `35,000,000,000` 可用字节。
-迁移前必须证明所有已应用 checksum 与仓库一致，且 pending set 只能为空或
-恰好为 `2026082300025.sql`。
+迁移 ledger 中已应用文件必须是候选 migration set 的 checksum 完全一致前缀；允许
+零个或多个连续尾部迁移待执行，但拒绝未知文件、checksum 漂移与中间缺口。这样新增
+后续迁移不需要再把脚本硬编码到旧 `0025`，又不会把任意迁移集合带入生产。
 迁移前的 fresh backup 必须通过临时数据库恢复、快照重放、最终 hash 和账本平衡
 检查。二进制回滚不逆向删除数据库表；迁移必须保持向后兼容。
+
+这里的“原子”是两个 symlink 各自原子替换，加上跨步骤失败补偿，不是假装整个 Mac
+上所有 launchd 进程能在同一个 CPU 指令内切换。协调器先记录可验证的旧 binary 和旧
+runtime；binary 发布失败由原脚本自动恢复，runtime 激活失败则恢复完整旧 plist 集，
+随后把 binary 补偿回旧目标。若补偿本身失败，状态明确写为
+`compensation-failed` 并停止，不继续尝试数据库逆迁移。
+
+被拒绝的替代方案有两个：直接从脏工作树构建会让 commit 与真实代码不一致；只记录
+“最后一个 migration”会漏掉前面被修改或插入的 SQL。当前方案的代价是 release 多保存
+一份 migrations，完整 `verify` 会创建和删除临时数据库并执行真实恢复，所以它不是
+纯 dry-run。只有 `prepare`、`artifact/verify bundle` 和 `preflight` 不切换生产服务；
+`activate/rollback --execute` 才拥有服务、备份和生产迁移副作用。
+`--execute` 本身仍不足以授权子脚本：协调器持锁后为每一个 deploy、runtime activate
+或 rollback 生成 120 秒的一次性随机上下文，绑定操作、精确 commit/target、协调器 PID
+与私有 `0600` 状态文件。子脚本要求调用者正是该父进程并在任何生产修改前消费 nonce；
+缺文件、旧布尔变量、过期 token、错操作或错目标都会 fail closed。这个边界防止脚本被
+误绕过，信任模型仍是 Mac mini 上的同一受管本地用户，不把它冒充跨用户密码学隔离。
+
+控制流按以下入口阅读：
+
+1. `ops/macos/manage-release-candidate.sh`：绑定同 SHA 候选、检查回退点并编排补偿。
+2. `ops/macos/release-production.sh`：从 Git archive 构建 binary、冻结 migration set、备份恢复、迁移与 binary symlink。
+3. `ops/macos/manage-runtime-release.sh`：归档运行脚本、全包验 hash、精确恢复旧 plist 集。
+4. `ops/macos/backup-production.sh` 与 `restore-drill.sh`：生成 SHA-256 备份，并在临时库真实启动交易恢复、核对 hash/ledger/outbox。
+
+术语说明：immutable release 是“放进带 SHA 编号且校验后不再修改的封箱包裹”，位于
+`Application Support/Qiu Market/releases/<commit>`；migration ledger 是数据库的“已盖章
+施工记录”，表为 `s78_schema_migrations`；compensating rollback 是“后一步失败后按已记录
+旧目标执行反向业务步骤”，它恢复程序与脚本，但不删除向后兼容的数据库结构。
 
 第一次切换前，旧 binary 会被捕获为 legacy release。它读取 outbox 作为 cursor
 feed，因此只允许在 24 小时兼容窗口内回滚，并且要求 event feed 的每一行仍能在
 outbox 找到；源行清理开始后自动拒绝 legacy rollback。新 release 之间都使用
 `trading_event_feed`，不受该限制。
 
-`manage-services.sh prepare` 现在只暂存 release，`reload` 只重载 plist 并继续
+`manage-services.sh prepare` 只暂存单一 binary；正式候选必须走协调器同时准备 runtime。
+`reload` 只重载 plist 并继续
 运行当前 binary，避免无来源覆盖。
 
 ## 失败、降级与恢复
@@ -553,8 +591,8 @@ go test ./trading/orderbook -run='^$' -bench=BenchmarkMatch -benchmem
 GOMAXPROCS=2 go test ./trading/reliability -run='^$' -fuzz=FuzzBoundedCommandRecovery -fuzztime=10s
 go test ./trading/reliability -run='^$' -bench=BenchmarkAuditAndRestore -benchtime=100x -benchmem
 ./trading/scripts/verify-local.sh postgres
-ops/macos/release-production.sh verify
-ops/macos/release-production.sh status
+ops/macos/manage-release-candidate.sh verify <40-character-git-sha>
+ops/macos/manage-release-candidate.sh status
 cd frontend && npm test -- --run && npm run build
 cd frontend && npm audit --audit-level=high
 cd frontend && npx playwright test
@@ -583,6 +621,13 @@ Recovery admission：
 
 > 这个切片只做一个虚拟 BTC/USDT 市场。浏览器写请求经登录、CSRF、Origin 和限流后，通过 loopback gRPC 进入唯一的 MarketRunner；它把 submit、fill 和 cancel 线性化，所以 sequence 与同价 FIFO 确定。Exchange 在 trial state 中冻结、撮合和双重记账，PostgreSQL 先原子提交 event、journal、outbox 与投影，随后才替换内存。若响应丢失，fund、submit、cancel 都保留原 ID 查询或重放，绝不换 ID 再做一遍。断线事件以 `(market_sequence,event_index)` 去重补发，batch count 暴露缺口；未 reconcile 完成就拒绝新写。启动时校验 snapshot，再重放 tail，逐批重算结果和 hash；损坏或不一致就 fail closed。完整 event history 还能证明每笔每资产借贷平衡和总资产守恒。这里没有真实资金或真实交易所下单，PostgreSQL/浏览器故障联调要和本地内存证明分开标注。
 
+发布部分的 60 秒解释是：目标 SHA 必须等于干净工作树 HEAD，但 binary 真正从该 Git
+object 的 archive 编译；完整 migrations 和 runtime scripts 分别封箱算 hash，再由协调器
+确认同一 commit。`verify` 会把新备份恢复到临时库并用候选 binary 重放；`preflight`
+只读检查生产依赖和连续 migration ledger。只有写出 `activate SHA --execute` 才会备份、
+迁移和切换。先切 binary，再切 runtime；后者失败就恢复旧 plist 并补偿回旧 binary。
+数据库迁移不做危险逆迁移，所以所有候选 SQL 都必须向后兼容。
+
 ## 闭卷自检
 
 1. 为什么价格是“一枚 BTC 对应的 USDT atoms”，而不是普通 `60000.0`？
@@ -608,3 +653,7 @@ Recovery admission：
 21. `AuditRecords` 为什么不是第二套账本或第二套 reducer？
 22. 随机测试必须记录哪些信息，才能让失败闭环复现？
 23. 哪些结果只是 `build-verified`，还需要 PostgreSQL、HTTP 或浏览器环境证明？
+24. 为什么“干净 HEAD”之外，binary 还必须从该 commit 的 Git archive 编译？
+25. 为什么 migration ledger 只能是候选 migration set 的连续 checksum 前缀？
+26. `prepare`、`verify`、`preflight` 和 `activate --execute` 的副作用边界分别是什么？
+27. runtime 激活失败后，为什么回滚 binary 而不逆向删除数据库迁移？

@@ -106,7 +106,12 @@ func TestRecoveryControlledMakerStartsOnlyWhenWritableAndUnwindsOffline(t *testi
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	market := domain.DefaultBTCUSDTMarket()
-	coordinator, err := recovery.NewCoordinator(recovery.NewMemoryStore(), market.ID)
+	provenance := recovery.Provenance{
+		ProductionOrigin: "https://qiu-market.example", DeploymentID: "dpl_servicetest",
+		DeploymentURL: "https://qiu-market-service-test.vercel.app",
+		ReleaseCommit: strings.Repeat("d", 40), SourceDigest: strings.Repeat("e", 64),
+	}
+	coordinator, err := recovery.NewCoordinator(recovery.NewMemoryStore(), market.ID, provenance)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,11 +195,13 @@ func TestRecoveryControlledMakerStartsOnlyWhenWritableAndUnwindsOffline(t *testi
 	if _, err := coordinator.Promote(ctx, recovery.Binding{
 		MarketID: status.MarketID, EpochID: status.EpochID, Version: status.Version,
 		RuntimeSequence: status.Proof.RuntimeSequence, StateHash: status.Proof.StateHash,
+		Provenance: status.Provenance,
 	}, recovery.TransportEvidence{
 		SampleCount:   recovery.MinimumTransportSamples,
 		FirstSampleAt: first, LastSampleAt: time.Now().UTC(),
 		MaximumGapMS:   recovery.MaximumTransportGap.Milliseconds(),
 		EvidenceSHA256: strings.Repeat("f", 64),
+		Provenance:     status.Provenance,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +227,18 @@ func TestRecoveryControlledMakerStartsOnlyWhenWritableAndUnwindsOffline(t *testi
 	}
 	if len(orders) != 0 {
 		t.Fatalf("offline demo-maker orders = %d", len(orders))
+	}
+}
+
+func TestBackendRejectsConfiguredSourceDigestMismatchBeforeStartup(t *testing.T) {
+	_, err := New(context.Background(), Config{
+		RecoveryGate: true,
+		RecoveryProvenance: recovery.Provenance{
+			SourceDigest: strings.Repeat("f", 64),
+		},
+	}, func(error) {})
+	if err == nil || !strings.Contains(err.Error(), "does not match current executable") {
+		t.Fatalf("source digest mismatch error = %v", err)
 	}
 }
 

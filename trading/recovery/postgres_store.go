@@ -44,6 +44,8 @@ func (s *PostgresStore) Load(
 		       epoch.transport_sample_count, epoch.transport_first_sample_at,
 		       epoch.transport_last_sample_at, epoch.transport_maximum_gap_ms,
 		       epoch.transport_evidence_sha256,
+		       epoch.production_origin, epoch.deployment_id, epoch.deployment_url,
+		       epoch.release_commit, epoch.source_digest,
 		       epoch.last_error, epoch.version, epoch.started_at, epoch.updated_at
 		FROM trading_recovery_current current
 		JOIN trading_recovery_epoch epoch
@@ -67,6 +69,11 @@ func (s *PostgresStore) Load(
 		&lastSample,
 		&status.Transport.MaximumGapMS,
 		&status.Transport.EvidenceSHA256,
+		&status.Provenance.ProductionOrigin,
+		&status.Provenance.DeploymentID,
+		&status.Provenance.DeploymentURL,
+		&status.Provenance.ReleaseCommit,
+		&status.Provenance.SourceDigest,
 		&status.LastError,
 		&version,
 		&status.StartedAt,
@@ -181,9 +188,14 @@ func (s *PostgresStore) Save(
 		    transport_last_sample_at=$15,
 		    transport_maximum_gap_ms=$16,
 		    transport_evidence_sha256=$17,
-		    last_error=$18,
-		    version=$19,
-		    updated_at=$20
+		    production_origin=$18,
+		    deployment_id=$19,
+		    deployment_url=$20,
+		    release_commit=$21,
+		    source_digest=$22,
+		    last_error=$23,
+		    version=$24,
+		    updated_at=$25
 		FROM trading_recovery_current current
 		WHERE epoch.market_id=$1 AND epoch.epoch_id=$2 AND epoch.version=$3
 		  AND current.market_id=epoch.market_id AND current.epoch_id=epoch.epoch_id
@@ -205,6 +217,11 @@ func (s *PostgresStore) Save(
 		nullTime(next.Transport.LastSampleAt),
 		next.Transport.MaximumGapMS,
 		next.Transport.EvidenceSHA256,
+		next.Provenance.ProductionOrigin,
+		next.Provenance.DeploymentID,
+		next.Provenance.DeploymentURL,
+		next.Provenance.ReleaseCommit,
+		next.Provenance.SourceDigest,
 		next.LastError,
 		int64(next.Version),
 		next.UpdatedAt,
@@ -229,8 +246,9 @@ func insertEpochRow(ctx context.Context, tx pgx.Tx, next Status) error {
 			projection_caught_up, outbox_caught_up, transport_healthy,
 			writes_enabled, transport_sample_count, transport_first_sample_at,
 			transport_last_sample_at, transport_maximum_gap_ms,
-			transport_evidence_sha256, last_error, version, started_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			transport_evidence_sha256, production_origin, deployment_id, deployment_url,
+			release_commit, source_digest, last_error, version, started_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
 	`,
 		next.SchemaVersion,
 		next.MarketID,
@@ -249,6 +267,11 @@ func insertEpochRow(ctx context.Context, tx pgx.Tx, next Status) error {
 		nullTime(next.Transport.LastSampleAt),
 		next.Transport.MaximumGapMS,
 		next.Transport.EvidenceSHA256,
+		next.Provenance.ProductionOrigin,
+		next.Provenance.DeploymentID,
+		next.Provenance.DeploymentURL,
+		next.Provenance.ReleaseCommit,
+		next.Provenance.SourceDigest,
 		next.LastError,
 		int64(next.Version),
 		next.StartedAt,

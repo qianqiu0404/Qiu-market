@@ -182,6 +182,10 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
 - Preview session 不跨域继承，也不能只靠 API 重启使其失效。promote 后必须在
   Production 重新完成一次 OAuth 登录与最小写验收；失败立即回滚 alias，不能沿用
   Preview 登录证据。
+- Production 最小写证据会把公开 runtime `state_hash` 与 PostgreSQL 最新 event hash
+  直接比较，不再用 sequence 相等后写死 `state_hash_consistent=true`。当前 Production
+  Gate 仍只验证正常 fund 与同 ID replay；真实 504 `submitted/unknown` 故障注入和
+  浏览器断线换 ticket 后的 cursor reconcile 明确保持 `environment-pending`。
 
 ### Gate 3：观测契约与长期证据
 
@@ -189,17 +193,28 @@ Qiu Market 的下一阶段不是继续堆交易品种，而是把已有系统做
 
 Production 尚未 promote，所以正式 acceptance epoch 尚未开始。下一步必须：
 
-- 每条样本记录 `acceptance_epoch_id`、`deployment_commit`、`scheduled_at`、
-  start/end 和 duration；
+- 每条样本记录 `acceptance_epoch_id`、Vercel `deployment_commit`、Mac mini
+  `runtime_release_commit`、`binary_sha256`、`runtime_bundle_sha256`、`scheduled_at`、
+  start/end 和 duration；observer 每分钟重新计算 binary 与 bundle 摘要，并同时核对
+  manifest、commit 和 epoch 固定摘要，任一文件损坏或被替换都使该分钟失败；
 - BFF 必须从受管 `QIU_MARKET_RELEASE_COMMIT` 与 Vercel 自动提供的
   `VERCEL_DEPLOYMENT_ID`、`VERCEL_URL` 输出 release provenance；启动 epoch 前，
   管理脚本会从 Production 在线核对响应头与精确 deployment ID、URL、commit，
   不匹配则拒绝开始；
 - 使用绝对墙钟分钟调度，不用会随执行时间漂移的相对间隔；
-- 只统计 schema v4、`acceptance_eligible=true` 且 epoch、Production origin、
-  deployment ID、immutable URL 与 commit 全部一致的样本。旧 713 条 schema v3
-  样本继续用于诊断，但永不计入正式 7 天窗口；缺失分钟按失败处理，同一分钟的
-  任一失败样本不能被后一个成功样本覆盖；
+- 只统计 schema v7、`acceptance_eligible=true` 且 epoch、Production origin、
+  deployment ID、immutable URL、前端 commit、Mac mini runtime commit、binary SHA-256
+  与 runtime bundle SHA-256 全部一致的样本；acceptance epoch schema v4 与 transport
+  smoke schema v2 在开始时固定同一组摘要。旧 schema 样本继续用于诊断，但永不计入新的正式 7 天窗口；缺失分钟按失败
+  处理，同一分钟的任一失败样本不能被后一个成功样本覆盖；
+- recovery status JSON 自身的 `production_origin / deployment_id / deployment_url /
+  release_commit / source_digest` 必须同时匹配 acceptance epoch、Vercel provenance
+  headers 和 Mac mini 当前 managed binary SHA-256；缺失或漂移都会使当分钟失败且
+  不具备 `acceptance_eligible`；
+- 交易可用分钟必须同时证明 runner/outbox ready，以及公开 recovery endpoint 为
+  `writable`、`writes_enabled=true`、`continuity_uncertain=false`。进程重启后停在
+  `transport_warmup` 会记为失败；Guardian 只告警并等待 operator proof，不用重复
+  重启制造新的 recovery epoch；
 - 每家 DEX 固定同 route、同名义金额 canary，route/notional 改变即重新计时；
 - 依次完成 30 分钟、24 小时、DEX 24/48/72 小时、连续 7 天；
 - 7 天覆盖率和可用率均不低于 99.5%，REST 5xx 低于 0.5%，p95 低于

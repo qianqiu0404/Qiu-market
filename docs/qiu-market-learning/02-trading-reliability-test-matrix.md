@@ -115,7 +115,7 @@
 | E4 | canonical migration + backend/gateway + session + restart | session 延续；cancel 同 ID 跨重启返回原结果；snapshot/event hash 相同 | `trading/integration/integrated_stack_test.go::TestCanonicalMigrationIntegratedGatewayAndRestartRecovery` | integration harness | `integration-verified` | 既有真实 PG 证据；本次因 DSN 未设置 `SKIP` |
 | E5 | 旧 schema 快照跨版本升级 | 先验证旧 replay，再压缩；不删除可审计用户状态 | `trading/exchange/state_compaction_test.go::TestRestoreVerifiesLegacyReplayAtUpgradeBoundary`；`TestRestoreUpgradesLegacySnapshotWithoutDeletingAuditableUserState` | unit upgrade | `build-verified` | 全量 Go 通过 |
 | E6 | 优雅退出 | drain queue 后保存最终 snapshot；关闭后拒绝新命令 | `trading/runtime/runner_test.go::TestMarketRunnerBackpressureAndGracefulSnapshot` | unit lifecycle | `build-verified` | 全量 Go 通过 |
-| E7 | 当前 binary 恢复真实备份并核对 state hash / ledger | restored sequence、hash、ledger imbalance 都通过 | `ops/macos/release-production.sh verify` 的受管恢复流程 | environment harness | `integration-verified` | 这是既有 Mac mini 真实恢复证据；本任务未运行 ops，也不把它写成多机灾备 |
+| E7 | 候选 binary 恢复真实备份并核对 state hash / ledger | restored sequence、hash、ledger imbalance 都通过 | `ops/macos/manage-release-candidate.sh verify <sha>` 的受管恢复流程 | environment harness | `integration-verified` | 这是既有 Mac mini 真实恢复证据；本任务未运行 ops，也不把它写成多机灾备 |
 | E8 | 介质丢失、跨机恢复、长期 RPO/RTO | 在独立故障域恢复并满足明确目标 | 当前没有对应测试 | missing production evidence | `environment-pending` | 多机 HA / DR 只能作为 `production-recommendation` |
 
 ## 关键缺口排序

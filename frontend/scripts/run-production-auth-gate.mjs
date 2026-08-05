@@ -215,6 +215,15 @@ function sequenceOf(status, label) {
   return BigInt(status.sequence)
 }
 
+function stateHashOf(status, label) {
+  const stateHash = String(status?.state_hash ?? '').toLowerCase()
+  invariant(
+    /^[0-9a-f]{64}$/.test(stateHash),
+    `${label} state hash is invalid`,
+  )
+  return stateHash
+}
+
 function loadDatabaseProof() {
   const proofScript = String.raw`
 set -euo pipefail
@@ -448,6 +457,7 @@ async function main() {
       'Production status after same-ID replay',
     )
     const sequenceAfterReplay = sequenceOf(statusAfterReplay, 'post-replay')
+    const publicStateHash = stateHashOf(statusAfterReplay, 'post-replay')
     invariant(
       sequenceAfterReplay === sequenceAfterFirst,
       'same request ID advanced the event stream twice',
@@ -457,6 +467,10 @@ async function main() {
     invariant(
       BigInt(databaseProof.market_sequence) === sequenceAfterReplay,
       'running market sequence does not match the authoritative database',
+    )
+    invariant(
+      publicStateHash === String(databaseProof.event_state_hash).toLowerCase(),
+      'running market state hash does not match the authoritative database event',
     )
 
     const logout = await browserWrite(
@@ -491,6 +505,8 @@ async function main() {
       same_request_id_replay_equal: true,
       ledger_balanced: Number(databaseProof.ledger_imbalances) === 0,
       state_hash_consistent: true,
+      submitted_unknown_evidence: 'environment-pending',
+      browser_cursor_reconcile_evidence: 'environment-pending',
       production_logout_204: true,
       stale_production_session_401: true,
       proof: {
@@ -500,6 +516,7 @@ async function main() {
         database_market_sequence: String(databaseProof.market_sequence),
         database_event_sequence: String(databaseProof.event_sequence),
         database_event_state_hash: databaseProof.event_state_hash,
+        public_state_hash: publicStateHash,
         ledger_imbalance_count: Number(databaseProof.ledger_imbalances),
         virtual_credit_atoms: '1',
       },

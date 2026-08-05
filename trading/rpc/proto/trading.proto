@@ -113,6 +113,15 @@ message RecoveryBinding {
   string version = 3;
   string runtime_sequence = 4;
   string state_hash = 5;
+  RecoveryProvenance provenance = 6;
+}
+
+message RecoveryProvenance {
+  string production_origin = 1;
+  string deployment_id = 2;
+  string release_commit = 3;
+  string source_digest = 4;
+  string deployment_url = 5;
 }
 
 message RecoveryTransportEvidence {
@@ -121,6 +130,7 @@ message RecoveryTransportEvidence {
   string last_sample_at = 3;
   string maximum_gap_ms = 4;
   string evidence_sha256 = 5;
+  RecoveryProvenance provenance = 6;
 }
 
 message PromoteRecoveryRequest {
@@ -139,6 +149,7 @@ message RecoveryStatusResponse {
   bool continuity_uncertain = 8;
   string continuity_error = 9;
   string updated_at = 10;
+  RecoveryProvenance provenance = 11;
 }
 
 message AdminFundVirtualRequest {

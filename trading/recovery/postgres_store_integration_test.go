@@ -61,6 +61,11 @@ func TestPostgresStoreAtomicallySwitchesToANewEpoch(t *testing.T) {
 			transport_last_sample_at TIMESTAMPTZ,
 			transport_maximum_gap_ms BIGINT NOT NULL DEFAULT 0,
 			transport_evidence_sha256 TEXT NOT NULL DEFAULT '',
+			production_origin TEXT NOT NULL DEFAULT '',
+			deployment_id TEXT NOT NULL DEFAULT '',
+			deployment_url TEXT NOT NULL DEFAULT '',
+			release_commit TEXT NOT NULL DEFAULT '',
+			source_digest TEXT NOT NULL DEFAULT '',
 			last_error TEXT NOT NULL,
 			version BIGINT NOT NULL,
 			started_at TIMESTAMPTZ NOT NULL,
@@ -81,7 +86,7 @@ func TestPostgresStoreAtomicallySwitchesToANewEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := NewCoordinator(store, domain.MarketID("BTC-USDT"))
+	coordinator, err := NewCoordinator(store, domain.MarketID("BTC-USDT"), testProvenance())
 	if err != nil {
 		t.Fatal(err)
 	}
