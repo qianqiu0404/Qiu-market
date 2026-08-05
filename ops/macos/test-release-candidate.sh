@@ -2,6 +2,10 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [ ! -x "$repo_root/ops/macos/manage-runtime-release.sh" ]; then
+  echo "manage-runtime-release.sh must be executable in the release checkout." >&2
+  exit 1
+fi
 fixture_dir="$(mktemp -d /tmp/qiu-market-release-candidate.XXXXXX)"
 cleanup() {
   find "$fixture_dir" -depth -delete
