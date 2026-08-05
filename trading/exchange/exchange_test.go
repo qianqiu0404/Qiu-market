@@ -154,6 +154,24 @@ func TestPostOnlyFOKAndMarketBuy(t *testing.T) {
 	if len(trades) != 1 || trades[0].Quantity != 5 || trades[0].QuoteAmount != 500 {
 		t.Fatalf("market buy trades = %+v", trades)
 	}
+	wantBudget := map[domain.EventType]int64{
+		domain.EventOrderAccepted: 550,
+		domain.EventTradeExecuted: 50,
+		domain.EventOrderFilled:   50,
+	}
+	for _, event := range marketBuy.Events {
+		want, checked := wantBudget[event.Type]
+		if !checked {
+			continue
+		}
+		if event.RemainingQuoteBudget == nil || *event.RemainingQuoteBudget != want {
+			t.Fatalf("%s remaining quote budget = %v, want %d", event.Type, event.RemainingQuoteBudget, want)
+		}
+		delete(wantBudget, event.Type)
+	}
+	if len(wantBudget) != 0 {
+		t.Fatalf("market buy events missing remaining quote budgets: %v", wantBudget)
+	}
 	assertBalance(t, ex, "buyer", "USDT", 19_500, 0)
 
 	resting, ok := ex.Order(sell.OrderID)

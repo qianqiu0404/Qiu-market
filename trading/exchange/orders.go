@@ -71,17 +71,18 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 	}
 
 	events := []domain.Event{{
-		Sequence:      command.Sequence,
-		Index:         1,
-		Type:          domain.EventOrderAccepted,
-		AccountID:     order.AccountID,
-		OrderID:       order.ID,
-		ClientOrderID: order.ClientOrderID,
-		Status:        domain.OrderStatusReceived,
-		Side:          order.Side,
-		Price:         order.Price,
-		Quantity:      order.OriginalQuantity,
-		QuoteAmount:   order.OriginalQuoteBudget,
+		Sequence:             command.Sequence,
+		Index:                1,
+		Type:                 domain.EventOrderAccepted,
+		AccountID:            order.AccountID,
+		OrderID:              order.ID,
+		ClientOrderID:        order.ClientOrderID,
+		Status:               domain.OrderStatusReceived,
+		Side:                 order.Side,
+		Price:                order.Price,
+		Quantity:             order.OriginalQuantity,
+		QuoteAmount:          order.OriginalQuoteBudget,
+		RemainingQuoteBudget: remainingQuoteBudgetFor(order),
 	}}
 
 	matchResult, err := s.book.Match(&order)
@@ -131,15 +132,16 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 		s.trades = append(s.trades, trade)
 
 		events = appendEvent(events, domain.Event{
-			Sequence:    command.Sequence,
-			Type:        domain.EventTradeExecuted,
-			OrderID:     order.ID,
-			Status:      domain.OrderStatusPartiallyFilled,
-			Price:       fill.Price,
-			Quantity:    fill.Quantity,
-			Remaining:   order.RemainingQuantity,
-			QuoteAmount: fill.QuoteAmount,
-			Trade:       &trade,
+			Sequence:             command.Sequence,
+			Type:                 domain.EventTradeExecuted,
+			OrderID:              order.ID,
+			Status:               domain.OrderStatusPartiallyFilled,
+			Price:                fill.Price,
+			Quantity:             fill.Quantity,
+			Remaining:            order.RemainingQuantity,
+			RemainingQuoteBudget: remainingQuoteBudgetFor(order),
+			QuoteAmount:          fill.QuoteAmount,
+			Trade:                &trade,
 		})
 		if maker.Status == domain.OrderStatusFilled {
 			events = appendEvent(events, domain.Event{
@@ -237,16 +239,17 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 		})
 	} else if order.Status == domain.OrderStatusFilled {
 		events = appendEvent(events, domain.Event{
-			Sequence:      command.Sequence,
-			Type:          domain.EventOrderFilled,
-			AccountID:     order.AccountID,
-			OrderID:       order.ID,
-			ClientOrderID: order.ClientOrderID,
-			Status:        order.Status,
-			Side:          order.Side,
-			Price:         order.Price,
-			Quantity:      order.FilledQuantity,
-			QuoteAmount:   order.SpentQuote,
+			Sequence:             command.Sequence,
+			Type:                 domain.EventOrderFilled,
+			AccountID:            order.AccountID,
+			OrderID:              order.ID,
+			ClientOrderID:        order.ClientOrderID,
+			Status:               order.Status,
+			Side:                 order.Side,
+			Price:                order.Price,
+			Quantity:             order.FilledQuantity,
+			QuoteAmount:          order.SpentQuote,
+			RemainingQuoteBudget: remainingQuoteBudgetFor(order),
 		})
 	} else {
 		reason := "unfilled_remainder"
@@ -254,18 +257,19 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 			reason = "self_trade_prevented"
 		}
 		events = appendEvent(events, domain.Event{
-			Sequence:      command.Sequence,
-			Type:          domain.EventOrderCanceled,
-			AccountID:     order.AccountID,
-			OrderID:       order.ID,
-			ClientOrderID: order.ClientOrderID,
-			Status:        order.Status,
-			Side:          order.Side,
-			Price:         order.Price,
-			Quantity:      order.FilledQuantity,
-			Remaining:     order.RemainingQuantity,
-			QuoteAmount:   order.SpentQuote,
-			Reason:        reason,
+			Sequence:             command.Sequence,
+			Type:                 domain.EventOrderCanceled,
+			AccountID:            order.AccountID,
+			OrderID:              order.ID,
+			ClientOrderID:        order.ClientOrderID,
+			Status:               order.Status,
+			Side:                 order.Side,
+			Price:                order.Price,
+			Quantity:             order.FilledQuantity,
+			Remaining:            order.RemainingQuantity,
+			QuoteAmount:          order.SpentQuote,
+			RemainingQuoteBudget: remainingQuoteBudgetFor(order),
+			Reason:               reason,
 		})
 	}
 	s.orders[order.ID] = order
@@ -358,18 +362,19 @@ func (s *state) rejectOrder(sequence uint64, order domain.Order, reason string) 
 	order.HeldAmount = 0
 	s.orders[order.ID] = order
 	event := domain.Event{
-		Sequence:      sequence,
-		Index:         1,
-		Type:          domain.EventOrderRejected,
-		AccountID:     order.AccountID,
-		OrderID:       order.ID,
-		ClientOrderID: order.ClientOrderID,
-		Status:        order.Status,
-		Side:          order.Side,
-		Price:         order.Price,
-		Quantity:      order.OriginalQuantity,
-		QuoteAmount:   order.OriginalQuoteBudget,
-		Reason:        reason,
+		Sequence:             sequence,
+		Index:                1,
+		Type:                 domain.EventOrderRejected,
+		AccountID:            order.AccountID,
+		OrderID:              order.ID,
+		ClientOrderID:        order.ClientOrderID,
+		Status:               order.Status,
+		Side:                 order.Side,
+		Price:                order.Price,
+		Quantity:             order.OriginalQuantity,
+		QuoteAmount:          order.OriginalQuoteBudget,
+		RemainingQuoteBudget: remainingQuoteBudgetFor(order),
+		Reason:               reason,
 	}
 	return domain.Result{
 		Sequence: sequence,
@@ -377,6 +382,14 @@ func (s *state) rejectOrder(sequence uint64, order domain.Order, reason string) 
 		Status:   order.Status,
 		Events:   []domain.Event{event},
 	}
+}
+
+func remainingQuoteBudgetFor(order domain.Order) *int64 {
+	if order.Type != domain.OrderTypeMarket || order.Side != domain.SideBuy {
+		return nil
+	}
+	remaining := order.RemainingQuoteBudget
+	return &remaining
 }
 
 func cancelRejected(sequence uint64, request domain.CancelOrder, reason string) domain.Result {
