@@ -316,6 +316,18 @@ export class TradingRequestError extends Error {
 const base = '/api/v1/trading'
 export const TRADING_WRITE_TIMEOUT_MS = 10_000
 
+function queryPath(
+  path: string,
+  values: Record<string, string | number | undefined>,
+): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && value !== '') query.set(key, String(value))
+  }
+  const encoded = query.toString()
+  return encoded ? `${path}?${encoded}` : path
+}
+
 function cookie(name: string): string {
   const prefix = `${encodeURIComponent(name)}=`
   for (const item of document.cookie.split(';')) {
@@ -436,10 +448,34 @@ export const tradingAPI = {
   orders: (openOnly = false) => request<{ orders: Order[] }>(
     `/orders?limit=100&open_only=${openOnly}`,
   ),
+  orderPage: (
+    scope: TradeV1OrderScope,
+    cursor = '',
+    limit = 50,
+  ) => request<TradeV1OrderPage>(queryPath('/orders', { scope, cursor, limit })),
   order: (orderID: string) => request<Order>(
     `/orders/${encodeURIComponent(orderID)}`,
   ),
   trades: () => request<{ trades: Trade[] }>('/trades?limit=100'),
+  accountTradePage: (cursor = '', limit = 50) =>
+    request<TradeV1AccountTradePage>(queryPath('/account/trades', { cursor, limit })),
+  orderEventPage: (orderID: string, cursor = '', limit = 50) =>
+    request<TradeV1OrderEventPage>(queryPath(
+      `/orders/${encodeURIComponent(orderID)}/events`,
+      { cursor, limit },
+    )),
+  ledgerPage: (
+    cursor = '',
+    limit = 50,
+    asset: 'all' | 'BTC' | 'USDT' = 'all',
+    reason: 'all' | 'virtual_fund' | 'order_hold' | 'order_release' |
+      'trade_settlement' | 'other' = 'all',
+  ) => request<TradeV1LedgerPage>(queryPath('/ledger/entries', {
+    cursor,
+    limit,
+    asset,
+    reason,
+  })),
   submit: (body: Record<string, unknown>) => request<unknown>(
     '/orders',
     { method: 'POST', body: JSON.stringify(body) },
@@ -495,3 +531,10 @@ export function tradingEventMode(): 'websocket' | 'polling' {
     ? 'polling'
     : 'websocket'
 }
+import type {
+  TradeV1AccountTradePage,
+  TradeV1LedgerPage,
+  TradeV1OrderEventPage,
+  TradeV1OrderPage,
+  TradeV1OrderScope,
+} from './trade-v1-contract'

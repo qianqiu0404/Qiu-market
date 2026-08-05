@@ -37,6 +37,43 @@ describe('trading API', () => {
     expect(book.asks).toEqual([])
   })
 
+  it('wires P0 private cursor endpoints without account identifiers or offsets', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      orders: [],
+      next_cursor: 'next-page',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    await tradingAPI.orderPage('open', 'opaque cursor', 25)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      '/api/v1/trading/orders?scope=open&cursor=opaque+cursor&limit=25',
+    )
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('account_id')
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('offset')
+  })
+
+  it('uses the frozen account trade, order timeline, and ledger paths', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({
+        trades: [], entries: [], events: [], next_cursor: '',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    await tradingAPI.accountTradePage('trade-cursor', 10)
+    await tradingAPI.orderEventPage('order/one', 'event-cursor', 10)
+    await tradingAPI.ledgerPage('ledger-cursor', 10, 'BTC', 'trade_settlement')
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+      '/api/v1/trading/account/trades?cursor=trade-cursor&limit=10',
+      '/api/v1/trading/orders/order%2Fone/events?cursor=event-cursor&limit=10',
+      '/api/v1/trading/ledger/entries?cursor=ledger-cursor&limit=10&asset=BTC&reason=trade_settlement',
+    ])
+  })
+
   it('surfaces the bounded JSON error message', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       code: 'trading_unavailable',
