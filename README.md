@@ -383,6 +383,8 @@ README 全局架构
 | [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
 | [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX 双栏、六类行情竞态回归和响应式验收 |
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、submitted/unknown、fill/cancel 竞态、cursor reconcile、崩溃恢复、鉴权和验收边界 |
+| [docs/prd-qm-trade-001.md](docs/prd-qm-trade-001.md) | Trade Product V1 用户主流程、页面范围、P0/P1、非目标、验收与并行所有权 |
+| [docs/contracts/qm-trade-v1-api.md](docs/contracts/qm-trade-v1-api.md) | Trade Product V1 cursor、订单时间线、账本、账户摘要和 Cancel All 冻结 API Schema |
 | [docs/klines-pipeline.md](docs/klines-pipeline.md) | K 线 market identity、显式时间、业务唯一键、分周期续传与刷新 |
 | [docs/redis-top-movers.md](docs/redis-top-movers.md) | Redis ZSET 涨跌榜、TTL 抖动防雪崩、SQL 回退 |
 | [docs/catalog-audit.md](docs/catalog-audit.md) | provider 审核清单、版本化资产选择、候选市场、rollout、安全 CLI 与源码可重建边界 |
