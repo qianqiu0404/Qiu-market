@@ -17,21 +17,15 @@ jobs:
   go:
     name: Go build, vet, test, race
     runs-on: ubuntu-latest
-    # The generated CCXT package makes the first uncached Linux compile much
-    # slower than subsequent runs. Keep the complete gate and allow that first
-    # run to finish so setup-go can persist its build cache.
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      # Bound package parallelism on the 7 GB hosted runner. The generated
-      # CCXT package and go-ethereum otherwise compile concurrently and can
-      # spend the cold run paging instead of making progress.
-      - run: go build -p 1 ./...
-      - run: go vet -p 1 ./...
+      - run: go build ./...
+      - run: go vet ./...
       - run: go test -p 1 ./...
       - run: go test -race -p 1 ./trading/...
 
