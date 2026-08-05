@@ -17,7 +17,10 @@ jobs:
   go:
     name: Go build, vet, test, race
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The generated CCXT package makes the first uncached Linux compile much
+    # slower than subsequent runs. Keep the complete gate and allow that first
+    # run to finish so setup-go can persist its build cache.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
