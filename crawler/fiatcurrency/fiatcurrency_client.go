@@ -15,26 +15,35 @@ import (
 	"github.com/google/uuid"
 	"github.com/the-web3/s78-market-services/config"
 	"github.com/the-web3/s78-market-services/database"
+	"github.com/the-web3/s78-market-services/marketdata"
 )
 
 type URLBuilder func(baseURL, apiKey, baseCurrency string) string
 
-type ResponseParser func(body []byte, targetCurrencies []string) (map[string]float64, error)
+type RatePayload struct {
+	Rates      map[string]float64
+	SourceTime *time.Time
+}
+
+type ResponseParser func(body []byte, targetCurrencies []string) (RatePayload, error)
 
 type ExchangeRateWorker struct {
 	db              *database.DB
 	config          *config.Config
 	providers       map[string]ExchangeRateProvider
 	providerConfigs map[string]string // platform name -> API key
+	noCurrenciesLog bool
+	noPlatformsLog  bool
 	strategyConfigs map[string]struct {
 		urlBuilder     URLBuilder
 		responseParser ResponseParser
 		defaultBaseURL string
 	}
+	reporter *marketdata.ProviderReporter
 }
 
 type ExchangeRateProvider interface {
-	FetchRates(ctx context.Context, baseCurrency string, targetCurrencies []string) (map[string]float64, error)
+	FetchRates(ctx context.Context, baseCurrency string, targetCurrencies []string) (RatePayload, error)
 }
 
 type GenericProvider struct {
@@ -55,20 +64,20 @@ func NewGenericProvider(name, apiKey, baseURL string, urlBuilder URLBuilder, res
 	}
 }
 
-func (p *GenericProvider) FetchRates(ctx context.Context, baseCurrency string, targetCurrencies []string) (map[string]float64, error) {
+func (p *GenericProvider) FetchRates(ctx context.Context, baseCurrency string, targetCurrencies []string) (RatePayload, error) {
 	url := p.URLBuilder(p.BaseURL, p.APIKey, baseCurrency)
 
-	log.Debug("Fetching exchange rates", "provider", p.Name, "url", url)
+	log.Debug("Fetching exchange rates", "provider", p.Name)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create request error: %w", err)
+		return RatePayload{}, fmt.Errorf("create request error: %w", err)
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch rates error: %w", err)
+		return RatePayload{}, fmt.Errorf("fetch rates error: %w", err)
 	}
 	defer func(Body io.ReadCloser) {
 		err := Body.Close()
@@ -79,16 +88,20 @@ func (p *GenericProvider) FetchRates(ctx context.Context, baseCurrency string, t
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		summary := string(body)
+		if len(summary) > 200 {
+			summary = summary[:200]
+		}
+		return RatePayload{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, summary)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response error: %w", err)
+		return RatePayload{}, fmt.Errorf("read response error: %w", err)
 	}
 
 	if len(body) == 0 {
-		return nil, fmt.Errorf("empty response body")
+		return RatePayload{}, fmt.Errorf("empty response body")
 	}
 
 	rates, err := p.ResponseParser(body, targetCurrencies)
@@ -97,7 +110,7 @@ func (p *GenericProvider) FetchRates(ctx context.Context, baseCurrency string, t
 		if len(preview) > 200 {
 			preview = preview[:200] + "..."
 		}
-		return nil, fmt.Errorf("parse response error: %w (response preview: %s)", err, preview)
+		return RatePayload{}, fmt.Errorf("parse response error: %w (response preview: %s)", err, preview)
 	}
 	return rates, nil
 }
@@ -119,6 +132,7 @@ func NewExchangeRateWorker(
 		providerConfigs: providerConfigs,
 		strategyConfigs: strategyConfigs,
 		providers:       make(map[string]ExchangeRateProvider),
+		reporter:        marketdata.NewProviderReporter(db.ProviderStatus),
 	}
 
 	// 基于配置初始化 providers
@@ -167,6 +181,7 @@ type rateResult struct {
 	platformGUID string
 	platformName string
 	rates        map[string]float64
+	sourceTime   *time.Time
 	err          error
 }
 
@@ -178,15 +193,23 @@ func (w *ExchangeRateWorker) FetchAndStoreRates() {
 		return
 	}
 	if len(currencies) == 0 {
-		log.Warn("No enabled currencies found")
+		if !w.noCurrenciesLog {
+			log.Info("Exchange rate collection is idle", "reason", "no enabled currencies")
+			w.noCurrenciesLog = true
+		}
 		return
 	}
+	w.noCurrenciesLog = false
 
 	platforms := w.config.ExchangeRatePlatforms
 	if len(platforms) == 0 {
-		log.Warn("No enabled platforms found")
+		if !w.noPlatformsLog {
+			log.Info("Exchange rate collection is idle", "reason", "no enabled platforms")
+			w.noPlatformsLog = true
+		}
 		return
 	}
+	w.noPlatformsLog = false
 
 	currencyCodes := make([]string, 0, len(currencies))
 	currencyMap := make(map[string]*database.Currency)
@@ -253,12 +276,21 @@ func (w *ExchangeRateWorker) fetchRatesFromProvider(
 	resultChan chan<- *rateResult,
 ) {
 
-	rates, err := provider.FetchRates(context.Background(), w.config.BaseCurrency, currencyCodes)
+	sourceKey := "rates:" + w.config.BaseCurrency
+	attemptedAt := time.Now().UTC()
+	w.reporter.Attempt(platform.Name, sourceKey, attemptedAt)
+	payload, err := provider.FetchRates(context.Background(), w.config.BaseCurrency, currencyCodes)
+	if err != nil {
+		w.reporter.Failure(platform.Name, sourceKey, time.Now().UTC(), err, 0)
+	} else {
+		w.reporter.Success(platform.Name, sourceKey, time.Now().UTC(), payload.SourceTime)
+	}
 
 	resultChan <- &rateResult{
 		platformGUID: uuid.New().String(),
 		platformName: platform.Name,
-		rates:        rates,
+		rates:        payload.Rates,
+		sourceTime:   payload.SourceTime,
 		err:          err,
 	}
 }
@@ -302,18 +334,19 @@ func exchangeRateAPIURLBuilder(baseURL, apiKey, baseCurrency string) string {
 	return fmt.Sprintf("%s/%s/latest/%s", baseURL, apiKey, baseCurrency)
 }
 
-func exchangeRateAPIResponseParser(body []byte, targetCurrencies []string) (map[string]float64, error) {
+func exchangeRateAPIResponseParser(body []byte, targetCurrencies []string) (RatePayload, error) {
 	var result struct {
-		Result          string             `json:"result"`
-		ConversionRates map[string]float64 `json:"conversion_rates"`
+		Result             string             `json:"result"`
+		TimeLastUpdateUnix int64              `json:"time_last_update_unix"`
+		ConversionRates    map[string]float64 `json:"conversion_rates"`
 	}
 
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse response error: %w", err)
+		return RatePayload{}, fmt.Errorf("parse response error: %w", err)
 	}
 
 	if result.Result != "success" {
-		return nil, fmt.Errorf("API returned error status: %s", result.Result)
+		return RatePayload{}, fmt.Errorf("API returned error status: %s", result.Result)
 	}
 
 	rates := make(map[string]float64)
@@ -323,7 +356,12 @@ func exchangeRateAPIResponseParser(body []byte, targetCurrencies []string) (map[
 		}
 	}
 
-	return rates, nil
+	var sourceTime *time.Time
+	if result.TimeLastUpdateUnix > 0 {
+		value := time.Unix(result.TimeLastUpdateUnix, 0).UTC()
+		sourceTime = &value
+	}
+	return RatePayload{Rates: rates, SourceTime: sourceTime}, nil
 }
 
 func BuildStrategyConfigs(platformConfigs []config.ExchangeRatePlatformConfig) map[string]struct {

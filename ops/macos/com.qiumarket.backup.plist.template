@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.qiumarket.backup.__MODE__</string>
+  <key>UserName</key>
+  <string>xiuqiu</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/xiuqiu</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/opt/postgresql@16/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO_ROOT__/ops/macos/backup-production.sh</string>
+    <string>__MODE__</string>
+  </array>
+  <!-- __SCHEDULE__ -->
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/backup-__MODE__.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/backup-__MODE__.error.log</string>
+</dict>
+</plist>

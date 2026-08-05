@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+state_file="${QIU_MARKET_FIXTURE_VERCEL_STATE:?}"
+candidate_id="${QIU_MARKET_FIXTURE_CANDIDATE_ID:?}"
+candidate_host="${QIU_MARKET_FIXTURE_CANDIDATE_HOST:?}"
+promoted_id="${QIU_MARKET_FIXTURE_PROMOTED_ID:?}"
+promoted_host="${QIU_MARKET_FIXTURE_PROMOTED_HOST:?}"
+stale_promoted_id="dpl_StalePromotedFixture123"
+stale_promoted_host="qiu-market-stale-promoted-fixture.vercel.app"
+previous_id="${QIU_MARKET_FIXTURE_PREVIOUS_ID:?}"
+previous_host="${QIU_MARKET_FIXTURE_PREVIOUS_HOST:?}"
+project_api_count_file="${state_file}.project-api-count"
+
+command="${1:-}"
+shift || true
+case "$command" in
+  inspect)
+    reference="${1:-}"
+    current_id="$(jq -r '.production_id' "$state_file")"
+    current_host="$(jq -r '.production_host' "$state_file")"
+    if [ "$reference" = "$candidate_id" ] ||
+      [ "${reference#https://}" = "$candidate_host" ]; then
+      target=preview
+      if [ "$current_id" = "$candidate_id" ]; then
+        target=production
+      fi
+      jq -n \
+        --arg id "$candidate_id" \
+        --arg url "$candidate_host" \
+        --arg target "$target" \
+        '{id:$id,url:$url,readyState:"READY",target:$target}'
+    else
+      jq -n \
+        --arg id "$current_id" \
+        --arg url "$current_host" \
+        '{id:$id,url:$url,readyState:"READY",target:"production"}'
+    fi
+    ;;
+  curl)
+    endpoint="${1:-}"
+    shift || true
+    output_file=""
+    header_file=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --output)
+          output_file="$2"
+          shift 2
+          ;;
+        --dump-header)
+          header_file="$2"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    [ "$endpoint" = /api/v1/trading/markets/BTC-USDT/status ] || exit 2
+    printf '{"state":"ready","last_error":"","outbox_state":"ready","outbox_last_error":""}\n' \
+      > "$output_file"
+    {
+      printf 'HTTP/2 200\r\n'
+      printf 'X-Qiu-Market-Provenance: VERIFIED\r\n'
+      printf 'X-Qiu-Market-Deployment-ID: %s\r\n' "$candidate_id"
+      printf 'X-Qiu-Market-Deployment-URL: https://%s\r\n' "$candidate_host"
+      printf 'X-Qiu-Market-Release-Commit: %s\r\n' "${QIU_MARKET_FIXTURE_COMMIT:?}"
+      printf '\r\n'
+    } > "$header_file"
+    printf '200'
+    ;;
+  api)
+    endpoint="${1:-}"
+    case "$endpoint" in
+      "/v13/deployments/$promoted_id")
+        jq -n \
+          --arg id "$promoted_id" \
+          --arg url "$promoted_host" \
+          --arg project_id "${QIU_MARKET_FIXTURE_PROJECT_ID:?}" \
+          --arg candidate_id "$candidate_id" \
+          --arg commit "${QIU_MARKET_FIXTURE_COMMIT:?}" '{
+            id:$id,
+            url:$url,
+            projectId:$project_id,
+            readyState:"READY",
+            target:"production",
+            meta:{
+              action:"promote",
+              originalDeploymentId:$candidate_id,
+              gitCommitSha:$commit,
+              qiuMarketReleaseCommit:$commit
+            }
+          }'
+        ;;
+      "/v9/projects/${QIU_MARKET_FIXTURE_PROJECT_ID:?}")
+        current_id="$(jq -r '.production_id' "$state_file")"
+        project_api_count=0
+        if [ -f "$project_api_count_file" ]; then
+          project_api_count="$(awk 'NR == 1 { print; exit }' "$project_api_count_file")"
+        fi
+        project_api_count=$((project_api_count + 1))
+        printf '%s\n' "$project_api_count" > "$project_api_count_file"
+        result_id="$promoted_id"
+        result_host="$promoted_host"
+        created_at="$(( $(date +%s) * 1000 + 5000 ))"
+        if [ "$current_id" != "$promoted_id" ] ||
+          { [ "${QIU_MARKET_FIXTURE_STALE_PROMOTED_FIRST:-0}" = 1 ] &&
+            [ "$project_api_count" -eq 1 ]; }; then
+          result_id="$stale_promoted_id"
+          result_host="$stale_promoted_host"
+          created_at=1
+        fi
+        jq -n \
+          --arg id "$result_id" \
+          --arg url "$result_host" \
+          --arg candidate_id "$candidate_id" \
+          --arg commit "${QIU_MARKET_FIXTURE_COMMIT:?}" \
+          --argjson created_at "$created_at" '{
+            latestDeployments:[{
+              id:$id,
+              url:$url,
+              createdAt:$created_at,
+              readyState:"READY",
+              target:"production",
+              meta:{
+                action:"promote",
+                originalDeploymentId:$candidate_id,
+                gitCommitSha:$commit,
+                qiuMarketReleaseCommit:$commit
+              }
+            }],
+            targets:{
+              production:{
+                alias:[
+                  "qiu-market.vercel.app",
+                  "qiu-market-team.vercel.app"
+                ]
+              }
+            }
+          }'
+        ;;
+      *)
+        exit 2
+        ;;
+    esac
+    ;;
+  alias)
+    [ "${1:-}" = set ] || exit 2
+    source_url="${2#https://}"
+    if [ "$source_url" = "$promoted_host" ]; then
+      id="$promoted_id"
+      host="$promoted_host"
+    elif [ "$source_url" = "$previous_host" ]; then
+      id="$previous_id"
+      host="$previous_host"
+    else
+      exit 2
+    fi
+    jq -n \
+      --arg id "$id" \
+      --arg host "$host" \
+      '{production_id:$id,production_host:$host}' > "$state_file.next"
+    mv "$state_file.next" "$state_file"
+    ;;
+  promote)
+    jq -n \
+      --arg id "$promoted_id" \
+      --arg host "$promoted_host" \
+      '{production_id:$id,production_host:$host}' > "$state_file.next"
+    mv "$state_file.next" "$state_file"
+    printf '0\n' > "$project_api_count_file"
+    if [ "${QIU_MARKET_FIXTURE_PROMOTE_EXIT_AFTER_ALIAS:-0}" = 1 ]; then
+      exit 1
+    fi
+    ;;
+  rollback)
+    jq -n \
+      --arg id "$previous_id" \
+      --arg host "$previous_host" \
+      '{production_id:$id,production_host:$host}' > "$state_file.next"
+    mv "$state_file.next" "$state_file"
+    ;;
+  *)
+    exit 2
+    ;;
+esac

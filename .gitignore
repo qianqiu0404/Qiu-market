@@ -34,6 +34,10 @@ go.work.sum
 # Node
 frontend/node_modules/
 frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+.vercel/
+frontend/.vercel/
 node_modules/
 dist/
 
@@ -45,7 +49,6 @@ dist/
 env.sh
 
 # Build binaries
-market-services
 market-services-bin
 market-services-test
 

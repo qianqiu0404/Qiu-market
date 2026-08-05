@@ -136,6 +136,9 @@ func (mph *MarketPriceHandle) calcRate(symbolGuid string, currentPriceStr string
 		// If no data today, rate is 0
 		return 0
 	}
+	if marketDataPrice == nil {
+		return 0
+	}
 
 	startOfDayPrice, _ := strconv.ParseFloat(marketDataPrice.Price, 64)
 	currentPrice, _ := strconv.ParseFloat(currentPriceStr, 64)

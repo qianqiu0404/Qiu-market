@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fixture only: the manager restricts override tools to an isolated /tmp tree.
+# shellcheck disable=SC1090
+source "$QIU_MARKET_TEST_PRODUCTION_LIB"
+action="${1:-}"
+subject="${2:-}"
+case "$action" in
+  verify|active|status)
+    exit 0
+    ;;
+  activate)
+    qiu_require_release_coordination runtime-activate "$subject"
+    case ",${QIU_MARKET_RELEASE_FIXTURE_FAIL_RUNTIME_SUBJECTS:-}," in
+      *",$subject,"*)
+        printf 'runtime:activate-failed:%s\n' "$subject" >> "$QIU_MARKET_RELEASE_FIXTURE_LOG"
+        exit 42
+        ;;
+    esac
+    if [ "${QIU_MARKET_RELEASE_FIXTURE_FAIL_RUNTIME:-false}" = true ]; then
+      printf 'runtime:activate-failed:%s\n' "$subject" >> "$QIU_MARKET_RELEASE_FIXTURE_LOG"
+      exit 42
+    fi
+    ;;
+  *)
+    echo "Unexpected fixture runtime action: $action" >&2
+    exit 2
+    ;;
+esac
+printf 'runtime:%s:%s\n' "$action" "$subject" >> "$QIU_MARKET_RELEASE_FIXTURE_LOG"

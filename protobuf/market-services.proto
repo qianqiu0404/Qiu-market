@@ -4,6 +4,51 @@ option go_package = "./services/grpc/proto";
 option java_package = "xyz.dapplink";
 package dapplink.xyz;
 
+// MarketService 是 HTTP API（/api/v1/* 与 /api/v2/*）的 gRPC 对等面：
+// 每个 RPC 与一个 HTTP 接口一一对应，字段命名与 HTTP JSON 保持一致，
+// 数值字段（价格 / 成交量 / 市值）与 HTTP 一样是 1e8 放大整数还原后的十进制字符串。
+service MarketService {
+  // 行情大盘列表（分页，可选按交易所过滤）—— 对应 POST /api/v1/get_market_dashboard
+  rpc GetMarketDashboard(MarketDashboardRequest) returns (MarketDashboardResponse) {}
+  // 资产聚合大盘 —— 对应 POST /api/v1/get_asset_dashboard
+  rpc GetAssetDashboard(AssetDashboardRequest) returns (AssetDashboardResponse) {}
+  // 实时市场宽度与跨 venue 对比 —— 对应 POST /api/v1/get_market_insights
+  rpc GetMarketInsights(MarketInsightsRequest) returns (MarketInsightsResponse) {}
+  // K 线 —— 对应 POST /api/v1/get_klines
+  rpc GetKlines(KlinesRequest) returns (KlinesResponse) {}
+  // 系统总览 —— 对应 POST /api/v1/get_system_overview
+  rpc GetSystemOverview(CommonRequest) returns (SystemOverviewResponse) {}
+  // 支持的资产列表 —— 对应 POST /api/v1/get_support_assets
+  rpc GetSupportAssets(SupportAssetRequest) returns (SupportAssetResponse) {}
+  // 交易对列表 —— 对应 POST /api/v1/get_symbols
+  rpc GetSymbols(CommonRequest) returns (SymbolResponse) {}
+  // 交易所列表 —— 对应 POST /api/v1/get_exchanges
+  rpc GetExchanges(CommonRequest) returns (ExchangeResponse) {}
+  // 法币汇率 —— 对应 POST /api/v1/get_fiat_rates
+  rpc GetFiatRates(FiatRatesRequest) returns (FiatRatesResponse) {}
+  // 24h 涨幅榜 / 跌幅榜 —— 对应 POST /api/v1/get_top_movers
+  rpc GetTopMovers(TopMoversRequest) returns (TopMoversResponse) {}
+  // Markets 当前页的批量迷你走势 —— 对应 POST /api/v1/get_market_sparklines
+  rpc GetMarketSparklines(MarketSparklinesRequest) returns (MarketSparklinesResponse) {}
+  // 多交易所综合现货首页概览 —— 对应 POST /api/v2/get_market_overview
+  rpc GetMarketOverview(MarketOverviewRequest) returns (MarketOverviewResponse) {}
+  // 资产综合价排行榜 —— 对应 POST /api/v2/get_asset_dashboard
+  rpc GetAssetDashboardV2(AssetDashboardV2Request) returns (AssetDashboardV2Response) {}
+  // 资产的具体 Spot / Perp 市场 —— 对应 POST /api/v2/get_asset_markets
+  rpc GetAssetMarkets(AssetMarketsRequest) returns (AssetMarketsResponse) {}
+  // 资产的 CEX / Perp / DEX 路线 —— 对应 POST /api/v2/get_asset_venues
+  rpc GetAssetVenues(AssetMarketsRequest) returns (AssetMarketsResponse) {}
+  // provider 目录审计 —— 对应 POST /api/v2/get_provider_catalog_audit
+  rpc GetProviderCatalogAudit(ProviderCatalogAuditRequest) returns (ProviderCatalogAuditResponse) {}
+}
+
+// 通用请求：无需业务参数的接口使用（page/page_size 预留给未来分页扩展）
+message CommonRequest {
+  string consumer_token = 1;
+  int64 page = 2;
+  int64 page_size = 3;
+}
+
 message AssetItem {
   string guid = 1;
   string asset_name = 2;
@@ -16,11 +61,584 @@ message SupportAssetRequest {
 }
 
 message SupportAssetResponse {
-  uint64 return_code =1;
+  uint64 return_code = 1;
   string message = 2;
   repeated AssetItem asset = 3;
 }
 
-service MarketServices {
-  rpc getSupportAsset(SupportAssetRequest) returns (SupportAssetResponse) {}
+message MarketDashboardRequest {
+  string consumer_token = 1;
+  int64 page = 2;
+  int64 page_size = 3;
+  // 可选：按交易所名过滤（如 "Binance" / "Hyperliquid"），空串表示不过滤
+  string exchange = 4;
+  string search = 5;
+  string market_id = 6;
+  string sort_by = 7;
+  string sort_direction = 8;
+}
+
+message MarketDashboardItem {
+  string symbol = 1;
+  string price = 2;
+  string change24h = 3;
+  string volume = 4;
+  string market_cap = 5;
+  string name = 6;
+  string logo = 7;
+  string exchange = 8;
+  int64 updated_at = 9;
+  int64 data_delay_seconds = 10;
+  string market_id = 11;
+  string market_code = 12;
+  string market_type = 13;
+  bool has_kline = 14;
+  bool change_available = 15;
+  string change_source = 16;
+  string base_asset_id = 17;
+  string base_asset = 18;
+  string quote_asset_id = 19;
+  string quote_asset = 20;
+  int64 provider_updated_at = 21;
+  string freshness_status = 22;
+}
+
+message MarketDashboardResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated MarketDashboardItem result = 3;
+  int64 total = 4;
+}
+
+message AssetDashboardRequest {
+  string consumer_token = 1;
+  int64 page = 2;
+  int64 page_size = 3;
+  string search = 4;
+  string sort_by = 5;
+  string sort_direction = 6;
+}
+
+message AssetMarketItem {
+  string market_id = 1;
+  string market_code = 2;
+  string symbol = 3;
+  string exchange = 4;
+  string market_type = 5;
+  string quote_asset_id = 6;
+  string quote_asset = 7;
+  string price = 8;
+  string change24h = 9;
+  bool change_available = 10;
+  string volume = 11;
+  string market_cap = 12;
+  bool has_kline = 13;
+  int64 updated_at = 14;
+  int64 data_delay_seconds = 15;
+  bool is_reference = 16;
+  int64 provider_updated_at = 17;
+  string freshness_status = 18;
+}
+
+message AssetDashboardItem {
+  string asset_id = 1;
+  string asset_symbol = 2;
+  string asset_name = 3;
+  string logo = 4;
+  string reference_market_id = 5;
+  string reference_market_code = 6;
+  string reference_exchange = 7;
+  string reference_market_type = 8;
+  string price = 9;
+  string change24h = 10;
+  bool change_available = 11;
+  string market_cap = 12;
+  string turnover24h = 13;
+  int64 market_count = 14;
+  bool has_kline = 15;
+  int64 updated_at = 16;
+  int64 data_delay_seconds = 17;
+  repeated AssetMarketItem markets = 18;
+  int64 provider_updated_at = 19;
+  string freshness_status = 20;
+}
+
+message AssetDashboardResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated AssetDashboardItem result = 3;
+  int64 total = 4;
+}
+
+message MarketInsightsRequest {
+  string consumer_token = 1;
+}
+
+message MarketBreadth {
+  int64 asset_count = 1;
+  int64 advancers = 2;
+  int64 decliners = 3;
+  int64 flat = 4;
+  int64 unknown = 5;
+  string advance_ratio = 6;
+  string median_change24h = 7;
+  string turnover24h = 8;
+}
+
+message ChangeDistributionBucket {
+  string key = 1;
+  string label = 2;
+  string min = 3;
+  string max = 4;
+  int64 count = 5;
+}
+
+message CrossVenueItem {
+  string asset_id = 1;
+  string asset_symbol = 2;
+  string asset_name = 3;
+  string spot_market_id = 4;
+  string spot_market_code = 5;
+  string spot_exchange = 6;
+  string spot_quote_asset = 7;
+  string spot_price = 8;
+  string spot_change24h = 9;
+  bool spot_change_available = 10;
+  string spot_turnover24h = 11;
+  string spot_turnover_share = 12;
+  int64 spot_delay_seconds = 13;
+  string perp_market_id = 14;
+  string perp_market_code = 15;
+  string perp_exchange = 16;
+  string perp_quote_asset = 17;
+  string perp_price = 18;
+  string perp_change24h = 19;
+  bool perp_change_available = 20;
+  string perp_turnover24h = 21;
+  string perp_turnover_share = 22;
+  int64 perp_delay_seconds = 23;
+  string indicative_spread_pct = 24;
+  bool spread_available = 25;
+  string change_gap_pct_points = 26;
+  bool change_gap_available = 27;
+}
+
+message MarketInsightsResult {
+  MarketBreadth breadth = 1;
+  repeated ChangeDistributionBucket distribution = 2;
+  repeated CrossVenueItem cross_venue = 3;
+  int64 updated_at = 4;
+}
+
+message MarketInsightsResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  MarketInsightsResult result = 3;
+}
+
+message AvailableDecimal {
+  optional string value = 1;
+  bool available = 2;
+}
+
+message MarketOverviewRequest {
+  string consumer_token = 1;
+  string venue = 2;
+  string universe = 3;
+}
+
+message MarketOverviewResult {
+  AvailableDecimal global_market_cap_usd = 1;
+  AvailableDecimal covered_spot_volume_24h_usd = 2;
+  AvailableDecimal btc_dominance_pct = 3;
+  int64 asset_count = 4;
+  int64 advancers = 5;
+  int64 decliners = 6;
+  int64 flat = 7;
+  int64 unknown = 8;
+  AvailableDecimal advance_ratio_pct = 9;
+  int64 provider_updated_at = 10;
+  int64 index_updated_at = 11;
+  string venue = 12;
+  int64 ranked_asset_count = 13;
+  int64 priced_asset_count = 14;
+  AvailableDecimal coverage_ratio_pct = 15;
+  int64 top50_universe_count = 16;
+  int64 eligible_asset_count = 17;
+  int64 published_asset_count = 18;
+  int64 change_available_count = 19;
+  int64 contributing_provider_count = 20;
+  int64 single_venue_priced_asset_count = 21;
+  int64 multi_venue_priced_asset_count = 22;
+  bool local_preview_enabled = 23;
+  string preview_source_key = 24;
+  int64 preview_covered_count = 25;
+  string universe = 26;
+  int64 selection_version = 27;
+}
+
+message MarketOverviewResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  MarketOverviewResult result = 3;
+}
+
+message AssetDashboardV2Request {
+  string consumer_token = 1;
+  int64 page = 2;
+  int64 page_size = 3;
+  string search = 4;
+  string filter = 5;
+  string sort_by = 6;
+  string sort_direction = 7;
+  string venue = 8;
+  optional bool include_uncovered = 9;
+  string universe = 10;
+}
+
+message AssetDashboardV2Item {
+  optional int32 rank = 1;
+  string asset_id = 2;
+  string asset_symbol = 3;
+  string asset_name = 4;
+  string logo = 5;
+  AvailableDecimal composite_price_usd = 6;
+  AvailableDecimal change_24h_pct = 7;
+  AvailableDecimal market_cap_usd = 8;
+  AvailableDecimal covered_turnover_24h_usd = 9;
+  AvailableDecimal circulating_supply = 10;
+  int64 spot_market_count = 11;
+  int64 perp_market_count = 12;
+  int32 contributor_count = 13;
+  string confidence = 14;
+  int64 index_updated_at = 15;
+  int64 provider_updated_at = 16;
+  bool sparkline_available = 17;
+  AvailableDecimal price_usd = 18;
+  int64 dex_route_count = 19;
+  int32 priced_venue_count = 20;
+  string quality = 21;
+  string price_kind = 22;
+  string price_source = 23;
+  string coverage_status = 24;
+  bool available = 25;
+  int64 source_time = 26;
+  int64 observed_at = 27;
+  string coverage_reason = 28;
+  int64 selection_version = 29;
+  int32 selection_rank = 30;
+  string freshness_status = 31;
+  int64 freshness_age_seconds = 32;
+  int64 last_attempt_at = 33;
+  int64 last_success_at = 34;
+  string last_error_class = 35;
+}
+
+message AssetDashboardV2Response {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated AssetDashboardV2Item result = 3;
+  int64 total = 4;
+  string universe = 5;
+}
+
+message AssetMarketsRequest {
+  string consumer_token = 1;
+  string asset_id = 2;
+  string venue = 3;
+}
+
+message AssetMarketV2Item {
+  string market_id = 1;
+  string market_code = 2;
+  string provider = 3;
+  string symbol = 4;
+  string market_type = 5;
+  string quote_asset = 6;
+  AvailableDecimal price = 7;
+  AvailableDecimal relative_deviation_pct = 8;
+  AvailableDecimal change_24h_pct = 9;
+  AvailableDecimal turnover_24h = 10;
+  string freshness_status = 11;
+  int64 provider_updated_at = 12;
+  string confidence = 13;
+  bool has_kline = 14;
+  string quality = 15;
+  string venue_kind = 16;
+  string chain = 17;
+  string protocol = 18;
+  string route_key = 19;
+  repeated string route = 20;
+  repeated string pool_addresses = 21;
+  AvailableDecimal quote_notional_usd = 22;
+  AvailableDecimal tvl_usd = 23;
+  AvailableDecimal price_impact_pct = 24;
+  AvailableDecimal round_trip_spread_pct = 25;
+  int64 block_number = 26;
+  int64 block_timestamp = 27;
+  bool available = 28;
+  string unavailable_reason = 29;
+  string quote_reference_kind = 30;
+}
+
+message AssetMarketsResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated AssetMarketV2Item result = 3;
+}
+
+message ProviderCatalogAuditRequest {
+  string consumer_token = 1;
+  string provider = 2;
+  string status = 3;
+  int64 page = 4;
+  int64 page_size = 5;
+  int32 rank_limit = 6;
+}
+
+message ProviderCatalogAuditItem {
+  string provider = 1;
+  string source_symbol = 2;
+  string market_type = 3;
+  string base_alias = 4;
+  string quote_alias = 5;
+  optional string upstream_status = 6;
+  string resolution_status = 7;
+  optional string base_asset_id = 8;
+  optional string quote_asset_id = 9;
+  optional string reason = 10;
+  int64 last_seen_at = 11;
+  optional int32 rank = 12;
+  string candidate_kind = 13;
+  string alias_review = 14;
+  string rollout_mode = 15;
+  string resolution_source = 16;
+}
+
+message CatalogAuditCount {
+  string status = 1;
+  int64 count = 2;
+}
+
+message ProviderCatalogAuditResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated ProviderCatalogAuditItem result = 3;
+  repeated CatalogAuditCount counts = 4;
+  int64 total = 5;
+}
+
+message Exchange {
+  string guid = 1;
+  string name = 2;
+  string logo = 3;
+}
+
+message ExchangeResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated Exchange result = 3;
+  int64 total = 4;
+}
+
+message Symbol {
+  string guid = 1;
+  string base_asset = 2;
+  string quote_asset = 3;
+  string symbol_name = 4;
+  string base_asset_id = 5;
+  string quote_asset_id = 6;
+  string exchange = 7;
+  string market_type = 8;
+}
+
+message SymbolResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated Symbol result = 3;
+  int64 total = 4;
+}
+
+message SystemOverview {
+  string crawler_status = 1;
+  string redis_status = 2;
+  string database_status = 3;
+  string worker_status = 4;
+  string api_status = 5;
+  int64 market_count = 6;
+  int64 asset_count = 7;
+  int64 symbol_count = 8;
+  int64 exchange_count = 9;
+  string total_market_cap = 10;
+  string total_volume = 11;
+  int64 updated_at = 12;
+  int64 data_delay_seconds = 13;
+  repeated ProviderStatusItem provider_statuses = 14;
+  string dex_status = 15;
+  string dw_status = 16;
+  string rpc_status = 17;
+}
+
+message ProviderStatusItem {
+  string provider = 1;
+  string status = 2;
+  int64 source_count = 3;
+  int64 failing_source_count = 4;
+  int64 last_attempt_at = 5;
+  int64 last_success_at = 6;
+  int64 last_source_time = 7;
+  int64 consecutive_failures = 8;
+  string last_error_class = 9;
+  string rollout_mode = 10;
+  int32 rank_limit = 11;
+  int64 min_soak_until = 12;
+  int64 next_retry_at = 13;
+  int64 attempt_count = 14;
+  int64 success_count = 15;
+  string success_rate_pct = 16;
+  repeated ProviderSourceStatusItem sources = 17;
+  string primary_source_key = 18;
+  string operational_status = 19;
+  int64 observation_started_at = 20;
+  int64 readiness_not_before = 21;
+  bool rollout_ready = 22;
+  repeated string rollout_blockers = 23;
+  int64 received_count = 24;
+  int64 matched_asset_count = 25;
+  int64 price_available_count = 26;
+  int64 change_available_count = 27;
+  bool local_preview_enabled = 28;
+  string preview_source_key = 29;
+  int64 preview_covered_count = 30;
+  int64 selection_version = 31;
+  int32 selection_target_count = 32;
+  int32 selection_count = 33;
+  int32 selection_candidate_count = 34;
+  int64 selection_generated_at = 35;
+  string feed_mode = 36;
+  string kline_status = 37;
+  int64 kline_market_count = 38;
+  int64 kline_candle_count = 39;
+  int64 kline_last_success_at = 40;
+}
+
+message ProviderSourceStatusItem {
+  string source_key = 1;
+  string status = 2;
+  int64 last_attempt_at = 3;
+  int64 last_success_at = 4;
+  int64 last_source_time = 5;
+  int64 next_retry_at = 6;
+  int64 consecutive_failures = 7;
+  int64 attempt_count = 8;
+  int64 success_count = 9;
+  string success_rate_pct = 10;
+  string last_error_class = 11;
+  string capability = 12;
+  int64 received_count = 13;
+  int64 matched_asset_count = 14;
+  int64 written_count = 15;
+}
+
+message SystemOverviewResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  SystemOverview result = 3;
+}
+
+message KlinesRequest {
+  // 必填：交易对 guid（如 "s1"），为空返回 InvalidArgument
+  string symbol_guid = 1;
+  int64 limit = 2;
+  // 1m / 15m / 1h / 1d，空串默认 1m；非法值返回 InvalidArgument
+  string interval = 3;
+  // 优先使用的稳定市场身份；存在时忽略 legacy symbol_guid。
+  string market_id = 4;
+}
+
+message MarketSparklinesRequest {
+  repeated string market_ids = 1;
+  string interval = 2;
+  int64 limit = 3;
+}
+
+message SparklinePoint {
+  int64 timestamp = 1;
+  string close = 2;
+}
+
+message MarketSparkline {
+  string market_id = 1;
+  repeated SparklinePoint points = 2;
+}
+
+message MarketSparklinesResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated MarketSparkline result = 3;
+}
+
+message KlineItem {
+  int64 timestamp = 1;
+  string open = 2;
+  string high = 3;
+  string low = 4;
+  string close = 5;
+  string volume = 6;
+}
+
+message KlinesResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated KlineItem result = 3;
+}
+
+message FiatRatesRequest {
+  string consumer_token = 1;
+}
+
+message FiatRatesResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  string base = 3;
+  map<string, double> rates = 4;
+  // 汇率来源：open.er-api / cached:* / stale-cache / fallback
+  string source = 5;
+}
+
+message TopMoversRequest {
+  string consumer_token = 1;
+  // gainers（涨幅榜，默认）或 losers（跌幅榜）；其它值返回 InvalidArgument
+  string direction = 2;
+  // 缺省 5，上限 20，由 service 层统一收敛
+  int64 limit = 3;
+}
+
+message TopMoverItem {
+  int64 rank = 1;
+  string symbol = 2;
+  string price = 3;
+  string change24h = 4;
+  string volume = 5;
+  string market_cap = 6;
+  string name = 7;
+  string logo = 8;
+  int64 updated_at = 9;
+  int64 data_delay_seconds = 10;
+  string market_id = 11;
+  string market_code = 12;
+  string exchange = 13;
+  string market_type = 14;
+  bool change_available = 15;
+}
+
+message TopMoversResponse {
+  uint64 return_code = 1;
+  string message = 2;
+  repeated TopMoverItem result = 3;
+  int64 total = 4;
+  // 回显收敛后的方向（gainers/losers）
+  string direction = 5;
+  // 榜单来源：redis（ZSET 快路径）或 sql（回退）
+  string source = 6;
 }

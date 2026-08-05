@@ -1,10 +1,8 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import { router } from './router'
+import { initializeLocale } from './i18n'
 import './style.css'
 
-document.title = 'Qiu Market'
-
-const app = createApp(App)
-app.use(router)
-app.mount('#app')
+initializeLocale()
+createApp(App).use(router).mount('#app')

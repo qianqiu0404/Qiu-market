@@ -1,60 +1,77 @@
-<template>
-  <div class="page">
-    <div class="header">
-      <h1>Symbols</h1>
-      <span :class="['badge', source.toLowerCase()]">{{ source }}</span>
-    </div>
-    <div v-if="source === 'Error'" class="empty-state">Unable to load symbols. The API may be unreachable.</div>
-    <div v-else class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th>SYMBOL</th>
-            <th>BASE ASSET</th>
-            <th>QUOTE ASSET</th>
-            <th>GUID</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="s in symbols" :key="s.guid">
-            <td>{{ s.symbol_name }}</td>
-            <td>{{ s.base_asset }}</td>
-            <td>{{ s.quote_asset }}</td>
-            <td class="guid">{{ s.guid }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</template>
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import PageHeader from '../components/PageHeader.vue'
+import DataTable from '../components/DataTable.vue'
+import ErrorState from '../components/ErrorState.vue'
+import { usePolling } from '../composables/usePolling'
+import { getSymbols, type SymbolInfo } from '../api/market'
+import { truncateMiddle } from '../utils/format'
+import type { TableColumn } from '../components/table'
 
-<script setup>
-import { ref, onMounted } from 'vue'
-import { request } from '../api/common'
+const page = ref(1)
+const pageSize = ref(20)
 
-const symbols = ref([])
-const source = ref('Loading...')
+const symbols = usePolling(() => getSymbols(page.value, pageSize.value), { interval: 60_000 })
 
-onMounted(async () => {
-  const res = await request('/api/v1/get_symbols')
-  if (res.data) {
-    symbols.value = res.data
-    source.value = res.source
-  } else {
-    source.value = 'Error'
-    symbols.value = []
-  }
-})
+const items = computed<SymbolInfo[]>(() => symbols.data.value?.items ?? [])
+const total = computed(() => symbols.data.value?.total ?? 0)
+
+const freshness = computed(() =>
+  symbols.error.value ? ('offline' as const) : ('live' as const),
+)
+
+const columns: TableColumn<SymbolInfo>[] = [
+  { key: 'symbol_name', label: 'Symbol', sortable: true },
+  { key: 'base_asset', label: 'Base Asset', sortable: true },
+  { key: 'quote_asset', label: 'Quote Asset', sortable: true },
+  { key: 'guid', label: 'GUID' },
+]
 </script>
 
+<template>
+  <section>
+    <PageHeader
+      title="Symbols"
+      subtitle="Tracked trading pairs"
+      :freshness="freshness"
+    />
+
+    <ErrorState
+      v-if="symbols.error.value && items.length === 0"
+      :message="symbols.error.value"
+      @retry="symbols.refresh"
+    />
+    <DataTable
+      v-else
+      v-model:page="page"
+      v-model:page-size="pageSize"
+      :columns="columns"
+      :rows="items"
+      row-key="guid"
+      :loading="symbols.loading.value"
+      searchable
+      search-placeholder="Search symbols…"
+      server-mode
+      :total="total"
+      empty-title="No symbols"
+      empty-message="No symbol matched your search."
+    >
+      <template #cell-symbol_name="{ row }">
+        <span class="symbol-name">{{ row.symbol_name }}</span>
+      </template>
+      <template #cell-guid="{ row }">
+        <span class="mono guid" :title="row.guid">{{ truncateMiddle(row.guid) }}</span>
+      </template>
+    </DataTable>
+  </section>
+</template>
+
 <style scoped>
-.table-container { margin-top: 24px; background: var(--bg-card); border-radius: 12px; overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow); }
-table { width: 100%; border-collapse: collapse; text-align: left; }
-th { background: #f8fafc; padding: 16px; color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase; }
-td { padding: 16px; border-top: 1px solid var(--border); }
-.guid { font-family: monospace; color: var(--text-muted); font-size: 0.75rem; }
-.badge { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-.badge.connected { background: rgba(22,163,74,0.10); color: var(--accent-green); }
-.badge.error { background: rgba(220,38,38,0.10); color: var(--accent-red); }
-.empty-state { padding: 40px; text-align: center; color: var(--text-muted); }
+.symbol-name {
+  font-weight: 600;
+}
+
+.guid {
+  color: var(--text-3);
+}
 </style>

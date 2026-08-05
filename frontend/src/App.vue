@@ -1,135 +1,507 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import AppIcon from './components/AppIcon.vue'
+import type { IconName } from './components/AppIcon.vue'
+import { usePolling } from './composables/usePolling'
+import { getSystemOverview } from './api/market'
+import { isHealthyStatus } from './utils/format'
+import { useI18n, type Locale } from './i18n'
+
+interface NavItem {
+  to: string
+  label: { en: string; 'zh-CN': string }
+  icon: IconName
+}
+
+const NAV: NavItem[] = [
+  { to: '/markets', label: { en: 'Markets', 'zh-CN': '行情' }, icon: 'markets' },
+  { to: '/trade/BTC-USDT', label: { en: 'Trade', 'zh-CN': '交易' }, icon: 'trade' },
+  { to: '/insights', label: { en: 'Insights', 'zh-CN': '洞察' }, icon: 'analytics' },
+  { to: '/system', label: { en: 'System', 'zh-CN': '系统' }, icon: 'system' },
+]
+
+const route = useRoute()
+const drawerOpen = ref(false)
+const { locale, setLocale } = useI18n()
+
+const copy = computed(() => locale.value === 'zh-CN' ? {
+  brandSub: '行情数据平台',
+  openNavigation: '打开导航',
+  closeNavigation: '关闭导航',
+  language: '语言',
+  apiOffline: 'API 离线',
+  connecting: '正在连接…',
+  coreRunning: '核心进程运行中',
+  coreDown: '核心进程全部停止',
+  coreDegraded: (count: number) => `${count} 个核心进程异常`,
+} : {
+  brandSub: 'Market Data Platform',
+  openNavigation: 'Open navigation',
+  closeNavigation: 'Close navigation',
+  language: 'Language',
+  apiOffline: 'API offline',
+  connecting: 'Connecting…',
+  coreRunning: 'Core processes running',
+  coreDown: 'Core processes down',
+  coreDegraded: (count: number) => `${count} core process${count > 1 ? 'es' : ''} degraded`,
+})
+
+function navLabel(item: NavItem): string {
+  return item.label[locale.value]
+}
+
+function chooseLocale(value: Locale): void {
+  setLocale(value)
+}
+
+const routeTitles: Record<string, { en: string; 'zh-CN': string }> = {
+  markets: { en: 'Markets', 'zh-CN': '行情' },
+  'market-detail': { en: 'Market Chart', 'zh-CN': '市场图表' },
+  'trade-btc-usdt': { en: 'Virtual Spot', 'zh-CN': '虚拟现货' },
+  insights: { en: 'Insights', 'zh-CN': '市场洞察' },
+  system: { en: 'System', 'zh-CN': '系统状态' },
+  'not-found': { en: 'Not Found', 'zh-CN': '页面不存在' },
+}
+
+watch(
+  [() => route.name, locale],
+  ([name]) => {
+    const title = typeof name === 'string' ? routeTitles[name]?.[locale.value] : ''
+    document.title = title ? `${title} · Qiu Market` : 'Qiu Market'
+  },
+  { immediate: true },
+)
+
+watch(
+  () => route.fullPath,
+  () => {
+    drawerOpen.value = false
+  },
+)
+
+/* Core process health only; provider source health remains explicit in System. */
+const { data: overview, error } = usePolling(getSystemOverview, { interval: 30_000 })
+
+const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() => {
+  if (error.value) return { tone: 'down', label: copy.value.apiOffline }
+  const ov = overview.value
+  if (!ov) return { tone: 'degraded', label: copy.value.connecting }
+  const statuses = [
+    ov.crawler_status,
+    ov.redis_status,
+    ov.database_status,
+    ov.worker_status,
+    ov.api_status,
+  ]
+  const unhealthy = statuses.filter((s) => !isHealthyStatus(s)).length
+  if (unhealthy === 0) return { tone: 'ok', label: copy.value.coreRunning }
+  if (unhealthy >= statuses.length) return { tone: 'down', label: copy.value.coreDown }
+  return { tone: 'degraded', label: copy.value.coreDegraded(unhealthy) }
+})
+</script>
+
 <template>
-  <div class="app-container">
-    <nav class="sidebar">
+  <div class="app-shell">
+    <header class="topbar">
+      <button type="button" class="topbar-menu" :aria-label="copy.openNavigation" @click="drawerOpen = true">
+        <AppIcon name="menu" :size="20" />
+      </button>
+      <span class="topbar-brand">Qiu Market</span>
+    </header>
+
+    <div v-if="drawerOpen" class="scrim" @click="drawerOpen = false"></div>
+
+    <aside class="sidebar" :class="{ open: drawerOpen }">
       <div class="brand">
-        <span class="brand-icon">Q</span>
-        <div>
-          <div class="brand-text">Qiu Market</div>
-          <div class="brand-sub">Real-time Crypto Dashboard</div>
-        </div>
+        <span class="brand-tile">Q</span>
+        <span class="brand-text">
+          <span class="brand-name">Qiu Market</span>
+          <span class="brand-sub">{{ copy.brandSub }}</span>
+        </span>
+        <button
+          type="button"
+          class="drawer-close"
+          :aria-label="copy.closeNavigation"
+          @click="drawerOpen = false"
+        >
+          <AppIcon name="close" :size="18" />
+        </button>
       </div>
-      <div class="nav-section-label">Overview</div>
-      <router-link to="/dashboard" class="nav-link">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-        Dashboard
-      </router-link>
-      <div class="nav-section-label">Data</div>
-      <router-link to="/markets" class="nav-link">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg>
-        Markets
-      </router-link>
-      <router-link to="/klines" class="nav-link">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 16 4-8 4 4 4-8"/></svg>
-        Klines
-      </router-link>
-      <router-link to="/pipeline" class="nav-link">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"/><path d="M12 6v6l4 2"/></svg>
-        Pipeline
-      </router-link>
-      <div class="nav-section-label">System</div>
-      <router-link to="/assets" class="nav-link">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-        Assets
-      </router-link>
-      <router-link to="/exchanges" class="nav-link">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
-        Exchanges
-      </router-link>
-      <router-link to="/symbols" class="nav-link">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        Symbols
-      </router-link>
-    </nav>
+
+      <nav class="nav">
+        <RouterLink
+          v-for="item in NAV"
+          :key="item.to"
+          :to="item.to"
+          class="nav-item"
+          active-class="active"
+          :title="navLabel(item)"
+        >
+          <AppIcon :name="item.icon" :size="18" />
+          <span class="nav-label">{{ navLabel(item) }}</span>
+        </RouterLink>
+      </nav>
+
+      <div class="locale-switch" role="group" :aria-label="copy.language">
+        <button
+          type="button"
+          :class="{ active: locale === 'zh-CN' }"
+          :aria-pressed="locale === 'zh-CN'"
+          @click="chooseLocale('zh-CN')"
+        >
+          中文
+        </button>
+        <button
+          type="button"
+          :class="{ active: locale === 'en' }"
+          :aria-pressed="locale === 'en'"
+          @click="chooseLocale('en')"
+        >
+          EN
+        </button>
+      </div>
+
+      <div class="sidebar-footer">
+        <span class="health-dot" :class="`health-dot--${health.tone}`"></span>
+        <span class="nav-label health-label">{{ health.label }}</span>
+      </div>
+    </aside>
+
     <main class="content">
-      <router-view></router-view>
+      <RouterView />
     </main>
   </div>
 </template>
 
-<style>
-.app-container {
-  display: flex;
+<style scoped>
+.app-shell {
   min-height: 100vh;
-  background: var(--bg-primary);
-  color: var(--text-primary);
 }
+
+/* ===== Sidebar ===== */
 .sidebar {
-  width: 220px;
-  background: var(--bg-secondary);
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-w);
+  background: rgba(255, 255, 255, 0.84);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+  backdrop-filter: saturate(180%) blur(22px);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 20px 12px;
-  border-right: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  height: 100vh;
-  overflow-y: auto;
+  z-index: 40;
+  transition: transform 0.2s ease, width 0.2s ease;
 }
+
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 8px 24px;
-  margin-bottom: 8px;
+  padding: 20px 18px;
   border-bottom: 1px solid var(--border);
 }
-.brand-icon {
-  width: 36px; height: 36px;
-  display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
-  border-radius: 10px;
-  font-size: 0.95rem; font-weight: 800;
-  color: white;
-  flex-shrink: 0;
-}
-.brand-text {
-  font-size: 1.05rem;
+
+.brand-tile {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: var(--accent);
+  color: #fff;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text-primary);
-  line-height: 1.2;
+  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
 }
-.brand-sub {
-  font-size: 0.62rem;
-  color: var(--text-muted);
-  letter-spacing: 0.02em;
-  margin-top: 1px;
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
-.nav-section-label {
-  padding: 16px 8px 6px;
-  font-size: 0.65rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+
+.brand-name {
   font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
 }
-.nav-link {
+
+.brand-sub {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.drawer-close {
+  display: none;
+  margin-left: auto;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 4px;
+}
+
+.nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
-  text-decoration: none;
-  color: var(--text-secondary);
+  min-height: 44px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
-  margin-bottom: 2px;
-  font-size: 0.85rem;
+  color: var(--text-2);
+  font-size: 13px;
   font-weight: 500;
-  transition: var(--transition);
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.nav-link:hover {
-  background: rgba(59,130,246,0.08);
-  color: var(--text-primary);
+
+.nav-item:hover {
+  background: var(--bg-panel-2);
+  color: var(--text-1);
 }
-.nav-link svg { opacity: 0.6; flex-shrink: 0; }
-.nav-link.router-link-active {
-  background: rgba(59,130,246,0.12);
-  color: var(--accent-blue);
+
+.nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
-.nav-link.router-link-active svg { opacity: 1; color: var(--accent-blue); }
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.locale-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin: 0 12px 12px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel-2);
+}
+
+.locale-switch button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.locale-switch button.active {
+  background: var(--bg-panel);
+  color: var(--accent);
+  box-shadow: 0 1px 3px rgba(15, 42, 72, 0.08);
+}
+
+.health-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.health-dot--ok {
+  background: var(--up);
+  box-shadow: 0 0 0 3px #d6f2e6;
+}
+
+.health-dot--degraded {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px #f9e8c8;
+}
+
+.health-dot--down {
+  background: var(--down);
+  box-shadow: 0 0 0 3px #f8dce2;
+}
+
+.health-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== Top bar (mobile only) ===== */
+.topbar {
+  display: none;
+}
+
+.scrim {
+  display: none;
+}
+
+/* ===== Content ===== */
 .content {
-  flex: 1;
-  padding: 32px 36px;
-  overflow-y: auto;
-  max-height: 100vh;
+  margin-left: var(--sidebar-w);
+  padding: 34px 38px 64px;
+  max-width: 1680px;
+  min-width: 0;
+}
+
+/* ===== Collapsed (icon-only) sidebar ===== */
+@media (max-width: 1023px) {
+  .sidebar {
+    width: var(--sidebar-w-collapsed);
+  }
+
+  .brand {
+    justify-content: center;
+    padding: 18px 8px;
+  }
+
+  .brand-text,
+  .nav-label {
+    display: none;
+  }
+
+  .locale-switch {
+    grid-template-columns: 1fr;
+    margin: 0 5px 10px;
+    padding: 2px;
+  }
+
+  .locale-switch button {
+    min-height: 26px;
+    padding: 0;
+    font-size: 9px;
+  }
+
+  .nav-item {
+    justify-content: center;
+    padding: 9px;
+  }
+
+  .sidebar-footer {
+    justify-content: center;
+    padding: 14px 8px;
+  }
+
+  .content {
+    margin-left: var(--sidebar-w-collapsed);
+    padding: 20px 20px 48px;
+  }
+}
+
+/* ===== Mobile overlay drawer ===== */
+@media (max-width: 767px) {
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    height: var(--topbar-h);
+    padding: 0 14px;
+    background: rgba(255, 255, 255, 0.86);
+    -webkit-backdrop-filter: saturate(180%) blur(18px);
+    backdrop-filter: saturate(180%) blur(18px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .topbar-menu {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--text-1);
+    border-radius: var(--radius-sm);
+    padding: 6px 8px;
+    cursor: pointer;
+    display: inline-flex;
+  }
+
+  .topbar-brand {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .sidebar {
+    width: var(--sidebar-w);
+    transform: translateX(-100%);
+    box-shadow: none;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar .brand-text,
+  .sidebar .nav-group-label,
+  .sidebar .nav-label {
+    display: flex;
+  }
+
+  .sidebar .locale-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    margin: 0 12px 12px;
+    padding: 3px;
+  }
+
+  .sidebar .locale-switch button {
+    min-height: 32px;
+    font-size: 11px;
+  }
+
+  .sidebar .nav-group-label {
+    display: block;
+  }
+
+  .sidebar .brand {
+    justify-content: flex-start;
+    padding: 18px 16px;
+  }
+
+  .sidebar .nav-item {
+    justify-content: flex-start;
+    padding: 8px 10px;
+  }
+
+  .sidebar .sidebar-footer {
+    justify-content: flex-start;
+    padding: 14px 16px;
+  }
+
+  .drawer-close {
+    display: inline-flex;
+  }
+
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(29, 29, 31, 0.24);
+    z-index: 35;
+  }
+
+  .content {
+    margin-left: 0;
+    padding: 18px 14px 48px;
+  }
 }
 </style>

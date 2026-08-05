@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output_file=""
+header_file=""
+request_url=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      output_file="$2"
+      shift 2
+      ;;
+    --dump-header)
+      header_file="$2"
+      shift 2
+      ;;
+    --max-time|--max-redirs|--write-out)
+      shift 2
+      ;;
+    --silent|--show-error)
+      shift
+      ;;
+    http*)
+      request_url="$1"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+# shellcheck disable=SC1090
+source "${QIU_MARKET_ENV_FILE:?}"
+case "$request_url" in
+  */api/v1/trading/auth/capabilities)
+    printf '{"github_oauth_enabled":true,"local_login_enabled":false}\n' > "$output_file"
+    printf 'HTTP/2 200\r\ncontent-type: application/json\r\n\r\n' > "$header_file"
+    printf '200'
+    ;;
+  */api/v1/trading/auth/github/start)
+    encoded="$(
+      python3 - "$MARKET_TRADING_GITHUB_REDIRECT_URL" <<'PY'
+import sys
+from urllib.parse import urlencode
+print(urlencode({"redirect_uri": sys.argv[1]}))
+PY
+    )"
+    printf '' > "$output_file"
+    {
+      printf 'HTTP/2 302\r\n'
+      printf 'location: https://github.com/login/oauth/authorize?%s\r\n' "$encoded"
+      printf 'set-cookie: s78_trading_oauth_state=fixture; Path=/api/v1/trading/auth/github/callback; Secure; HttpOnly; SameSite=Lax\r\n'
+      printf '\r\n'
+    } > "$header_file"
+    printf '302'
+    ;;
+  *)
+    exit 2
+    ;;
+esac

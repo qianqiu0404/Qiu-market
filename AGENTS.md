@@ -1,0 +1,44 @@
+# S78 engineering documentation rules
+
+## Hard completion gate
+
+Any change that materially alters behavior, architecture, data flow, storage, interfaces, failure handling, or operator workflow is incomplete until the owner can explain the corresponding code without reading a file list.
+
+Before editing, read `README.md`, the matching document under `docs/`, and the real entrypoints. Preserve the current canonical document instead of creating a parallel summary.
+
+For each material engineering delivery:
+
+1. Explain the problem and the observable result.
+2. Show the end-to-end data or control flow.
+3. Record the design decision, rejected alternative, cost, and boundary.
+4. Identify three to five code entrypoints and explain their order; do not dump the repository tree.
+5. Define unfamiliar architecture terms with an accurate meaning, a plain-language analogy, and their location in this project.
+6. Include failure, degradation, retry, and recovery behavior.
+7. Add a 60-second owner explanation and closed-book questions.
+8. Update the README document index and the one canonical topic document.
+
+## Evidence labels
+
+Never collapse different evidence levels into “done.” Distinguish:
+
+- `implemented`: the behavior exists in the current code.
+- `build-verified`: build, static checks, or automated tests passed.
+- `integration-verified`: real dependencies exchanged data and the result was checked.
+- `environment-pending`: an external system or deployment is still unverified.
+- `production-recommendation`: a proposed improvement, not current behavior.
+
+Dynamic counts such as exchange symbols are snapshots, not permanent scale claims. A package with no test files is not test coverage. Compile success is not a real Redis, PostgreSQL, exchange, or Doris integration test.
+
+## Verification and safety
+
+Run checks proportional to the change and record exact commands and remaining gaps. For repository-wide Go or frontend changes, the default gate is:
+
+```bash
+go build ./...
+go vet ./...
+go test ./...
+cd frontend && npm run build
+git diff --check
+```
+
+Do not read, copy, commit, or document `.env` values, credentials, authentication state, client databases, caches, or complete transcripts. Do not overwrite unrelated dirty worktree changes. Do not claim online scale, SLA, incidents, or production validation without evidence.

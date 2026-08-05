@@ -10,6 +10,7 @@ import (
 
 type Exchange struct {
 	Guid      string         `gorm:"primaryKey;column:guid;type:text" json:"guid"`
+	Code      string         `gorm:"column:code;type:varchar(100);not null;uniqueIndex" json:"code"`
 	Name      string         `gorm:"column:name;type:varchar(100);not null;unique" json:"name"`
 	Config    datatypes.JSON `gorm:"column:config;type:jsonb" json:"config"`
 	IsActive  bool           `gorm:"column:is_active;type:boolean;not null;default:true" json:"is_active"`

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+headers_file=""
+body_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dump-header)
+      headers_file="$2"
+      shift 2
+      ;;
+    --output)
+      body_file="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$headers_file" ] || [ -z "$body_file" ]; then
+  echo "The fake epoch curl requires header and body destinations." >&2
+  exit 1
+fi
+printf '%s\r\n' \
+  'HTTP/2 200' \
+  'X-Qiu-Market-Provenance: VERIFIED' \
+  'X-Qiu-Market-Release-Commit: 19928325f9a1104d1dd3505a004dffb9fe52a714' \
+  'X-Qiu-Market-Deployment-ID: dpl_FixtureRelease123' \
+  'X-Qiu-Market-Deployment-URL: https://qiu-market-fixture-release.vercel.app' \
+  '' > "$headers_file"
+printf '{}\n' > "$body_file"
+printf '200'

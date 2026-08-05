@@ -1,0 +1,487 @@
+# Qiu Market：Vercel + Mac mini 上线手册
+
+## 运行边界
+
+Vercel 只托管 `frontend` 的 Vue/Vite 静态产物与 `/api/**` 轻量 BFF。Mac mini
+运行 API、trading、crawler、worker、dex、PostgreSQL 与 Redis。PostgreSQL、Redis、
+HTTP 和 gRPC 都只监听本机；Tailscale Funnel 只把 HTTP `127.0.0.1:9092`
+映射为 HTTPS/WSS。
+
+行情 REST 必须经过 Vercel BFF。BFF 对时间戳、方法、路径、查询串和 body SHA-256
+做 HMAC；Mac mini 配置 `MARKET_PUBLIC_PROXY_HMAC_SECRET` 后，除 `/healthz` 和持有
+一次性 ticket 的交易 WebSocket 外，所有未签名 `/api/**` 请求均返回 401。
+
+## 1. 私有生产配置
+
+```bash
+make mac-production-build
+```
+
+第一次执行会创建：
+
+```text
+~/Library/Application Support/Qiu Market/production.env
+```
+
+将其中所有 placeholder 替换掉并保持权限 `0600`。GitHub OAuth App 只允许
+`qianqiu0404`，回调使用：
+
+```text
+https://qiu-market.vercel.app/api/v1/trading/auth/github/callback
+```
+
+如果 Vercel 最终分配了不同 production domain，先同时更新 OAuth callback、
+`MARKET_TRADING_ALLOWED_ORIGINS` 与 `MARKET_TRADING_GITHUB_REDIRECT_URL`。
+
+### Preview OAuth 验收
+
+GitHub OAuth App 只登记上面的 Production callback。OAuth App 只支持一个登记
+callback；GitHub 的 `redirect_uri` 规则允许使用相同基础主机和端口下的子域，
+且路径必须等于或位于登记 callback 路径之下。规则见
+[GitHub Authorizing OAuth apps](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#redirect-urls)。
+
+Preview 与 Production 是不同浏览器 origin，OAuth state 和 session 都是
+host-only cookie。因此不能从 Preview 发起登录、却让 GitHub 回到 Production，
+也不能把 Production 登录结果当成 Preview 验收。
+
+Gate 2C 使用短维护窗，顺序固定：
+
+1. 将精确 Preview origin 加入 `MARKET_TRADING_ALLOWED_ORIGINS`；
+2. 临时把 `MARKET_TRADING_GITHUB_REDIRECT_URL` 改为精确 Preview deployment 的
+   `/api/v1/trading/auth/github/callback`，然后只重启 API；
+3. 在同一受保护 Preview 完成 GitHub 登录、callback 单次消费、Secure Cookie、
+   CSRF/Origin，以及 submit/cancel/fund unknown reconciliation；
+4. 保持 Preview origin 仍在 allowlist 时，从该 Preview 调用 logout；只有返回
+   204 才认为 PostgreSQL session 已删除；
+5. 从 `MARKET_TRADING_ALLOWED_ORIGINS` 移除精确 Preview origin，将 redirect
+   恢复为 Production callback，再次重启 API；
+6. 使用原 Preview 浏览器上下文验证 session 返回 401，写请求被拒绝。API 重启
+   本身不会删除 PostgreSQL session，不能替代第 4 步；
+7. promote 已验收的同一 Preview deployment，不重新 build；随后在 Production
+   重新登录并做最小写验收。失败时立即回滚 Vercel alias。
+
+Preview redirect 只能来自受管私有配置，不提供客户端可控的 `redirect_uri`。
+维护窗内当前旧 Production 的登录不作为可用能力；公共只读行情仍需保持可用。
+
+## 2. 安装常驻服务
+
+先停止开发启动器，避免占用 9092/9094：
+
+```bash
+make dev-stop
+make mac-production-install
+make mac-production-status
+```
+
+五个业务角色先以 LaunchAgent 运行；正式的“无人登录也能恢复”形态使用
+LaunchDaemon。Guardian、备份和恢复演练可以先安装为当前用户的安全回退，不需要
+管理员权限：
+
+```bash
+bash ops/macos/manage-user-resilience.sh install
+bash ops/macos/manage-user-resilience.sh status
+```
+
+完成验收后，由机器所有者输入一次管理员密码，把五个业务角色、专用 tailscaled、
+guardian、备份与恢复演练整体提升为 `xiuqiu` 用户身份运行的 LaunchDaemon，并开启
+断电自动开机：
+
+```bash
+sudo bash ops/macos/manage-system-daemons.sh install
+sudo bash ops/macos/manage-system-daemons.sh status
+```
+
+脚本不会删除私有配置、备份或日志。日志位于
+`~/Library/Application Support/Qiu Market/logs`，Guardian 每 60 秒检查 API、
+trading、Funnel、PostgreSQL 与磁盘；数据库异常不会触发共享 PostgreSQL 的盲目重启。
+
+## 3. Tailscale Funnel
+
+本机使用 Homebrew 的开源 Tailscale 1.52+，为 Qiu Market 建立独立的
+userspace daemon、state 和 socket；不会复用或停止其它项目的 Tailscale：
+
+```bash
+bash ops/macos/manage-funnel.sh install-daemon
+bash ops/macos/manage-funnel.sh login
+```
+
+`login` 会给出一次性浏览器授权地址。完成后执行：
+
+```bash
+bash ops/macos/manage-funnel.sh start
+```
+
+脚本按当前 CLI 使用 `tailscale funnel --bg --yes --https=443
+http://127.0.0.1:9092`。后台模式会在 Tailscale 重启后恢复。记录实际
+`https://<node>.<tailnet>.ts.net`，用它设置 Vercel：
+
+```text
+S78_BACKEND_ORIGIN=https://<node>.<tailnet>.ts.net
+S78_PROXY_HMAC_SECRET=<与 Mac mini 完全相同>
+VITE_TRADING_WS_ORIGIN=https://<node>.<tailnet>.ts.net
+```
+
+## 4. Vercel
+
+项目名固定为 `qiu-market`，Root Directory 为 `frontend`，Node 为 24.x，Function
+固定运行在 `sfo1`。Preview 与 Production 使用同一组三个后端变量，并设置：
+
+```text
+VITE_TRADING_EVENT_MODE=polling
+QIU_MARKET_RELEASE_COMMIT=<当前精确 40 字符 Git commit>
+```
+
+当前账号环境先使用同源 cursor polling；Vercel WebSocket beta 未完成实测前不宣称
+WebSocket 已验收。先从本地精确 commit 构建 Preview，完成页面、API、鉴权和恢复
+验收后，再将同一 deployment promote 到 Production，不重新构建。BFF 的完整
+upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请求从不自动重试。
+项目必须启用 Vercel 的 System Environment Variables。`VERCEL_DEPLOYMENT_ID` 和
+`VERCEL_URL` 由 Vercel 自动提供，BFF 将两者与受管 release commit 作为不可变
+provenance 响应头。不要手工把 Production alias 当成 immutable deployment URL。
+
+2026-07-28 的 protected Preview、deployment `dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e`
+与 commit `2aa8bda39d2298e1d57886e472f9a090d728f56e` 仅是历史归档证据，禁止直接
+复用或 promote；更早的 `dpl_C5k5...` 同样只保留为历史证据。每次发布都必须从当前
+不可变 Preview/release 状态重新取得 deployment ID、immutable URL 和精确 40 字符
+commit，并在以下命令中替换占位符，绝不能复制历史值。
+
+非登录 Gate 2C 可以重复执行：
+
+```bash
+bash ops/macos/verify-preview-gate.sh \
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
+```
+
+报告保存在私有运行目录
+`~/Library/Application Support/Qiu Market/observations/preview-gate-latest.json`。
+OAuth 凭据或真实浏览器证据缺失时命令以退出码 2 和
+`status=environment-pending` 收口；非 OAuth 安全检查失败时退出码 1；只有全部
+证据绑定同一 deployment/commit 时才退出 0。浏览器 OAuth evidence 必须由实际
+callback、Cookie、CSRF/Origin、unknown reconcile、logout 与旧 session 401 验收
+流程生成，不得手写为通过。
+
+### 受管 OAuth 维护窗口
+
+不要手工编辑 allowlist 后忘记恢复。凭据写入私有 `production.env` 后，先执行只读
+预检：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh preflight \
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
+```
+
+预检会复用上面的 immutable Preview gate，并要求：私有文件权限为 `0600/0400`、
+OAuth 凭据非 placeholder、本地登录关闭、Secure Cookie 开启、Production callback
+和 origin 处于基线。通过后才打开短维护窗：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh open \
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
+```
+
+`open` 在私有目录保存带 SHA-256 的原始环境备份和随机 `window_id`，原子切换两个
+配置项，只重启 API，并在线核对 GitHub authorize 的 `redirect_uri` 与 OAuth state
+Cookie。任何打开阶段错误或普通信号都会尝试恢复原文件、重启 API 并验证
+Production callback。状态可随时只读查看：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh status
+```
+
+浏览器验收必须先生成私有
+`observations/preview-oauth-preclose-evidence.json`。它要绑定本次 state 中精确的
+`deployment_id`、`deployment_commit`、随机 `window_id` 和 `opened_at`，并证明
+callback 单次消费、Secure Cookie、CSRF/Origin 拒绝、submit/cancel/fund unknown
+reconcile 及 Preview logout 204。文件必须为 `0600/0400`。随后执行：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh close
+```
+
+`close` 只有在 pre-close evidence 完整时才恢复 Production；恢复后还会再次在线
+核对 OAuth capability、固定 Production callback 和 state Cookie。浏览器保留原
+Preview context，再验证 session 为 401、写操作被拒绝，最后才生成供
+`verify-preview-gate.sh` 使用的 schema v2 `preview-oauth-evidence.json`。最终证据
+必须逐项匹配私有 `preview-oauth-window/last.json` 中的 deployment、commit、
+`window_id`、`window_opened_at` 与 `completed_at`，而且 last 状态必须是
+`closed_after_verified_logout`；`abort` 报告或旧窗口 evidence 都不能通过。因此
+pre-close 证据和最终 Gate 证据是两个阶段，不能提前把 stale-session 写成通过。
+
+如果浏览器验收失败、用户中止或无法安全生成 logout 证据，执行：
+
+```bash
+bash ops/macos/manage-preview-oauth-window.sh abort
+```
+
+`abort` 恢复精确备份并标记 `aborted_without_acceptance`，不会生成或升级任何
+Preview acceptance。备份/状态位于私有 Application Support，不含于仓库；凭据和
+Secret 不得粘贴到聊天、日志或 evidence JSON。
+
+### 真实浏览器 Gate 2C 采集器
+
+凭据就绪且 `open` 成功后，不手写 pre-close/final evidence，运行：
+
+```bash
+cd frontend
+npm run gate:preview-oauth -- \
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
+```
+
+脚本打开真实 Chrome，并给 Vercel/GitHub 登录各最多 5 分钟。专用浏览器 profile
+位于私有 `Application Support/Qiu Market/browser`，只用于复用 Vercel/GitHub
+登录状态；每次运行会先清除全部 `s78_trading_*` Cookie，强制 Qiu Market 重新走
+OAuth callback。浏览器中如果出现 Vercel Authentication 或 GitHub 授权页面，由
+用户本人完成，不把密码、2FA、OAuth code 或 Cookie 写入 evidence/日志。
+
+采集器必须在线证明：
+
+- callback 首次为 302，保存的同一 callback URL 再放一次为 400；
+- Trade 页面有真实 `BTC / USDT` 内容、没有 Vite/框架错误层和 console error，并把
+  截图以 `0600` 保存到私有 observations；
+- principal 精确为 `github:qianqiu0404`，session/CSRF Cookie 为 Secure、
+  SameSite=Strict，session 还是 HttpOnly；
+- 缺 CSRF 和恶意 Origin 都返回 403；
+- 先使用虚拟资金创建一笔远离市场且 Post Only 的卖单；
+- 对 fund、submit、cancel 分别让 Playwright `route.fetch()` 把请求真实发送到
+  Vercel BFF，确认上游 2xx 后只向页面返回人工 504，制造“服务端已提交但浏览器
+  不知道”的 unknown；
+- 三种写操作都使用原 request/client order ID 重放；响应必须与已提交结果一致，
+  fund 余额只增加一次，订单权威列表为 open，cancel 后权威订单为 canceled；
+- Preview logout 为 204。
+
+以上通过后脚本原子写入权限 `0600` 的 pre-close evidence，直接调用受管 `close`
+恢复 Production，再用原浏览器上下文验证 session 401 和写请求 401，生成 schema
+v2 final evidence，最后调用 `verify-preview-gate.sh`。任一步在 close 前失败、浏览器
+被关闭或登录超时，脚本都会调用 `abort` 恢复 Production；不会把失败流程写成通过。
+所有资金仍是 Qiu Market 虚拟账本，不涉及链上或交易所真实资金。
+
+采集器的纯函数边界可独立复验：
+
+```bash
+cd frontend
+npm run test:gate-lib
+```
+
+### 同一构建产物的 Promotion Gate
+
+只有 `verify-preview-gate.sh` 在最近 15 分钟内对精确 deployment/commit 返回
+`preview-gate-passed`，而且 OAuth 维护窗口已关闭、正式 acceptance epoch 尚未开始，
+才允许进入发布预检：
+
+```bash
+bash ops/macos/promote-vercel-release.sh preflight \
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
+```
+
+预检只读执行以下约束：
+
+- Preview gate 的 deployment、immutable URL、commit、managed close 和 browser
+  evidence 全部一致；
+- 当前 `frontend/**` 仍与 release commit 一致；
+- candidate 仍是 READY Preview，且运行时 provenance、trading/outbox 为 ready；
+- 记录当前 READY Production deployment 作为唯一回滚目标；
+- 当前 Production 页面、trading/outbox、GitHub OAuth capability、固定 Production
+  callback 与 Secure OAuth state Cookie 都是健康基线。
+
+真正切换必须显式加入 `--execute`：
+
+```bash
+bash ops/macos/promote-vercel-release.sh promote --execute \
+  --deployment-id <candidate-deployment-id> \
+  --deployment-url https://<candidate-immutable-url> \
+  --commit <candidate-40-character-commit>
+```
+
+脚本只调用 `vercel promote`，不调用 build/deploy。它先写入随机 `promotion_id` 和
+旧 Production deployment，再验证 Production alias 确实指向 candidate、四个 SPA
+深链接、provenance、trading/outbox、OAuth capability、匿名 session 401 和 Funnel
+未签名 REST 401。上述结构检查任一失败都会立即执行精确旧 deployment rollback
+并复核 alias；回滚无法确认时保留私有状态，不会声称成功。
+
+结构检查通过只表示 `awaiting-production-auth`，还不是 Production 验收。必须使用
+新的 Production 浏览器上下文完成 GitHub 登录、Secure Cookie、CSRF/Origin 拒绝、
+一次带 request ID 的最小虚拟资金写入及同 ID 重放、账本平衡、状态哈希一致、
+logout 204 和旧 session 401，并把真实结果绑定 state 中随机 `promotion_id` 写入
+权限为 `0600/0400` 的
+`observations/production-auth-evidence.json`。证据必须在 promote 后且不超过
+15 分钟，再执行：
+
+```bash
+bash ops/macos/promote-vercel-release.sh confirm
+```
+
+只有 confirm 成功才产生 `production-gate-passed`。调用 confirm 后如果 Production
+smoke、账号 `qianqiu0404`、证据身份/时间或最小写对账任一失败，脚本会立即回滚并
+核对旧 alias。尚未调用 confirm、浏览器验收失败或决定停止时：
+
+```bash
+bash ops/macos/promote-vercel-release.sh rollback
+```
+
+它只回滚到本次 promote 前记录的精确 deployment。脚本不会自动开始 acceptance
+epoch；必须在 Production gate 通过后再单独启动，避免把未验收分钟计入 7 天窗口。
+
+## 5. 最小安全验收
+
+```bash
+curl -i https://<node>.<tailnet>.ts.net/healthz
+curl -i -X POST https://<node>.<tailnet>.ts.net/api/v2/get_market_overview \
+  -H 'content-type: application/json' \
+  --data '{"venue":"all","universe":"provider_union"}'
+```
+
+第一条应为 200；第二条绕过 BFF，应为 401。随后检查 Vercel `/api/**` 为 200，
+Cookie 带 Secure，错误 Origin、过期 WebSocket ticket 与伪造 CSRF 均被拒绝。
+交易仍只使用虚拟资金，不接充值、提现、私钥或实盘。
+
+### 断网/断电后的交易写入补偿
+
+启用 Recovery Gate 后，LaunchDaemon 重启 trading 只会恢复到
+`transport_warmup`。operator 先用 loopback `trading-recovery status` 固定本次
+market/epoch/version/sequence/hash 和 epoch 内受信任的 Production origin、immutable
+Vercel deployment ID/URL、release commit、backend source digest，再用 `promote` 连续
+30 秒核对 Production HTTPS recovery JSON、Vercel provenance 响应头、权威 gRPC、
+runner state hash 和 outbox checkpoint。命令由
+trading 进程内部 CAS，禁止手工 SQL。任一样本失败、版本变化、数据库读写不确定或
+CAS 冲突都保持只读；同一 epoch 不会因网络恢复自动开放，必须重启 trading 创建新
+epoch 并重新证明。Demo Maker 在 writable 前不启动，旧订单与回退后的订单通过
+runner safety-cancel 撤销。
+
+`transport_warmup` 是不可变观察窗：旧 demo-maker 订单必须在此前经 runner 撤销，
+进入该 phase 后普通写、bootstrap 和 safety-cancel 都会失败。最终 promote 还会在
+交易进程内立即复核 runner ready/sequence/hash/queue 与 outbox checkpoint，再执行
+Coordinator CAS。operator gRPC 仅绑定显式 IP loopback，其信任边界是本机用户、受管
+release 目录与 LaunchDaemon；目前无需额外共享 secret，未来若开放远程监听则必须改用
+mTLS 或等价强认证。
+
+正常写入也使用两次 fail-closed 门禁：入队时签发精确 epoch/version/phase 准入票据，
+单写者执行前再读取 recovery row。回退发生后，尚在队列中的旧票据命令不会执行；已经
+完成二次校验且正在提交的单个命令允许先解决提交结果，再按原 request ID 做权威查询和
+恢复，不能把超时等同于未执行。
+
+这部分目前是 `implemented / build-verified`；随机隔离数据库中的 migration/CAS/fault
+与真实 loopback gRPC TransportProbe 30 秒集成已达到
+`integration-verified (isolated local PostgreSQL + loopback gRPC)`。默认 flag 仍为 false，
+Mac mini production PostgreSQL/epoch、实际外部 HTTPS provenance
+绑定和断电故障注入仍为 `environment-pending`，完成前不得修改生产配置。
+
+## 6. 极省空间 K 线治理
+
+保留策略固定为 `1m=7天`、`15m=90天`、`1h=365天`、`1d=永久`。Worker 启动时及
+之后每 24 小时执行一次；使用同一 PostgreSQL 专用连接持有 advisory lock，每批最多
+删除 10,000 行并设置 5 秒 statement timeout。生产维护命令为：
+
+```bash
+bash ops/macos/backup-production.sh full
+bash ops/macos/restore-drill.sh
+bash ops/macos/optimize-kline-indexes.sh
+bash ops/macos/compact-kline-indexes.sh
+```
+
+索引优化保留主键、business unique、`sync_seq` 和紧凑
+`(interval, open_time)` 索引。只执行普通 `VACUUM (ANALYZE)` 与逐索引
+`REINDEX CONCURRENTLY`，不执行 `VACUUM FULL`。
+
+系统页公开数据库大小、K 线 heap/index 大小、各周期最早/最新时间、磁盘余量和保留
+任务结果。磁盘低于 25GiB 告警；低于 15GiB 时暂停 crawler/worker/DEX，交易服务仍
+保留只读查询，但下单、撤单、虚拟入金与 demo maker fail-closed。
+
+## 7. 24/48/72 小时与 7 天生产观察
+
+生产观察器是只读验收定时器，不是第六个业务服务。LaunchAgent 使用绝对墙钟分钟
+调度，每个 UTC 分钟触发一次，而不是从上次结束后相对等待 60 秒。它检查：
+
+- Production 页面和 Vercel BFF；
+- Funnel `/healthz` 以及未签名 REST 必须返回 401；
+- 虚拟交易状态必须为 `ready`、队列无错误；
+- 系统存储状态、磁盘至少 25GiB、保留任务无错误；
+- Uniswap/PancakeSwap 的动态 route 数与 reference-only 数；
+- PostgreSQL 中同 provider、asset、route、`quote_notional_usd` 的 24/48/72
+  小时历史窗口。
+
+历史窗口要求起点位于窗口开始后 30 分钟内、最新观察不超过 10 分钟、最大历史
+采样间隔不超过 10 分钟。这个历史采样 SLA 不会放宽公开 route price 的 30 秒
+freshness。任一窗口只有在至少一条同 route、同名义金额曲线通过时才标记 `passed`。
+
+安装并立即查看：
+
+```bash
+bash ops/macos/manage-observer.sh install
+bash ops/macos/manage-observer.sh status
+bash ops/macos/summarize-production-slo.sh
+```
+
+未 promote 时不要创建正式 epoch。promote 同一 Preview deployment、完成
+Production OAuth 和最小写验收后，使用 Vercel 返回的真实 deployment ID、
+immutable deployment URL 与完整提交创建 epoch：
+
+```bash
+bash ops/macos/manage-acceptance-epoch.sh start \
+  --deployment-id dpl_... \
+  --deployment-url https://<immutable-deployment>.vercel.app \
+  --commit <40-character-release-commit>
+```
+
+脚本先请求 Production BFF，只有 provenance 响应头与三个参数完全相符才写入
+私有 epoch 文件。同时它会从 PostgreSQL 为 Uniswap 与 PancakeSwap 各选择一条
+过去 6 小时最大间隔不超过 600 秒、最近 10 分钟仍新鲜的固定 canary；缺少任意一条
+都会拒绝开始。窗口从下一个 UTC 整分钟开始；已有 active epoch 不会被覆盖，需要
+放弃时必须显式 `stop`，旧文件会在下一次 start 前归档。
+
+canary 身份由 `asset_guid + route_key + quote_notional_usd + selected_at` 构成，
+写入 epoch 后不可静默改变。24/48/72 小时只查询这两个固定身份；窗口未满为
+`observing`，窗口已满但起点、最新观察或最大间隔不合格则为 `failed`。更换 route
+或名义金额必须停止并新建 epoch，所有正式时间窗从零开始。
+
+证据保存在私有运行目录，不进入仓库：
+
+```text
+~/Library/Application Support/Qiu Market/observations/latest.json
+~/Library/Application Support/Qiu Market/observations/production-soak.jsonl
+~/Library/Application Support/Qiu Market/observations/acceptance-epoch.json
+~/Library/Application Support/Qiu Market/observations/archive/observer-locks/
+```
+
+`latest.json` 是当前状态，JSONL 是追加式审计历史。正式汇总不是混合部署的滚动
+窗口：它只接受 schema v4、epoch ID、Production origin、deployment ID、immutable
+URL 和 release commit 全部匹配且 provenance 在线校验通过的样本。旧 schema、
+其它 epoch 和其它 release 永远不计入；漏掉的墙钟分钟按失败处理，同一分钟的重复
+样本采用“任一失败即失败”。
+
+Observer 使用原子目录锁，并把 PID、进程启动时间和精确脚本入口共同作为 owner
+身份。下一分钟触发看到真实活 owner 时只退出，不发送信号、不覆盖锁；PID 已退出、
+PID 被复用或初始化锁超过 30 秒仍不完整时，会先把整个旧锁移动到上述 archive，再由
+唯一的竞争者获得新锁。正常退出只清理 token 仍属于自己的锁；HUP/INT/TERM 产生
+独立 evidence，SIGKILL/断电留下的锁会在下次启动时形成 `stale-lock-recovered`
+证据。因此观察器可以从异常退出自愈，同时保留为什么失去一个墙钟样本的证据；归档
+不能补算漏掉的分钟，正式 SLO 仍把缺失分钟计为失败。
+
+只有两个固定 DEX canary 的 24/48/72 小时窗口全部通过，并且完整 10,080 个预定
+分钟、监控覆盖率和可用率均不低于 99.5%、REST 5xx 低于 0.5%、REST p95 低于
+5 秒、单次中断不超过 5 分钟且磁盘始终不少于 25GiB 时，才输出
+`production-recommendation`。顶层 `status = observing`
+表示当前检查通过但长窗口仍在积累；只有六个 provider/window 组合全部通过才成为
+`passed`，当前检查失败则为 `failed`。停止观察器不会删除历史：
+
+```bash
+bash ops/macos/manage-observer.sh uninstall
+```
+
+同盘备份只能覆盖短期误操作和逻辑恢复，不能覆盖整盘损坏；灾难恢复保持
+`risk-accepted / environment-pending`。
+
+交易快照 schema v5 会在启动时把旧 v3/v4 快照升级为紧凑表示：淘汰已终结的
+`system:demo-maker` 订单和该系统账户的内存幂等缓存，并把运行时 ledger journal
+折叠为每资产双重记账余额 checkpoint。`trading_event_batch`、`trading_order` 和
+`trading_ledger_entry` 投影不删除，用户订单、用户幂等、成交、余额、完整账本历史
+和六笔开放做市订单全部保留。这个边界用于防止长期 demo maker 把恢复快照无界放大。
