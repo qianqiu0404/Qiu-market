@@ -280,9 +280,9 @@ func applyRecoveryMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	}
 	for _, migrationName := range []string{
 		"2026082300025.sql",
-		"2026082400026.sql",
 		"2026082500027.sql",
 		"2026082600028.sql",
+		"2026082700029.sql",
 	} {
 		migrationPath := filepath.Join(filepath.Dir(filename), "..", "..", "migrations", migrationName)
 		migration, err := os.ReadFile(migrationPath)

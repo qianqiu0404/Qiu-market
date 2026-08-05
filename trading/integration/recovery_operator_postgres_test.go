@@ -36,7 +36,7 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 	if _, err := postgresstore.New(ctx, pool, market); err != nil {
 		t.Fatal(err)
 	}
-	applyMigrationOnce(t, ctx, pool, "2026082400026.sql")
+	applyMigrationOnce(t, ctx, pool, "2026082500027.sql")
 
 	now := time.Now().UTC()
 	legacyEpoch := "legacy-writable-without-transport-evidence"
@@ -57,10 +57,10 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Migration 27 explicitly closes legacy writable epochs which predate bound
+	// Migration 28 explicitly closes legacy writable epochs which predate bound
 	// transport evidence. This is an existing migration contract, not a test-only
 	// policy invented here.
-	applyMigrationOnce(t, ctx, pool, "2026082500027.sql")
+	applyMigrationOnce(t, ctx, pool, "2026082600028.sql")
 	var (
 		phase            recovery.Phase
 		writesEnabled    bool
@@ -96,7 +96,7 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 		now.Add(-31*time.Second), now, strings.Repeat("b", 64)); err != nil {
 		t.Fatal(err)
 	}
-	applyMigrationOnce(t, ctx, pool, "2026082600028.sql")
+	applyMigrationOnce(t, ctx, pool, "2026082700029.sql")
 	if err := pool.QueryRow(ctx, `
 		SELECT phase, writes_enabled, transport_healthy, last_error
 		FROM trading_recovery_epoch WHERE market_id=$1 AND epoch_id=$2
@@ -128,10 +128,10 @@ func TestRecoveryMigrationsAndConcurrentPostgresPromotionCAS(t *testing.T) {
 		t.Fatalf("invalid writable evidence constraint error = %v", err)
 	}
 
-	// Applying migration 27 again is expected to be safe after its legacy-data
+	// Applying migrations 28 and 29 again is expected to be safe after their legacy-data
 	// rewrite and constraint installation.
-	applyMigrationOnce(t, ctx, pool, "2026082500027.sql")
 	applyMigrationOnce(t, ctx, pool, "2026082600028.sql")
+	applyMigrationOnce(t, ctx, pool, "2026082700029.sql")
 	for _, table := range []string{"trading_recovery_current", "trading_recovery_epoch"} {
 		if _, err := pool.Exec(ctx, `DELETE FROM `+table+` WHERE market_id=$1`, market.ID); err != nil {
 			t.Fatal(err)
