@@ -372,7 +372,7 @@ PRD 合并前不启动实现分支。合并后固定为：
 | Frontend | `frontend/src/features/trade/**`、最终由其重写 `Trade.vue`、Trade 专属 copy/tests | Proto、Go、migration、System 共享页面 |
 | Transport/API | gRPC/HTTP adapter、session-scoped mapping、分页 transport tests | Proto/generated、共享 DTO/interface、`Trade.vue`、PostgreSQL 查询实现、translation |
 | Timeline/Ledger | 新 readmodel/query 文件、order lifecycle projection、ledger query、migration、可靠性测试 | Domain/Proto、HTTP handler、`Trade.vue` |
-| Main Agent | PRD/API 契约、Domain event schema、Proto/generated、共享 Go interface、前端共享 DTO、System 集成、最终 wiring、Review、发布 | 不重复实现子任务已交付模块 |
+| Main Agent | PRD/API 契约、Domain event schema、Proto/generated、共享 Go interface、前端共享 DTO、System 集成、最终 wiring（含 Market Buy `remaining_quote_budget` emitter 与 Event Proto mapping）、Review、发布 | 不重复实现子任务已交付模块 |
 
 集成顺序：
 

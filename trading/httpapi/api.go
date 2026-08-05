@@ -378,7 +378,7 @@ func (s *Server) listOrders(writer http.ResponseWriter, request *http.Request) {
 	response, err := s.client.ListOrders(request.Context(), &tradingv1.ListOrdersRequest{
 		MarketId:  s.config.MarketID,
 		AccountId: session.Principal.AccountID,
-		OpenOnly:  parseBool(request.URL.Query().Get("open_only")),
+		OpenOnly:  proto.Bool(parseBool(request.URL.Query().Get("open_only"))),
 		Limit:     uint32(parseLimit(request.URL.Query().Get("limit"), 100, 500)),
 	})
 	s.writeGRPC(writer, response, err)

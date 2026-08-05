@@ -419,8 +419,13 @@ type ListOrdersRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
 	AccountId     string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	OpenOnly      bool                   `protobuf:"varint,3,opt,name=open_only,json=openOnly,proto3" json:"open_only,omitempty"`
+	OpenOnly      *bool                  `protobuf:"varint,3,opt,name=open_only,json=openOnly,proto3,oneof" json:"open_only,omitempty"`
 	Limit         uint32                 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	Cursor        string                 `protobuf:"bytes,5,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Scope         string                 `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`
+	Status        string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
+	Side          string                 `protobuf:"bytes,8,opt,name=side,proto3" json:"side,omitempty"`
+	Type          string                 `protobuf:"bytes,9,opt,name=type,proto3" json:"type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -470,8 +475,8 @@ func (x *ListOrdersRequest) GetAccountId() string {
 }
 
 func (x *ListOrdersRequest) GetOpenOnly() bool {
-	if x != nil {
-		return x.OpenOnly
+	if x != nil && x.OpenOnly != nil {
+		return *x.OpenOnly
 	}
 	return false
 }
@@ -483,9 +488,45 @@ func (x *ListOrdersRequest) GetLimit() uint32 {
 	return 0
 }
 
+func (x *ListOrdersRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListOrdersRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *ListOrdersRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ListOrdersRequest) GetSide() string {
+	if x != nil {
+		return x.Side
+	}
+	return ""
+}
+
+func (x *ListOrdersRequest) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
 type ListOrdersResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Orders        []*Order               `protobuf:"bytes,1,rep,name=orders,proto3" json:"orders,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -527,11 +568,19 @@ func (x *ListOrdersResponse) GetOrders() []*Order {
 	return nil
 }
 
+func (x *ListOrdersResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
 type ListTradesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
-	AccountId     string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	MarketId string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	// Deprecated: Marked as deprecated in trading.proto.
+	AccountId     string `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	Limit         uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -573,6 +622,7 @@ func (x *ListTradesRequest) GetMarketId() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in trading.proto.
 func (x *ListTradesRequest) GetAccountId() string {
 	if x != nil {
 		return x.AccountId
@@ -1514,6 +1564,9 @@ type Order struct {
 	AcceptedSequence     string                 `protobuf:"bytes,19,opt,name=accepted_sequence,json=acceptedSequence,proto3" json:"accepted_sequence,omitempty"`
 	LastSequence         string                 `protobuf:"bytes,20,opt,name=last_sequence,json=lastSequence,proto3" json:"last_sequence,omitempty"`
 	RejectReason         string                 `protobuf:"bytes,21,opt,name=reject_reason,json=rejectReason,proto3" json:"reject_reason,omitempty"`
+	AverageFillPrice     string                 `protobuf:"bytes,22,opt,name=average_fill_price,json=averageFillPrice,proto3" json:"average_fill_price,omitempty"`
+	CreatedAt            string                 `protobuf:"bytes,23,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt            string                 `protobuf:"bytes,24,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1691,6 +1744,27 @@ func (x *Order) GetLastSequence() string {
 func (x *Order) GetRejectReason() string {
 	if x != nil {
 		return x.RejectReason
+	}
+	return ""
+}
+
+func (x *Order) GetAverageFillPrice() string {
+	if x != nil {
+		return x.AverageFillPrice
+	}
+	return ""
+}
+
+func (x *Order) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *Order) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
 	}
 	return ""
 }
@@ -1912,25 +1986,26 @@ func (x *Trade) GetSellerFee() *Fee {
 }
 
 type Event struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Sequence      string                 `protobuf:"bytes,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	Index         uint32                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
-	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
-	AccountId     string                 `protobuf:"bytes,4,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	OrderId       string                 `protobuf:"bytes,5,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
-	ClientOrderId string                 `protobuf:"bytes,6,opt,name=client_order_id,json=clientOrderId,proto3" json:"client_order_id,omitempty"`
-	Status        string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
-	Side          string                 `protobuf:"bytes,8,opt,name=side,proto3" json:"side,omitempty"`
-	Price         string                 `protobuf:"bytes,9,opt,name=price,proto3" json:"price,omitempty"`
-	Quantity      string                 `protobuf:"bytes,10,opt,name=quantity,proto3" json:"quantity,omitempty"`
-	Remaining     string                 `protobuf:"bytes,11,opt,name=remaining,proto3" json:"remaining,omitempty"`
-	QuoteAmount   string                 `protobuf:"bytes,12,opt,name=quote_amount,json=quoteAmount,proto3" json:"quote_amount,omitempty"`
-	Asset         string                 `protobuf:"bytes,13,opt,name=asset,proto3" json:"asset,omitempty"`
-	Amount        string                 `protobuf:"bytes,14,opt,name=amount,proto3" json:"amount,omitempty"`
-	Reason        string                 `protobuf:"bytes,15,opt,name=reason,proto3" json:"reason,omitempty"`
-	Trade         *Trade                 `protobuf:"bytes,16,opt,name=trade,proto3" json:"trade,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	Sequence             string                 `protobuf:"bytes,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	Index                uint32                 `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	Type                 string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	AccountId            string                 `protobuf:"bytes,4,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	OrderId              string                 `protobuf:"bytes,5,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	ClientOrderId        string                 `protobuf:"bytes,6,opt,name=client_order_id,json=clientOrderId,proto3" json:"client_order_id,omitempty"`
+	Status               string                 `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
+	Side                 string                 `protobuf:"bytes,8,opt,name=side,proto3" json:"side,omitempty"`
+	Price                string                 `protobuf:"bytes,9,opt,name=price,proto3" json:"price,omitempty"`
+	Quantity             string                 `protobuf:"bytes,10,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	Remaining            string                 `protobuf:"bytes,11,opt,name=remaining,proto3" json:"remaining,omitempty"`
+	QuoteAmount          string                 `protobuf:"bytes,12,opt,name=quote_amount,json=quoteAmount,proto3" json:"quote_amount,omitempty"`
+	Asset                string                 `protobuf:"bytes,13,opt,name=asset,proto3" json:"asset,omitempty"`
+	Amount               string                 `protobuf:"bytes,14,opt,name=amount,proto3" json:"amount,omitempty"`
+	Reason               string                 `protobuf:"bytes,15,opt,name=reason,proto3" json:"reason,omitempty"`
+	Trade                *Trade                 `protobuf:"bytes,16,opt,name=trade,proto3" json:"trade,omitempty"`
+	RemainingQuoteBudget string                 `protobuf:"bytes,17,opt,name=remaining_quote_budget,json=remainingQuoteBudget,proto3" json:"remaining_quote_budget,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *Event) Reset() {
@@ -2073,6 +2148,13 @@ func (x *Event) GetTrade() *Trade {
 		return x.Trade
 	}
 	return nil
+}
+
+func (x *Event) GetRemainingQuoteBudget() string {
+	if x != nil {
+		return x.RemainingQuoteBudget
+	}
+	return ""
 }
 
 type Balance struct {
@@ -2495,6 +2577,1012 @@ func (x *EventEnvelope) GetEvent() *Event {
 	return nil
 }
 
+type ListAccountTradesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	AccountId     string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	Cursor        string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         uint32                 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	Side          string                 `protobuf:"bytes,5,opt,name=side,proto3" json:"side,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAccountTradesRequest) Reset() {
+	*x = ListAccountTradesRequest{}
+	mi := &file_trading_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAccountTradesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAccountTradesRequest) ProtoMessage() {}
+
+func (x *ListAccountTradesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAccountTradesRequest.ProtoReflect.Descriptor instead.
+func (*ListAccountTradesRequest) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ListAccountTradesRequest) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *ListAccountTradesRequest) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
+func (x *ListAccountTradesRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListAccountTradesRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListAccountTradesRequest) GetSide() string {
+	if x != nil {
+		return x.Side
+	}
+	return ""
+}
+
+type ListAccountTradesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Trades        []*AccountTrade        `protobuf:"bytes,1,rep,name=trades,proto3" json:"trades,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAccountTradesResponse) Reset() {
+	*x = ListAccountTradesResponse{}
+	mi := &file_trading_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAccountTradesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAccountTradesResponse) ProtoMessage() {}
+
+func (x *ListAccountTradesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAccountTradesResponse.ProtoReflect.Descriptor instead.
+func (*ListAccountTradesResponse) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ListAccountTradesResponse) GetTrades() []*AccountTrade {
+	if x != nil {
+		return x.Trades
+	}
+	return nil
+}
+
+func (x *ListAccountTradesResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+type ListOrderEventsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	AccountId     string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	OrderId       string                 `protobuf:"bytes,3,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Cursor        string                 `protobuf:"bytes,4,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         uint32                 `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListOrderEventsRequest) Reset() {
+	*x = ListOrderEventsRequest{}
+	mi := &file_trading_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListOrderEventsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListOrderEventsRequest) ProtoMessage() {}
+
+func (x *ListOrderEventsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListOrderEventsRequest.ProtoReflect.Descriptor instead.
+func (*ListOrderEventsRequest) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ListOrderEventsRequest) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *ListOrderEventsRequest) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
+func (x *ListOrderEventsRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *ListOrderEventsRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListOrderEventsRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListOrderEventsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Events        []*OrderEvent          `protobuf:"bytes,1,rep,name=events,proto3" json:"events,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListOrderEventsResponse) Reset() {
+	*x = ListOrderEventsResponse{}
+	mi := &file_trading_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListOrderEventsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListOrderEventsResponse) ProtoMessage() {}
+
+func (x *ListOrderEventsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListOrderEventsResponse.ProtoReflect.Descriptor instead.
+func (*ListOrderEventsResponse) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ListOrderEventsResponse) GetEvents() []*OrderEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+func (x *ListOrderEventsResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+type ListLedgerEntriesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MarketId      string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	AccountId     string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	Cursor        string                 `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Limit         uint32                 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	Asset         string                 `protobuf:"bytes,5,opt,name=asset,proto3" json:"asset,omitempty"`
+	Reason        string                 `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLedgerEntriesRequest) Reset() {
+	*x = ListLedgerEntriesRequest{}
+	mi := &file_trading_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLedgerEntriesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLedgerEntriesRequest) ProtoMessage() {}
+
+func (x *ListLedgerEntriesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLedgerEntriesRequest.ProtoReflect.Descriptor instead.
+func (*ListLedgerEntriesRequest) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ListLedgerEntriesRequest) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *ListLedgerEntriesRequest) GetAccountId() string {
+	if x != nil {
+		return x.AccountId
+	}
+	return ""
+}
+
+func (x *ListLedgerEntriesRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListLedgerEntriesRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListLedgerEntriesRequest) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *ListLedgerEntriesRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type ListLedgerEntriesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Entries       []*AccountLedgerEntry  `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	NextCursor    string                 `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLedgerEntriesResponse) Reset() {
+	*x = ListLedgerEntriesResponse{}
+	mi := &file_trading_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLedgerEntriesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLedgerEntriesResponse) ProtoMessage() {}
+
+func (x *ListLedgerEntriesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLedgerEntriesResponse.ProtoReflect.Descriptor instead.
+func (*ListLedgerEntriesResponse) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ListLedgerEntriesResponse) GetEntries() []*AccountLedgerEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ListLedgerEntriesResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+// AccountTrade contains facts for exactly one authenticated account and never
+// carries counterparty account or order identity.
+type AccountTrade struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	MarketId      string                 `protobuf:"bytes,2,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	OrderId       string                 `protobuf:"bytes,3,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Side          string                 `protobuf:"bytes,4,opt,name=side,proto3" json:"side,omitempty"`
+	LiquidityRole string                 `protobuf:"bytes,5,opt,name=liquidity_role,json=liquidityRole,proto3" json:"liquidity_role,omitempty"`
+	Price         string                 `protobuf:"bytes,6,opt,name=price,proto3" json:"price,omitempty"`
+	Quantity      string                 `protobuf:"bytes,7,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	QuoteAmount   string                 `protobuf:"bytes,8,opt,name=quote_amount,json=quoteAmount,proto3" json:"quote_amount,omitempty"`
+	FeeAsset      string                 `protobuf:"bytes,9,opt,name=fee_asset,json=feeAsset,proto3" json:"fee_asset,omitempty"`
+	FeeAmount     string                 `protobuf:"bytes,10,opt,name=fee_amount,json=feeAmount,proto3" json:"fee_amount,omitempty"`
+	FeeRateBps    string                 `protobuf:"bytes,11,opt,name=fee_rate_bps,json=feeRateBps,proto3" json:"fee_rate_bps,omitempty"`
+	Sequence      string                 `protobuf:"bytes,12,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	EventIndex    uint32                 `protobuf:"varint,13,opt,name=event_index,json=eventIndex,proto3" json:"event_index,omitempty"`
+	OccurredAt    string                 `protobuf:"bytes,14,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccountTrade) Reset() {
+	*x = AccountTrade{}
+	mi := &file_trading_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccountTrade) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccountTrade) ProtoMessage() {}
+
+func (x *AccountTrade) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccountTrade.ProtoReflect.Descriptor instead.
+func (*AccountTrade) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *AccountTrade) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetSide() string {
+	if x != nil {
+		return x.Side
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetLiquidityRole() string {
+	if x != nil {
+		return x.LiquidityRole
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetQuantity() string {
+	if x != nil {
+		return x.Quantity
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetQuoteAmount() string {
+	if x != nil {
+		return x.QuoteAmount
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetFeeAsset() string {
+	if x != nil {
+		return x.FeeAsset
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetFeeAmount() string {
+	if x != nil {
+		return x.FeeAmount
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetFeeRateBps() string {
+	if x != nil {
+		return x.FeeRateBps
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetSequence() string {
+	if x != nil {
+		return x.Sequence
+	}
+	return ""
+}
+
+func (x *AccountTrade) GetEventIndex() uint32 {
+	if x != nil {
+		return x.EventIndex
+	}
+	return 0
+}
+
+func (x *AccountTrade) GetOccurredAt() string {
+	if x != nil {
+		return x.OccurredAt
+	}
+	return ""
+}
+
+type AccountFee struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Asset         string                 `protobuf:"bytes,1,opt,name=asset,proto3" json:"asset,omitempty"`
+	Amount        string                 `protobuf:"bytes,2,opt,name=amount,proto3" json:"amount,omitempty"`
+	RateBps       string                 `protobuf:"bytes,3,opt,name=rate_bps,json=rateBps,proto3" json:"rate_bps,omitempty"`
+	Role          string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccountFee) Reset() {
+	*x = AccountFee{}
+	mi := &file_trading_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccountFee) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccountFee) ProtoMessage() {}
+
+func (x *AccountFee) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccountFee.ProtoReflect.Descriptor instead.
+func (*AccountFee) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *AccountFee) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *AccountFee) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *AccountFee) GetRateBps() string {
+	if x != nil {
+		return x.RateBps
+	}
+	return ""
+}
+
+func (x *AccountFee) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+type BalanceEffect struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Asset         string                 `protobuf:"bytes,1,opt,name=asset,proto3" json:"asset,omitempty"`
+	Bucket        string                 `protobuf:"bytes,2,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Amount        string                 `protobuf:"bytes,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	TransactionId string                 `protobuf:"bytes,5,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BalanceEffect) Reset() {
+	*x = BalanceEffect{}
+	mi := &file_trading_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BalanceEffect) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BalanceEffect) ProtoMessage() {}
+
+func (x *BalanceEffect) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BalanceEffect.ProtoReflect.Descriptor instead.
+func (*BalanceEffect) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *BalanceEffect) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *BalanceEffect) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *BalanceEffect) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *BalanceEffect) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *BalanceEffect) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+type OrderEvent struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	EventId              string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	MarketId             string                 `protobuf:"bytes,2,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	OrderId              string                 `protobuf:"bytes,3,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Sequence             string                 `protobuf:"bytes,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	EventIndex           uint32                 `protobuf:"varint,5,opt,name=event_index,json=eventIndex,proto3" json:"event_index,omitempty"`
+	TimelineIndex        uint32                 `protobuf:"varint,6,opt,name=timeline_index,json=timelineIndex,proto3" json:"timeline_index,omitempty"`
+	SourceKind           string                 `protobuf:"bytes,7,opt,name=source_kind,json=sourceKind,proto3" json:"source_kind,omitempty"`
+	Type                 string                 `protobuf:"bytes,8,opt,name=type,proto3" json:"type,omitempty"`
+	Status               string                 `protobuf:"bytes,9,opt,name=status,proto3" json:"status,omitempty"`
+	Quantity             string                 `protobuf:"bytes,10,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	Price                string                 `protobuf:"bytes,11,opt,name=price,proto3" json:"price,omitempty"`
+	RemainingQuantity    string                 `protobuf:"bytes,12,opt,name=remaining_quantity,json=remainingQuantity,proto3" json:"remaining_quantity,omitempty"`
+	RemainingQuoteBudget string                 `protobuf:"bytes,13,opt,name=remaining_quote_budget,json=remainingQuoteBudget,proto3" json:"remaining_quote_budget,omitempty"`
+	TradeId              string                 `protobuf:"bytes,14,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
+	Fee                  *AccountFee            `protobuf:"bytes,15,opt,name=fee,proto3" json:"fee,omitempty"`
+	BalanceEffects       []*BalanceEffect       `protobuf:"bytes,16,rep,name=balance_effects,json=balanceEffects,proto3" json:"balance_effects,omitempty"`
+	Reason               string                 `protobuf:"bytes,17,opt,name=reason,proto3" json:"reason,omitempty"`
+	OccurredAt           string                 `protobuf:"bytes,18,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *OrderEvent) Reset() {
+	*x = OrderEvent{}
+	mi := &file_trading_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OrderEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OrderEvent) ProtoMessage() {}
+
+func (x *OrderEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OrderEvent.ProtoReflect.Descriptor instead.
+func (*OrderEvent) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *OrderEvent) GetEventId() string {
+	if x != nil {
+		return x.EventId
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetSequence() string {
+	if x != nil {
+		return x.Sequence
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetEventIndex() uint32 {
+	if x != nil {
+		return x.EventIndex
+	}
+	return 0
+}
+
+func (x *OrderEvent) GetTimelineIndex() uint32 {
+	if x != nil {
+		return x.TimelineIndex
+	}
+	return 0
+}
+
+func (x *OrderEvent) GetSourceKind() string {
+	if x != nil {
+		return x.SourceKind
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetQuantity() string {
+	if x != nil {
+		return x.Quantity
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetPrice() string {
+	if x != nil {
+		return x.Price
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetRemainingQuantity() string {
+	if x != nil {
+		return x.RemainingQuantity
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetRemainingQuoteBudget() string {
+	if x != nil {
+		return x.RemainingQuoteBudget
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetTradeId() string {
+	if x != nil {
+		return x.TradeId
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetFee() *AccountFee {
+	if x != nil {
+		return x.Fee
+	}
+	return nil
+}
+
+func (x *OrderEvent) GetBalanceEffects() []*BalanceEffect {
+	if x != nil {
+		return x.BalanceEffects
+	}
+	return nil
+}
+
+func (x *OrderEvent) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *OrderEvent) GetOccurredAt() string {
+	if x != nil {
+		return x.OccurredAt
+	}
+	return ""
+}
+
+type AccountLedgerEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EntryId       string                 `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	MarketId      string                 `protobuf:"bytes,2,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	Sequence      string                 `protobuf:"bytes,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	TransactionId string                 `protobuf:"bytes,4,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	EntryIndex    uint32                 `protobuf:"varint,5,opt,name=entry_index,json=entryIndex,proto3" json:"entry_index,omitempty"`
+	Asset         string                 `protobuf:"bytes,6,opt,name=asset,proto3" json:"asset,omitempty"`
+	Bucket        string                 `protobuf:"bytes,7,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Amount        string                 `protobuf:"bytes,8,opt,name=amount,proto3" json:"amount,omitempty"`
+	Reason        string                 `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reference     string                 `protobuf:"bytes,10,opt,name=reference,proto3" json:"reference,omitempty"`
+	OrderId       string                 `protobuf:"bytes,11,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	TradeId       string                 `protobuf:"bytes,12,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
+	OccurredAt    string                 `protobuf:"bytes,13,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AccountLedgerEntry) Reset() {
+	*x = AccountLedgerEntry{}
+	mi := &file_trading_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AccountLedgerEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AccountLedgerEntry) ProtoMessage() {}
+
+func (x *AccountLedgerEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_trading_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AccountLedgerEntry.ProtoReflect.Descriptor instead.
+func (*AccountLedgerEntry) Descriptor() ([]byte, []int) {
+	return file_trading_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *AccountLedgerEntry) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetSequence() string {
+	if x != nil {
+		return x.Sequence
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetEntryIndex() uint32 {
+	if x != nil {
+		return x.EntryIndex
+	}
+	return 0
+}
+
+func (x *AccountLedgerEntry) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetReference() string {
+	if x != nil {
+		return x.Reference
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetTradeId() string {
+	if x != nil {
+		return x.TradeId
+	}
+	return ""
+}
+
+func (x *AccountLedgerEntry) GetOccurredAt() string {
+	if x != nil {
+		return x.OccurredAt
+	}
+	return ""
+}
+
 var File_trading_proto protoreflect.FileDescriptor
 
 const file_trading_proto_rawDesc = "" +
@@ -2524,19 +3612,28 @@ const file_trading_proto_rawDesc = "" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x02 \x01(\tR\taccountId\x12\x19\n" +
-	"\border_id\x18\x03 \x01(\tR\aorderId\"\x82\x01\n" +
+	"\border_id\x18\x03 \x01(\tR\aorderId\"\x83\x02\n" +
 	"\x11ListOrdersRequest\x12\x1b\n" +
 	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1d\n" +
 	"\n" +
-	"account_id\x18\x02 \x01(\tR\taccountId\x12\x1b\n" +
-	"\topen_only\x18\x03 \x01(\bR\bopenOnly\x12\x14\n" +
-	"\x05limit\x18\x04 \x01(\rR\x05limit\"C\n" +
-	"\x12ListOrdersResponse\x12-\n" +
-	"\x06orders\x18\x01 \x03(\v2\x15.s78.trading.v1.OrderR\x06orders\"e\n" +
-	"\x11ListTradesRequest\x12\x1b\n" +
-	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1d\n" +
+	"account_id\x18\x02 \x01(\tR\taccountId\x12 \n" +
+	"\topen_only\x18\x03 \x01(\bH\x00R\bopenOnly\x88\x01\x01\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\rR\x05limit\x12\x16\n" +
+	"\x06cursor\x18\x05 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05scope\x18\x06 \x01(\tR\x05scope\x12\x16\n" +
+	"\x06status\x18\a \x01(\tR\x06status\x12\x12\n" +
+	"\x04side\x18\b \x01(\tR\x04side\x12\x12\n" +
+	"\x04type\x18\t \x01(\tR\x04typeB\f\n" +
 	"\n" +
-	"account_id\x18\x02 \x01(\tR\taccountId\x12\x14\n" +
+	"_open_only\"d\n" +
+	"\x12ListOrdersResponse\x12-\n" +
+	"\x06orders\x18\x01 \x03(\v2\x15.s78.trading.v1.OrderR\x06orders\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"i\n" +
+	"\x11ListTradesRequest\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12!\n" +
+	"\n" +
+	"account_id\x18\x02 \x01(\tB\x02\x18\x01R\taccountId\x12\x14\n" +
 	"\x05limit\x18\x03 \x01(\rR\x05limit\"C\n" +
 	"\x12ListTradesResponse\x12-\n" +
 	"\x06trades\x18\x01 \x03(\v2\x15.s78.trading.v1.TradeR\x06trades\"P\n" +
@@ -2614,7 +3711,7 @@ const file_trading_proto_rawDesc = "" +
 	"\bsequence\x18\x01 \x01(\tR\bsequence\x12\x19\n" +
 	"\border_id\x18\x02 \x01(\tR\aorderId\x12\x16\n" +
 	"\x06status\x18\x03 \x01(\tR\x06status\x12-\n" +
-	"\x06events\x18\x04 \x03(\v2\x15.s78.trading.v1.EventR\x06events\"\xd9\x05\n" +
+	"\x06events\x18\x04 \x03(\v2\x15.s78.trading.v1.EventR\x06events\"\xc5\x06\n" +
 	"\x05Order\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
 	"\x0fclient_order_id\x18\x02 \x01(\tR\rclientOrderId\x12\x1d\n" +
@@ -2641,7 +3738,12 @@ const file_trading_proto_rawDesc = "" +
 	"\x06status\x18\x12 \x01(\tR\x06status\x12+\n" +
 	"\x11accepted_sequence\x18\x13 \x01(\tR\x10acceptedSequence\x12#\n" +
 	"\rlast_sequence\x18\x14 \x01(\tR\flastSequence\x12#\n" +
-	"\rreject_reason\x18\x15 \x01(\tR\frejectReason\"\x81\x01\n" +
+	"\rreject_reason\x18\x15 \x01(\tR\frejectReason\x12,\n" +
+	"\x12average_fill_price\x18\x16 \x01(\tR\x10averageFillPrice\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x17 \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\x18 \x01(\tR\tupdatedAt\"\x81\x01\n" +
 	"\x03Fee\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\x12\x14\n" +
@@ -2664,7 +3766,7 @@ const file_trading_proto_rawDesc = "" +
 	"\x11seller_account_id\x18\v \x01(\tR\x0fsellerAccountId\x120\n" +
 	"\tbuyer_fee\x18\f \x01(\v2\x13.s78.trading.v1.FeeR\bbuyerFee\x122\n" +
 	"\n" +
-	"seller_fee\x18\r \x01(\v2\x13.s78.trading.v1.FeeR\tsellerFee\"\xc1\x03\n" +
+	"seller_fee\x18\r \x01(\v2\x13.s78.trading.v1.FeeR\tsellerFee\"\xf7\x03\n" +
 	"\x05Event\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\tR\bsequence\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\rR\x05index\x12\x12\n" +
@@ -2683,7 +3785,8 @@ const file_trading_proto_rawDesc = "" +
 	"\x05asset\x18\r \x01(\tR\x05asset\x12\x16\n" +
 	"\x06amount\x18\x0e \x01(\tR\x06amount\x12\x16\n" +
 	"\x06reason\x18\x0f \x01(\tR\x06reason\x12+\n" +
-	"\x05trade\x18\x10 \x01(\v2\x15.s78.trading.v1.TradeR\x05trade\"Q\n" +
+	"\x05trade\x18\x10 \x01(\v2\x15.s78.trading.v1.TradeR\x05trade\x124\n" +
+	"\x16remaining_quote_budget\x18\x11 \x01(\tR\x14remainingQuoteBudget\"Q\n" +
 	"\aBalance\x12\x14\n" +
 	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x1c\n" +
 	"\tavailable\x18\x02 \x01(\tR\tavailable\x12\x12\n" +
@@ -2725,7 +3828,114 @@ const file_trading_proto_rawDesc = "" +
 	"\bsequence\x18\x02 \x01(\tR\bsequence\x12\x1f\n" +
 	"\vevent_index\x18\x03 \x01(\rR\n" +
 	"eventIndex\x12+\n" +
-	"\x05event\x18\x04 \x01(\v2\x15.s78.trading.v1.EventR\x05event*9\n" +
+	"\x05event\x18\x04 \x01(\v2\x15.s78.trading.v1.EventR\x05event\"\x98\x01\n" +
+	"\x18ListAccountTradesRequest\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1d\n" +
+	"\n" +
+	"account_id\x18\x02 \x01(\tR\taccountId\x12\x16\n" +
+	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\rR\x05limit\x12\x12\n" +
+	"\x04side\x18\x05 \x01(\tR\x04side\"r\n" +
+	"\x19ListAccountTradesResponse\x124\n" +
+	"\x06trades\x18\x01 \x03(\v2\x1c.s78.trading.v1.AccountTradeR\x06trades\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\x9d\x01\n" +
+	"\x16ListOrderEventsRequest\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1d\n" +
+	"\n" +
+	"account_id\x18\x02 \x01(\tR\taccountId\x12\x19\n" +
+	"\border_id\x18\x03 \x01(\tR\aorderId\x12\x16\n" +
+	"\x06cursor\x18\x04 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x05 \x01(\rR\x05limit\"n\n" +
+	"\x17ListOrderEventsResponse\x122\n" +
+	"\x06events\x18\x01 \x03(\v2\x1a.s78.trading.v1.OrderEventR\x06events\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\xb2\x01\n" +
+	"\x18ListLedgerEntriesRequest\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x1d\n" +
+	"\n" +
+	"account_id\x18\x02 \x01(\tR\taccountId\x12\x16\n" +
+	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\rR\x05limit\x12\x14\n" +
+	"\x05asset\x18\x05 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06reason\x18\x06 \x01(\tR\x06reason\"z\n" +
+	"\x19ListLedgerEntriesResponse\x12<\n" +
+	"\aentries\x18\x01 \x03(\v2\".s78.trading.v1.AccountLedgerEntryR\aentries\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\"\xa2\x03\n" +
+	"\fAccountTrade\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\tmarket_id\x18\x02 \x01(\tR\bmarketId\x12\x19\n" +
+	"\border_id\x18\x03 \x01(\tR\aorderId\x12\x12\n" +
+	"\x04side\x18\x04 \x01(\tR\x04side\x12%\n" +
+	"\x0eliquidity_role\x18\x05 \x01(\tR\rliquidityRole\x12\x14\n" +
+	"\x05price\x18\x06 \x01(\tR\x05price\x12\x1a\n" +
+	"\bquantity\x18\a \x01(\tR\bquantity\x12!\n" +
+	"\fquote_amount\x18\b \x01(\tR\vquoteAmount\x12\x1b\n" +
+	"\tfee_asset\x18\t \x01(\tR\bfeeAsset\x12\x1d\n" +
+	"\n" +
+	"fee_amount\x18\n" +
+	" \x01(\tR\tfeeAmount\x12 \n" +
+	"\ffee_rate_bps\x18\v \x01(\tR\n" +
+	"feeRateBps\x12\x1a\n" +
+	"\bsequence\x18\f \x01(\tR\bsequence\x12\x1f\n" +
+	"\vevent_index\x18\r \x01(\rR\n" +
+	"eventIndex\x12\x1f\n" +
+	"\voccurred_at\x18\x0e \x01(\tR\n" +
+	"occurredAt\"i\n" +
+	"\n" +
+	"AccountFee\x12\x14\n" +
+	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06amount\x18\x02 \x01(\tR\x06amount\x12\x19\n" +
+	"\brate_bps\x18\x03 \x01(\tR\arateBps\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\"\x94\x01\n" +
+	"\rBalanceEffect\x12\x14\n" +
+	"\x05asset\x18\x01 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06bucket\x18\x02 \x01(\tR\x06bucket\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\tR\x06amount\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x12%\n" +
+	"\x0etransaction_id\x18\x05 \x01(\tR\rtransactionId\"\xf1\x04\n" +
+	"\n" +
+	"OrderEvent\x12\x19\n" +
+	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x1b\n" +
+	"\tmarket_id\x18\x02 \x01(\tR\bmarketId\x12\x19\n" +
+	"\border_id\x18\x03 \x01(\tR\aorderId\x12\x1a\n" +
+	"\bsequence\x18\x04 \x01(\tR\bsequence\x12\x1f\n" +
+	"\vevent_index\x18\x05 \x01(\rR\n" +
+	"eventIndex\x12%\n" +
+	"\x0etimeline_index\x18\x06 \x01(\rR\rtimelineIndex\x12\x1f\n" +
+	"\vsource_kind\x18\a \x01(\tR\n" +
+	"sourceKind\x12\x12\n" +
+	"\x04type\x18\b \x01(\tR\x04type\x12\x16\n" +
+	"\x06status\x18\t \x01(\tR\x06status\x12\x1a\n" +
+	"\bquantity\x18\n" +
+	" \x01(\tR\bquantity\x12\x14\n" +
+	"\x05price\x18\v \x01(\tR\x05price\x12-\n" +
+	"\x12remaining_quantity\x18\f \x01(\tR\x11remainingQuantity\x124\n" +
+	"\x16remaining_quote_budget\x18\r \x01(\tR\x14remainingQuoteBudget\x12\x19\n" +
+	"\btrade_id\x18\x0e \x01(\tR\atradeId\x12,\n" +
+	"\x03fee\x18\x0f \x01(\v2\x1a.s78.trading.v1.AccountFeeR\x03fee\x12F\n" +
+	"\x0fbalance_effects\x18\x10 \x03(\v2\x1d.s78.trading.v1.BalanceEffectR\x0ebalanceEffects\x12\x16\n" +
+	"\x06reason\x18\x11 \x01(\tR\x06reason\x12\x1f\n" +
+	"\voccurred_at\x18\x12 \x01(\tR\n" +
+	"occurredAt\"\x83\x03\n" +
+	"\x12AccountLedgerEntry\x12\x19\n" +
+	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x1b\n" +
+	"\tmarket_id\x18\x02 \x01(\tR\bmarketId\x12\x1a\n" +
+	"\bsequence\x18\x03 \x01(\tR\bsequence\x12%\n" +
+	"\x0etransaction_id\x18\x04 \x01(\tR\rtransactionId\x12\x1f\n" +
+	"\ventry_index\x18\x05 \x01(\rR\n" +
+	"entryIndex\x12\x14\n" +
+	"\x05asset\x18\x06 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06bucket\x18\a \x01(\tR\x06bucket\x12\x16\n" +
+	"\x06amount\x18\b \x01(\tR\x06amount\x12\x16\n" +
+	"\x06reason\x18\t \x01(\tR\x06reason\x12\x1c\n" +
+	"\treference\x18\n" +
+	" \x01(\tR\treference\x12\x19\n" +
+	"\border_id\x18\v \x01(\tR\aorderId\x12\x19\n" +
+	"\btrade_id\x18\f \x01(\tR\atradeId\x12\x1f\n" +
+	"\voccurred_at\x18\r \x01(\tR\n" +
+	"occurredAt*9\n" +
 	"\x04Side\x12\x14\n" +
 	"\x10SIDE_UNSPECIFIED\x10\x00\x12\f\n" +
 	"\bSIDE_BUY\x10\x01\x12\r\n" +
@@ -2738,7 +3948,8 @@ const file_trading_proto_rawDesc = "" +
 	"\x19TIME_IN_FORCE_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11TIME_IN_FORCE_GTC\x10\x01\x12\x15\n" +
 	"\x11TIME_IN_FORCE_IOC\x10\x02\x12\x15\n" +
-	"\x11TIME_IN_FORCE_FOK\x10\x032\x9b\b\n" +
+	"\x11TIME_IN_FORCE_FOK\x10\x032\xd3\n" +
+	"\n" +
 	"\x0eTradingService\x12P\n" +
 	"\vSubmitOrder\x12\".s78.trading.v1.SubmitOrderRequest\x1a\x1d.s78.trading.v1.CommandResult\x12P\n" +
 	"\vCancelOrder\x12\".s78.trading.v1.CancelOrderRequest\x1a\x1d.s78.trading.v1.CommandResult\x12B\n" +
@@ -2746,7 +3957,10 @@ const file_trading_proto_rawDesc = "" +
 	"\n" +
 	"ListOrders\x12!.s78.trading.v1.ListOrdersRequest\x1a\".s78.trading.v1.ListOrdersResponse\x12S\n" +
 	"\n" +
-	"ListTrades\x12!.s78.trading.v1.ListTradesRequest\x1a\".s78.trading.v1.ListTradesResponse\x12V\n" +
+	"ListTrades\x12!.s78.trading.v1.ListTradesRequest\x1a\".s78.trading.v1.ListTradesResponse\x12h\n" +
+	"\x11ListAccountTrades\x12(.s78.trading.v1.ListAccountTradesRequest\x1a).s78.trading.v1.ListAccountTradesResponse\x12b\n" +
+	"\x0fListOrderEvents\x12&.s78.trading.v1.ListOrderEventsRequest\x1a'.s78.trading.v1.ListOrderEventsResponse\x12h\n" +
+	"\x11ListLedgerEntries\x12(.s78.trading.v1.ListLedgerEntriesRequest\x1a).s78.trading.v1.ListLedgerEntriesResponse\x12V\n" +
 	"\vGetBalances\x12\".s78.trading.v1.GetBalancesRequest\x1a#.s78.trading.v1.GetBalancesResponse\x12N\n" +
 	"\fGetOrderBook\x12#.s78.trading.v1.GetOrderBookRequest\x1a\x19.s78.trading.v1.OrderBook\x12M\n" +
 	"\tGetStatus\x12 .s78.trading.v1.GetStatusRequest\x1a\x1e.s78.trading.v1.StatusResponse\x12e\n" +
@@ -2768,7 +3982,7 @@ func file_trading_proto_rawDescGZIP() []byte {
 }
 
 var file_trading_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_trading_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_trading_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_trading_proto_goTypes = []any{
 	(Side)(0),                         // 0: s78.trading.v1.Side
 	(OrderType)(0),                    // 1: s78.trading.v1.OrderType
@@ -2802,6 +4016,17 @@ var file_trading_proto_goTypes = []any{
 	(*OrderBook)(nil),                 // 29: s78.trading.v1.OrderBook
 	(*StatusResponse)(nil),            // 30: s78.trading.v1.StatusResponse
 	(*EventEnvelope)(nil),             // 31: s78.trading.v1.EventEnvelope
+	(*ListAccountTradesRequest)(nil),  // 32: s78.trading.v1.ListAccountTradesRequest
+	(*ListAccountTradesResponse)(nil), // 33: s78.trading.v1.ListAccountTradesResponse
+	(*ListOrderEventsRequest)(nil),    // 34: s78.trading.v1.ListOrderEventsRequest
+	(*ListOrderEventsResponse)(nil),   // 35: s78.trading.v1.ListOrderEventsResponse
+	(*ListLedgerEntriesRequest)(nil),  // 36: s78.trading.v1.ListLedgerEntriesRequest
+	(*ListLedgerEntriesResponse)(nil), // 37: s78.trading.v1.ListLedgerEntriesResponse
+	(*AccountTrade)(nil),              // 38: s78.trading.v1.AccountTrade
+	(*AccountFee)(nil),                // 39: s78.trading.v1.AccountFee
+	(*BalanceEffect)(nil),             // 40: s78.trading.v1.BalanceEffect
+	(*OrderEvent)(nil),                // 41: s78.trading.v1.OrderEvent
+	(*AccountLedgerEntry)(nil),        // 42: s78.trading.v1.AccountLedgerEntry
 }
 var file_trading_proto_depIdxs = []int32{
 	0,  // 0: s78.trading.v1.SubmitOrderRequest.side:type_name -> s78.trading.v1.Side
@@ -2822,35 +4047,46 @@ var file_trading_proto_depIdxs = []int32{
 	28, // 15: s78.trading.v1.OrderBook.bids:type_name -> s78.trading.v1.PriceLevel
 	28, // 16: s78.trading.v1.OrderBook.asks:type_name -> s78.trading.v1.PriceLevel
 	26, // 17: s78.trading.v1.EventEnvelope.event:type_name -> s78.trading.v1.Event
-	3,  // 18: s78.trading.v1.TradingService.SubmitOrder:input_type -> s78.trading.v1.SubmitOrderRequest
-	4,  // 19: s78.trading.v1.TradingService.CancelOrder:input_type -> s78.trading.v1.CancelOrderRequest
-	5,  // 20: s78.trading.v1.TradingService.GetOrder:input_type -> s78.trading.v1.GetOrderRequest
-	6,  // 21: s78.trading.v1.TradingService.ListOrders:input_type -> s78.trading.v1.ListOrdersRequest
-	8,  // 22: s78.trading.v1.TradingService.ListTrades:input_type -> s78.trading.v1.ListTradesRequest
-	10, // 23: s78.trading.v1.TradingService.GetBalances:input_type -> s78.trading.v1.GetBalancesRequest
-	12, // 24: s78.trading.v1.TradingService.GetOrderBook:input_type -> s78.trading.v1.GetOrderBookRequest
-	13, // 25: s78.trading.v1.TradingService.GetStatus:input_type -> s78.trading.v1.GetStatusRequest
-	14, // 26: s78.trading.v1.TradingService.GetRecoveryStatus:input_type -> s78.trading.v1.GetRecoveryStatusRequest
-	18, // 27: s78.trading.v1.TradingService.PromoteRecovery:input_type -> s78.trading.v1.PromoteRecoveryRequest
-	20, // 28: s78.trading.v1.TradingService.AdminFundVirtual:input_type -> s78.trading.v1.AdminFundVirtualRequest
-	21, // 29: s78.trading.v1.TradingService.SubscribeEvents:input_type -> s78.trading.v1.SubscribeEventsRequest
-	22, // 30: s78.trading.v1.TradingService.SubmitOrder:output_type -> s78.trading.v1.CommandResult
-	22, // 31: s78.trading.v1.TradingService.CancelOrder:output_type -> s78.trading.v1.CommandResult
-	23, // 32: s78.trading.v1.TradingService.GetOrder:output_type -> s78.trading.v1.Order
-	7,  // 33: s78.trading.v1.TradingService.ListOrders:output_type -> s78.trading.v1.ListOrdersResponse
-	9,  // 34: s78.trading.v1.TradingService.ListTrades:output_type -> s78.trading.v1.ListTradesResponse
-	11, // 35: s78.trading.v1.TradingService.GetBalances:output_type -> s78.trading.v1.GetBalancesResponse
-	29, // 36: s78.trading.v1.TradingService.GetOrderBook:output_type -> s78.trading.v1.OrderBook
-	30, // 37: s78.trading.v1.TradingService.GetStatus:output_type -> s78.trading.v1.StatusResponse
-	19, // 38: s78.trading.v1.TradingService.GetRecoveryStatus:output_type -> s78.trading.v1.RecoveryStatusResponse
-	19, // 39: s78.trading.v1.TradingService.PromoteRecovery:output_type -> s78.trading.v1.RecoveryStatusResponse
-	22, // 40: s78.trading.v1.TradingService.AdminFundVirtual:output_type -> s78.trading.v1.CommandResult
-	31, // 41: s78.trading.v1.TradingService.SubscribeEvents:output_type -> s78.trading.v1.EventEnvelope
-	30, // [30:42] is the sub-list for method output_type
-	18, // [18:30] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	38, // 18: s78.trading.v1.ListAccountTradesResponse.trades:type_name -> s78.trading.v1.AccountTrade
+	41, // 19: s78.trading.v1.ListOrderEventsResponse.events:type_name -> s78.trading.v1.OrderEvent
+	42, // 20: s78.trading.v1.ListLedgerEntriesResponse.entries:type_name -> s78.trading.v1.AccountLedgerEntry
+	39, // 21: s78.trading.v1.OrderEvent.fee:type_name -> s78.trading.v1.AccountFee
+	40, // 22: s78.trading.v1.OrderEvent.balance_effects:type_name -> s78.trading.v1.BalanceEffect
+	3,  // 23: s78.trading.v1.TradingService.SubmitOrder:input_type -> s78.trading.v1.SubmitOrderRequest
+	4,  // 24: s78.trading.v1.TradingService.CancelOrder:input_type -> s78.trading.v1.CancelOrderRequest
+	5,  // 25: s78.trading.v1.TradingService.GetOrder:input_type -> s78.trading.v1.GetOrderRequest
+	6,  // 26: s78.trading.v1.TradingService.ListOrders:input_type -> s78.trading.v1.ListOrdersRequest
+	8,  // 27: s78.trading.v1.TradingService.ListTrades:input_type -> s78.trading.v1.ListTradesRequest
+	32, // 28: s78.trading.v1.TradingService.ListAccountTrades:input_type -> s78.trading.v1.ListAccountTradesRequest
+	34, // 29: s78.trading.v1.TradingService.ListOrderEvents:input_type -> s78.trading.v1.ListOrderEventsRequest
+	36, // 30: s78.trading.v1.TradingService.ListLedgerEntries:input_type -> s78.trading.v1.ListLedgerEntriesRequest
+	10, // 31: s78.trading.v1.TradingService.GetBalances:input_type -> s78.trading.v1.GetBalancesRequest
+	12, // 32: s78.trading.v1.TradingService.GetOrderBook:input_type -> s78.trading.v1.GetOrderBookRequest
+	13, // 33: s78.trading.v1.TradingService.GetStatus:input_type -> s78.trading.v1.GetStatusRequest
+	14, // 34: s78.trading.v1.TradingService.GetRecoveryStatus:input_type -> s78.trading.v1.GetRecoveryStatusRequest
+	18, // 35: s78.trading.v1.TradingService.PromoteRecovery:input_type -> s78.trading.v1.PromoteRecoveryRequest
+	20, // 36: s78.trading.v1.TradingService.AdminFundVirtual:input_type -> s78.trading.v1.AdminFundVirtualRequest
+	21, // 37: s78.trading.v1.TradingService.SubscribeEvents:input_type -> s78.trading.v1.SubscribeEventsRequest
+	22, // 38: s78.trading.v1.TradingService.SubmitOrder:output_type -> s78.trading.v1.CommandResult
+	22, // 39: s78.trading.v1.TradingService.CancelOrder:output_type -> s78.trading.v1.CommandResult
+	23, // 40: s78.trading.v1.TradingService.GetOrder:output_type -> s78.trading.v1.Order
+	7,  // 41: s78.trading.v1.TradingService.ListOrders:output_type -> s78.trading.v1.ListOrdersResponse
+	9,  // 42: s78.trading.v1.TradingService.ListTrades:output_type -> s78.trading.v1.ListTradesResponse
+	33, // 43: s78.trading.v1.TradingService.ListAccountTrades:output_type -> s78.trading.v1.ListAccountTradesResponse
+	35, // 44: s78.trading.v1.TradingService.ListOrderEvents:output_type -> s78.trading.v1.ListOrderEventsResponse
+	37, // 45: s78.trading.v1.TradingService.ListLedgerEntries:output_type -> s78.trading.v1.ListLedgerEntriesResponse
+	11, // 46: s78.trading.v1.TradingService.GetBalances:output_type -> s78.trading.v1.GetBalancesResponse
+	29, // 47: s78.trading.v1.TradingService.GetOrderBook:output_type -> s78.trading.v1.OrderBook
+	30, // 48: s78.trading.v1.TradingService.GetStatus:output_type -> s78.trading.v1.StatusResponse
+	19, // 49: s78.trading.v1.TradingService.GetRecoveryStatus:output_type -> s78.trading.v1.RecoveryStatusResponse
+	19, // 50: s78.trading.v1.TradingService.PromoteRecovery:output_type -> s78.trading.v1.RecoveryStatusResponse
+	22, // 51: s78.trading.v1.TradingService.AdminFundVirtual:output_type -> s78.trading.v1.CommandResult
+	31, // 52: s78.trading.v1.TradingService.SubscribeEvents:output_type -> s78.trading.v1.EventEnvelope
+	38, // [38:53] is the sub-list for method output_type
+	23, // [23:38] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_trading_proto_init() }
@@ -2858,13 +4094,14 @@ func file_trading_proto_init() {
 	if File_trading_proto != nil {
 		return
 	}
+	file_trading_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_trading_proto_rawDesc), len(file_trading_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   29,
+			NumMessages:   40,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
