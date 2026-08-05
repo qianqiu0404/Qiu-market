@@ -128,6 +128,10 @@ keyset，且绑定完整 filter。新订单不会移动已开始的翻页窗口�
 要求新订单并发写入时不跳项、不重复；`open/history/status` 只保证稳定键不重复，完整集合
 通过刷新首屏获得。响应：
 
+P0 scope 集合固定为：`open={open,partially_filled}`，
+`history={filled,canceled,rejected}`，`all=open union history`。领域内部瞬时 `received` 不进入
+订单查询投影；它只可能作为订单时间线中 `order_accepted` 节点的 lifecycle status 出现。
+
 兼容与存储要求：
 
 - migration 为 `trading_order` 增加实体列 `accepted_sequence`、`created_at`、`updated_at`；
@@ -188,8 +192,10 @@ P0 Query：`cursor`、`limit`；P1 增加 `side=buy|sell`。排序固定为
 
 内部接口必须拆分：
 
-- 现有 `ListTrades` 继续作为公开 market trade feed，只返回匿名化市场成交事实；contract
-  scaffold 后其 `account_id` 必须为空，非空请求返回 invalid argument，防止继续走私有旧路径；
+- 现有 `ListTrades` 继续作为公开 market trade feed，只返回匿名化市场成交事实；
+  Transport/API P0 实现合并后其 `account_id` 必须为空，非空请求返回 invalid argument，
+  防止继续走私有旧路径；纯结构 contract scaffold 不提前改变现有 endpoint 行为，该隐私修复
+  在 Transport/API P0 合并前保持 `pending`；
 - 新增 account-scoped `ListAccountTrades` RPC 和独立 DTO，`account_id` 只由 HTTP session
   注入，不接受浏览器传值；
 - 新私有 `GET /account/trades` 只能调用 `ListAccountTrades`，禁止把包含

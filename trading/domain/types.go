@@ -404,11 +404,15 @@ type Event struct {
 	Price         int64       `json:"price,omitempty"`
 	Quantity      int64       `json:"quantity,omitempty"`
 	Remaining     int64       `json:"remaining,omitempty"`
-	QuoteAmount   int64       `json:"quote_amount,omitempty"`
-	Asset         Asset       `json:"asset,omitempty"`
-	Amount        int64       `json:"amount,omitempty"`
-	Reason        string      `json:"reason,omitempty"`
-	Trade         *Trade      `json:"trade,omitempty"`
+	// RemainingQuoteBudget is the V1 event field for Market Buy budget state.
+	// Emitters added by the V1 implementation set it; historical events are
+	// reconstructed from the accepted quote budget minus cumulative quote amounts.
+	RemainingQuoteBudget *int64 `json:"remaining_quote_budget,omitempty"`
+	QuoteAmount          int64  `json:"quote_amount,omitempty"`
+	Asset                Asset  `json:"asset,omitempty"`
+	Amount               int64  `json:"amount,omitempty"`
+	Reason               string `json:"reason,omitempty"`
+	Trade                *Trade `json:"trade,omitempty"`
 }
 
 type Result struct {

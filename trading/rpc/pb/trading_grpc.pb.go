@@ -24,6 +24,9 @@ const (
 	TradingService_GetOrder_FullMethodName          = "/s78.trading.v1.TradingService/GetOrder"
 	TradingService_ListOrders_FullMethodName        = "/s78.trading.v1.TradingService/ListOrders"
 	TradingService_ListTrades_FullMethodName        = "/s78.trading.v1.TradingService/ListTrades"
+	TradingService_ListAccountTrades_FullMethodName = "/s78.trading.v1.TradingService/ListAccountTrades"
+	TradingService_ListOrderEvents_FullMethodName   = "/s78.trading.v1.TradingService/ListOrderEvents"
+	TradingService_ListLedgerEntries_FullMethodName = "/s78.trading.v1.TradingService/ListLedgerEntries"
 	TradingService_GetBalances_FullMethodName       = "/s78.trading.v1.TradingService/GetBalances"
 	TradingService_GetOrderBook_FullMethodName      = "/s78.trading.v1.TradingService/GetOrderBook"
 	TradingService_GetStatus_FullMethodName         = "/s78.trading.v1.TradingService/GetStatus"
@@ -42,6 +45,9 @@ type TradingServiceClient interface {
 	GetOrder(ctx context.Context, in *GetOrderRequest, opts ...grpc.CallOption) (*Order, error)
 	ListOrders(ctx context.Context, in *ListOrdersRequest, opts ...grpc.CallOption) (*ListOrdersResponse, error)
 	ListTrades(ctx context.Context, in *ListTradesRequest, opts ...grpc.CallOption) (*ListTradesResponse, error)
+	ListAccountTrades(ctx context.Context, in *ListAccountTradesRequest, opts ...grpc.CallOption) (*ListAccountTradesResponse, error)
+	ListOrderEvents(ctx context.Context, in *ListOrderEventsRequest, opts ...grpc.CallOption) (*ListOrderEventsResponse, error)
+	ListLedgerEntries(ctx context.Context, in *ListLedgerEntriesRequest, opts ...grpc.CallOption) (*ListLedgerEntriesResponse, error)
 	GetBalances(ctx context.Context, in *GetBalancesRequest, opts ...grpc.CallOption) (*GetBalancesResponse, error)
 	GetOrderBook(ctx context.Context, in *GetOrderBookRequest, opts ...grpc.CallOption) (*OrderBook, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
@@ -98,6 +104,33 @@ func (c *tradingServiceClient) ListOrders(ctx context.Context, in *ListOrdersReq
 func (c *tradingServiceClient) ListTrades(ctx context.Context, in *ListTradesRequest, opts ...grpc.CallOption) (*ListTradesResponse, error) {
 	out := new(ListTradesResponse)
 	err := c.cc.Invoke(ctx, TradingService_ListTrades_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tradingServiceClient) ListAccountTrades(ctx context.Context, in *ListAccountTradesRequest, opts ...grpc.CallOption) (*ListAccountTradesResponse, error) {
+	out := new(ListAccountTradesResponse)
+	err := c.cc.Invoke(ctx, TradingService_ListAccountTrades_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tradingServiceClient) ListOrderEvents(ctx context.Context, in *ListOrderEventsRequest, opts ...grpc.CallOption) (*ListOrderEventsResponse, error) {
+	out := new(ListOrderEventsResponse)
+	err := c.cc.Invoke(ctx, TradingService_ListOrderEvents_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *tradingServiceClient) ListLedgerEntries(ctx context.Context, in *ListLedgerEntriesRequest, opts ...grpc.CallOption) (*ListLedgerEntriesResponse, error) {
+	out := new(ListLedgerEntriesResponse)
+	err := c.cc.Invoke(ctx, TradingService_ListLedgerEntries_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +232,9 @@ type TradingServiceServer interface {
 	GetOrder(context.Context, *GetOrderRequest) (*Order, error)
 	ListOrders(context.Context, *ListOrdersRequest) (*ListOrdersResponse, error)
 	ListTrades(context.Context, *ListTradesRequest) (*ListTradesResponse, error)
+	ListAccountTrades(context.Context, *ListAccountTradesRequest) (*ListAccountTradesResponse, error)
+	ListOrderEvents(context.Context, *ListOrderEventsRequest) (*ListOrderEventsResponse, error)
+	ListLedgerEntries(context.Context, *ListLedgerEntriesRequest) (*ListLedgerEntriesResponse, error)
 	GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error)
 	GetOrderBook(context.Context, *GetOrderBookRequest) (*OrderBook, error)
 	GetStatus(context.Context, *GetStatusRequest) (*StatusResponse, error)
@@ -227,6 +263,15 @@ func (UnimplementedTradingServiceServer) ListOrders(context.Context, *ListOrders
 }
 func (UnimplementedTradingServiceServer) ListTrades(context.Context, *ListTradesRequest) (*ListTradesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListTrades not implemented")
+}
+func (UnimplementedTradingServiceServer) ListAccountTrades(context.Context, *ListAccountTradesRequest) (*ListAccountTradesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAccountTrades not implemented")
+}
+func (UnimplementedTradingServiceServer) ListOrderEvents(context.Context, *ListOrderEventsRequest) (*ListOrderEventsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListOrderEvents not implemented")
+}
+func (UnimplementedTradingServiceServer) ListLedgerEntries(context.Context, *ListLedgerEntriesRequest) (*ListLedgerEntriesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListLedgerEntries not implemented")
 }
 func (UnimplementedTradingServiceServer) GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetBalances not implemented")
@@ -348,6 +393,60 @@ func _TradingService_ListTrades_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(TradingServiceServer).ListTrades(ctx, req.(*ListTradesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TradingService_ListAccountTrades_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAccountTradesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TradingServiceServer).ListAccountTrades(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TradingService_ListAccountTrades_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TradingServiceServer).ListAccountTrades(ctx, req.(*ListAccountTradesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TradingService_ListOrderEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListOrderEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TradingServiceServer).ListOrderEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TradingService_ListOrderEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TradingServiceServer).ListOrderEvents(ctx, req.(*ListOrderEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _TradingService_ListLedgerEntries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLedgerEntriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TradingServiceServer).ListLedgerEntries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TradingService_ListLedgerEntries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TradingServiceServer).ListLedgerEntries(ctx, req.(*ListLedgerEntriesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -507,6 +606,18 @@ var TradingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListTrades",
 			Handler:    _TradingService_ListTrades_Handler,
+		},
+		{
+			MethodName: "ListAccountTrades",
+			Handler:    _TradingService_ListAccountTrades_Handler,
+		},
+		{
+			MethodName: "ListOrderEvents",
+			Handler:    _TradingService_ListOrderEvents_Handler,
+		},
+		{
+			MethodName: "ListLedgerEntries",
+			Handler:    _TradingService_ListLedgerEntries_Handler,
 		},
 		{
 			MethodName: "GetBalances",

@@ -15,6 +15,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/exchange"
 	"github.com/the-web3/s78-market-services/trading/ledger"
 	"github.com/the-web3/s78-market-services/trading/outbox"
+	"github.com/the-web3/s78-market-services/trading/query"
 	"github.com/the-web3/s78-market-services/trading/recovery"
 	"github.com/the-web3/s78-market-services/trading/reliability"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
@@ -58,7 +59,10 @@ type DeliveryStatusSource interface {
 type Config struct {
 	EventBatchSize int
 	EventPollEvery time.Duration
-	Recovery       interface {
+	// Queries is the optional Trade Product V1 read-model boundary. New query
+	// RPCs remain unimplemented until a PostgreSQL-backed Reader is wired.
+	Queries  query.Reader
+	Recovery interface {
 		Status(context.Context) (recovery.Status, error)
 		Promote(context.Context, recovery.Binding, recovery.TransportEvidence) (recovery.Status, error)
 	}
@@ -218,6 +222,7 @@ type Server struct {
 	engine   Engine
 	events   EventSource
 	delivery DeliveryStatusSource
+	queries  query.Reader
 	config   Config
 }
 
@@ -239,7 +244,7 @@ func New(
 	if len(delivery) > 1 {
 		return nil, fmt.Errorf("at most one delivery status source is supported")
 	}
-	server := &Server{engine: engine, events: events, config: config}
+	server := &Server{engine: engine, events: events, queries: config.Queries, config: config}
 	if len(delivery) == 1 {
 		server.delivery = delivery[0]
 	}
