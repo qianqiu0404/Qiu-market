@@ -93,16 +93,96 @@ CREATE TABLE IF NOT EXISTS trading_order (
     order_id        text NOT NULL,
     account_id      text NOT NULL,
     status          text NOT NULL,
+    accepted_sequence bigint NOT NULL CHECK (accepted_sequence > 0),
     updated_sequence bigint NOT NULL CHECK (updated_sequence > 0),
+    created_at      timestamptz NOT NULL,
+    updated_at      timestamptz NOT NULL,
     payload         jsonb NOT NULL,
     PRIMARY KEY (market_id, order_id),
+    CONSTRAINT trading_order_accepted_sequence_fkey
+    FOREIGN KEY (market_id, accepted_sequence)
+        REFERENCES trading_event_batch(market_id, sequence)
+        ON DELETE RESTRICT,
     FOREIGN KEY (market_id, updated_sequence)
         REFERENCES trading_event_batch(market_id, sequence)
         ON DELETE RESTRICT
 );
 
+ALTER TABLE trading_order
+    ADD COLUMN IF NOT EXISTS accepted_sequence bigint,
+    ADD COLUMN IF NOT EXISTS created_at timestamptz,
+    ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+
+UPDATE trading_order
+SET accepted_sequence=(payload->>'accepted_sequence')::bigint
+WHERE accepted_sequence IS NULL;
+
+UPDATE trading_order AS destination
+SET created_at=accepted.created_at
+FROM trading_event_batch AS accepted
+WHERE destination.market_id=accepted.market_id
+  AND destination.accepted_sequence=accepted.sequence
+  AND destination.created_at IS NULL;
+
+UPDATE trading_order AS destination
+SET updated_at=changed.created_at
+FROM trading_event_batch AS changed
+WHERE destination.market_id=changed.market_id
+  AND destination.updated_sequence=changed.sequence
+  AND destination.updated_at IS NULL;
+
+ALTER TABLE trading_order
+    ALTER COLUMN accepted_sequence SET NOT NULL,
+    ALTER COLUMN created_at SET NOT NULL,
+    ALTER COLUMN updated_at SET NOT NULL;
+
+ALTER TABLE trading_order
+    DROP CONSTRAINT IF EXISTS trading_order_accepted_sequence_fkey;
+ALTER TABLE trading_order
+    ADD CONSTRAINT trading_order_accepted_sequence_fkey
+        FOREIGN KEY (market_id, accepted_sequence)
+        REFERENCES trading_event_batch(market_id, sequence)
+        ON DELETE RESTRICT;
+
 CREATE INDEX IF NOT EXISTS trading_order_account_idx
     ON trading_order (market_id, account_id, updated_sequence DESC);
+
+CREATE INDEX IF NOT EXISTS trading_order_account_accepted_idx
+    ON trading_order (
+        market_id, account_id, accepted_sequence DESC, order_id DESC
+    );
+
+CREATE TABLE IF NOT EXISTS trading_order_event (
+    market_id       text NOT NULL REFERENCES trading_market(market_id) ON DELETE RESTRICT,
+    account_id      text NOT NULL,
+    order_id        text NOT NULL,
+    sequence        bigint NOT NULL CHECK (sequence > 0),
+    event_index     integer NOT NULL CHECK (event_index > 0),
+    timeline_index  integer NOT NULL CHECK (timeline_index >= 0),
+    event_type      text NOT NULL,
+    payload         jsonb NOT NULL,
+    occurred_at     timestamptz NOT NULL,
+    PRIMARY KEY (market_id, order_id, sequence, event_index, timeline_index),
+    UNIQUE (market_id, sequence, event_index, timeline_index),
+    FOREIGN KEY (market_id, order_id)
+        REFERENCES trading_order(market_id, order_id)
+        DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (market_id, sequence)
+        REFERENCES trading_event_batch(market_id, sequence)
+        ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS trading_order_event_account_idx
+    ON trading_order_event (
+        market_id, account_id, order_id,
+        sequence ASC, event_index ASC, timeline_index ASC
+    );
+
+CREATE TABLE IF NOT EXISTS trading_order_event_checkpoint (
+    market_id       text PRIMARY KEY REFERENCES trading_market(market_id) ON DELETE RESTRICT,
+    sequence        bigint NOT NULL CHECK (sequence >= 0),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS trading_trade (
     market_id       text NOT NULL REFERENCES trading_market(market_id) ON DELETE RESTRICT,
@@ -118,6 +198,18 @@ CREATE TABLE IF NOT EXISTS trading_trade (
         REFERENCES trading_event_batch(market_id, sequence)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS trading_trade_buyer_cursor_idx
+    ON trading_trade (
+        market_id, buyer_account_id,
+        sequence DESC, event_index DESC, trade_id DESC
+    );
+
+CREATE INDEX IF NOT EXISTS trading_trade_seller_cursor_idx
+    ON trading_trade (
+        market_id, seller_account_id,
+        sequence DESC, event_index DESC, trade_id DESC
+    );
 
 CREATE TABLE IF NOT EXISTS trading_balance (
     market_id       text NOT NULL REFERENCES trading_market(market_id) ON DELETE RESTRICT,
@@ -146,6 +238,11 @@ CREATE TABLE IF NOT EXISTS trading_ledger_entry (
         REFERENCES trading_event_batch(market_id, sequence)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS trading_ledger_account_cursor_idx
+    ON trading_ledger_entry (
+        market_id, account, sequence DESC, transaction_id DESC, entry_index DESC
+    );
 
 CREATE TABLE IF NOT EXISTS trading_projection_checkpoint (
     market_id       text PRIMARY KEY REFERENCES trading_market(market_id) ON DELETE RESTRICT,

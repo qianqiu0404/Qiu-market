@@ -105,7 +105,11 @@ func New(ctx context.Context, pool *pgxpool.Pool, market domain.Market) (*Store,
 	if !reflect.DeepEqual(persisted, market) {
 		return nil, fmt.Errorf("%w: market=%s", ErrMarketConfigConflict, market.ID)
 	}
-	return &Store{pool: pool, market: market}, nil
+	store := &Store{pool: pool, market: market}
+	if err := store.ensureTradeV1Projections(ctx); err != nil {
+		return nil, err
+	}
+	return store, nil
 }
 
 func (s *Store) Append(ctx context.Context, expectedSequence uint64, record corestore.Record) error {
@@ -582,6 +586,8 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 	}
 
 	for _, table := range []string{
+		"trading_order_event",
+		"trading_order_event_checkpoint",
 		"trading_order",
 		"trading_trade",
 		"trading_balance",
@@ -603,6 +609,12 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 			VALUES ($1,0,0)
 		`, s.market.ID); err != nil {
 			return fmt.Errorf("initialize empty projection checkpoint: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO trading_order_event_checkpoint (market_id, sequence)
+			VALUES ($1,0)
+		`, s.market.ID); err != nil {
+			return fmt.Errorf("initialize empty order-event checkpoint: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -973,9 +985,10 @@ func validateRecord(market domain.Market, expectedSequence uint64, record corest
 	orderIDs := make(map[domain.OrderID]struct{}, len(record.Projection.Orders))
 	for _, order := range record.Projection.Orders {
 		if order.ID == "" || order.AccountID == "" || order.MarketID != market.ID ||
+			order.AcceptedSequence == 0 || order.AcceptedSequence > record.Command.Sequence ||
 			order.HeldAmount < 0 || order.LastSequence != record.Command.Sequence ||
 			order.LastSequence > math.MaxInt64 ||
-			order.Status < domain.OrderStatusReceived || order.Status > domain.OrderStatusCanceled ||
+			order.Status < domain.OrderStatusRejected || order.Status > domain.OrderStatusCanceled ||
 			(order.HeldAsset != "" && order.HeldAsset != market.BaseAsset && order.HeldAsset != market.QuoteAsset) {
 			return fmt.Errorf("invalid order projection")
 		}
@@ -1048,6 +1061,17 @@ func validateRecord(market domain.Market, expectedSequence uint64, record corest
 }
 
 func applyProjection(ctx context.Context, tx pgx.Tx, record corestore.Record) error {
+	var occurredAt time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT created_at
+		FROM trading_event_batch
+		WHERE market_id=$1 AND sequence=$2
+	`, record.MarketID, int64(record.Command.Sequence)).Scan(&occurredAt); err != nil {
+		return fmt.Errorf("read event batch time for projection: %w", err)
+	}
+	if err := applyOrderLifecycleProjection(ctx, tx, record, occurredAt); err != nil {
+		return err
+	}
 	for _, order := range record.Projection.Orders {
 		payload, err := json.Marshal(order)
 		if err != nil {
@@ -1055,17 +1079,21 @@ func applyProjection(ctx context.Context, tx pgx.Tx, record corestore.Record) er
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO trading_order (
-				market_id, order_id, account_id, status, updated_sequence, payload
+				market_id, order_id, account_id, status, accepted_sequence,
+				updated_sequence, created_at, updated_at, payload
 			)
-			VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8::jsonb)
 			ON CONFLICT (market_id, order_id) DO UPDATE
 			SET account_id=EXCLUDED.account_id,
 			    status=EXCLUDED.status,
+			    accepted_sequence=EXCLUDED.accepted_sequence,
 			    updated_sequence=EXCLUDED.updated_sequence,
+			    updated_at=EXCLUDED.updated_at,
 			    payload=EXCLUDED.payload
 			WHERE trading_order.updated_sequence < EXCLUDED.updated_sequence
 		`, record.MarketID, order.ID, order.AccountID, order.Status.String(),
-			int64(record.Command.Sequence), string(payload)); err != nil {
+			int64(order.AcceptedSequence), int64(record.Command.Sequence), occurredAt,
+			string(payload)); err != nil {
 			return fmt.Errorf("upsert order projection %s: %w", order.ID, err)
 		}
 	}

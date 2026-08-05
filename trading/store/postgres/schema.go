@@ -9,7 +9,8 @@ import (
 )
 
 // Schema is embedded only for isolated trading tests and the standalone lab.
-// Integrated S78 processes require migrations/2026082100023.sql to have run.
+// Integrated S78 processes require the current migrations, including
+// migrations/2026082800030.sql, to have run.
 //
 //go:embed schema.sql
 var Schema string
@@ -22,6 +23,8 @@ var requiredTables = []string{
 	"trading_event_feed",
 	"trading_outbox_checkpoint",
 	"trading_order",
+	"trading_order_event",
+	"trading_order_event_checkpoint",
 	"trading_trade",
 	"trading_balance",
 	"trading_ledger_entry",
