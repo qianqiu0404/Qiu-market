@@ -12,8 +12,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-fixture_repo="$fixture_dir/repo"
-support_dir="$fixture_dir/support"
+fixture_root="$fixture_dir/Application Support"
+fixture_repo="$fixture_root/repo"
+support_dir="$fixture_root/Qiu Market"
 mkdir -p "$fixture_repo" "$support_dir"
 git -C "$repo_root" archive HEAD | tar -xf - -C "$fixture_repo"
 
@@ -57,7 +58,10 @@ test -d "$support_dir/releases/$commit/migrations"
 test "$(sed -n 's/^schema_version=//p' "$binary_manifest")" = 2
 test "$(sed -n 's/^git_commit=//p' "$binary_manifest")" = "$commit"
 test "$(sed -n 's/^git_commit=//p' "$runtime_manifest")" = "$commit"
-expected_last_migration="$(find "$fixture_repo/migrations" -maxdepth 1 -name '*.sql' -print | sort | tail -1 | xargs basename)"
+expected_last_migration_path="$(find "$fixture_repo/migrations" -maxdepth 1 -name '*.sql' -print |
+  LC_ALL=C sort |
+  tail -1)"
+expected_last_migration="$(basename "$expected_last_migration_path")"
 test "$(sed -n 's/^migration_last=//p' "$binary_manifest")" = "$expected_last_migration"
 test "$(sed -n 's/^migration_count=//p' "$binary_manifest")" = \
   "$(find "$support_dir/releases/$commit/migrations" -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')"

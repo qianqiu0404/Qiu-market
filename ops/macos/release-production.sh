@@ -181,6 +181,16 @@ migration_set_sha256() {
     awk '{print $1}'
 }
 
+latest_migration_name() {
+  local migration_dir="$1"
+  local migration_file
+  migration_file="$(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' -print |
+    LC_ALL=C sort |
+    tail -1)"
+  [ -n "$migration_file" ] || return 1
+  basename "$migration_file"
+}
+
 verify_release() {
   local commit="$1"
   local release_dir
@@ -224,7 +234,7 @@ verify_release() {
   expected_migration_count="$(manifest_value "$manifest" migration_count)"
   expected_migration_last="$(manifest_value "$manifest" migration_last)"
   actual_migration_count="$(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
-  actual_migration_last="$(find "$migration_dir" -maxdepth 1 -type f -name '*.sql' -print | sort | tail -1 | xargs basename)"
+  actual_migration_last="$(latest_migration_name "$migration_dir")"
   if find "$migration_dir" -mindepth 1 -type d -print -quit | grep -q . ||
     find "$migration_dir" -maxdepth 1 -type f ! -name '*.sql' -print -quit | grep -q .; then
     echo "Release migrations must be a flat directory containing SQL files only." >&2
@@ -288,7 +298,7 @@ prepare_release() {
     printf 'binary_sha256=%s\n' "$binary_sha"
     printf 'migration_set_sha256=%s\n' "$migration_set_sha"
     printf 'migration_count=%s\n' "$(find "$temporary_release/migrations" -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
-    printf 'migration_last=%s\n' "$(find "$temporary_release/migrations" -maxdepth 1 -type f -name '*.sql' -print | sort | tail -1 | xargs basename)"
+    printf 'migration_last=%s\n' "$(latest_migration_name "$temporary_release/migrations")"
     printf 'cursor_source=event-feed\n'
     printf 'built_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   } > "$temporary_release/manifest.env"
