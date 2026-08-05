@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { OrderBook } from '../../api/trading'
 import { useI18n } from '../../i18n'
+import { tradeEnumKey } from './labels'
 
 defineProps<{
   book: OrderBook
@@ -18,6 +19,7 @@ const emit = defineEmits<{
   ask: []
 }>()
 const { tr } = useI18n()
+function enumLabel(value: string): string { return tr(tradeEnumKey(value)) }
 </script>
 
 <template>
@@ -30,7 +32,7 @@ const { tr } = useI18n()
       </div>
     </header>
     <div v-if="error" class="panel-warning">
-      {{ tr('trade.panel.failed', { panel: tr('trade.book.title'), error }) }}
+      {{ tr('trade.panel.failed', { panel: tr('trade.book.title'), error: tr('trade.error.backend_unavailable') }) }}
       <template v-if="lastGood">{{ tr('trade.panel.keepLastGood') }}</template>
     </div>
     <div class="book-heading"><span>{{ tr('trade.book.price') }}</span><span>{{ tr('trade.book.quantity') }}</span><span>{{ tr('trade.book.orders') }}</span></div>
@@ -42,7 +44,7 @@ const { tr } = useI18n()
     </div>
     <div class="spread">
       <button :disabled="!bestBid" @click="emit('bid')">{{ tr('trade.book.bid', { price: bestBid || '—' }) }}</button>
-      <strong>{{ matchingState.toUpperCase() }}</strong>
+      <strong>{{ enumLabel(matchingState) }}</strong>
       <button :disabled="!bestAsk" @click="emit('ask')">{{ tr('trade.book.ask', { price: bestAsk || '—' }) }}</button>
     </div>
     <div class="book-side bids">

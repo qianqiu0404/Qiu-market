@@ -194,17 +194,6 @@ func (s *Server) ListOrderEvents(
 	}
 	accountID := domain.AccountID(request.GetAccountId())
 	orderID := domain.OrderID(request.GetOrderId())
-	order, found, err := s.queries.GetOrder(ctx, accountID, orderID)
-	if err != nil {
-		return nil, mapQueryError(err)
-	}
-	if !found {
-		return nil, status.Error(codes.NotFound, "order_not_found")
-	}
-	if order.Order.AccountID != accountID || order.Order.MarketID != market.ID ||
-		order.Order.ID != orderID {
-		return nil, status.Error(codes.Internal, "order query identity mismatch")
-	}
 	limit, err := parseQueryLimit(request.GetLimit())
 	if err != nil {
 		return nil, err
@@ -215,6 +204,17 @@ func (s *Server) ListOrderEvents(
 	)
 	if err != nil {
 		return nil, err
+	}
+	order, found, err := s.queries.GetOrder(ctx, accountID, orderID)
+	if err != nil {
+		return nil, mapQueryError(err)
+	}
+	if !found {
+		return nil, status.Error(codes.NotFound, "order_not_found")
+	}
+	if order.Order.AccountID != accountID || order.Order.MarketID != market.ID ||
+		order.Order.ID != orderID {
+		return nil, status.Error(codes.Internal, "order query identity mismatch")
 	}
 	page, err := s.queries.ListOrderEvents(ctx, accountID, orderID, cursor, limit)
 	if err != nil {

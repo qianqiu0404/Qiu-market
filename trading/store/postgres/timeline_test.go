@@ -106,6 +106,57 @@ func TestBuildLifecycleRowsRejectsCorruptJournalReference(t *testing.T) {
 	}
 }
 
+func TestValidateLifecycleIntegrityFailsClosedOnCardinalityDamage(t *testing.T) {
+	tests := []struct {
+		name      string
+		integrity lifecycleIntegrity
+		want      string
+	}{
+		{
+			name:      "orphaned rows",
+			integrity: lifecycleIntegrity{ActualRows: 1},
+			want:      "orphaned rows",
+		},
+		{
+			name: "missing row",
+			integrity: lifecycleIntegrity{
+				Found: true, Sequence: 10, RecordedRows: 4, ActualRows: 3,
+			},
+			want: "row-count mismatch",
+		},
+		{
+			name: "extra row",
+			integrity: lifecycleIntegrity{
+				Found: true, Sequence: 10, RecordedRows: 4, ActualRows: 5,
+			},
+			want: "row-count mismatch",
+		},
+		{
+			name: "row ahead of checkpoint",
+			integrity: lifecycleIntegrity{
+				Found: true, Sequence: 9, RecordedRows: 4, ActualRows: 4, MaximumSequence: 10,
+			},
+			want: "ahead of checkpoint",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateLifecycleIntegrity(test.integrity)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("integrity error=%v want %q", err, test.want)
+			}
+		})
+	}
+
+	// Cardinality deliberately does not claim to authenticate payload bytes.
+	// A same-count mutation requires a future digest/manifest migration.
+	if err := validateLifecycleIntegrity(lifecycleIntegrity{
+		Found: true, Sequence: 10, RecordedRows: 4, ActualRows: 4, MaximumSequence: 10,
+	}); err != nil {
+		t.Fatalf("consistent cardinality rejected: %v", err)
+	}
+}
+
 func lifecycleFixture(
 	t *testing.T,
 ) (domain.Market, []corestore.Record, domain.OrderID, domain.OrderID) {

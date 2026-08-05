@@ -20,7 +20,7 @@ const { tr } = useI18n()
       <span data-testid="panel-balances-state" class="panel-state" :class="panelClass">{{ panelState }}</span>
     </header>
     <div v-if="error" class="panel-warning">
-      {{ tr('trade.panel.failed', { panel: tr('trade.balance.title'), error }) }}
+      {{ tr('trade.panel.failed', { panel: tr('trade.balance.title'), error: tr('trade.error.backend_unavailable') }) }}
       <template v-if="lastGood">{{ tr('trade.panel.keepLastGood') }}</template>
     </div>
     <div class="balances">

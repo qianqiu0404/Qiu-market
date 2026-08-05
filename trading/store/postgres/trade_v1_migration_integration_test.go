@@ -128,6 +128,113 @@ func TestTradeV1MigrationEmptyLegacyAndDamagedProjection(t *testing.T) {
 				acceptedAt,
 			)
 		}
+
+		changedAt := acceptedAt.Add(time.Second)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO trading_event_batch (
+				market_id, sequence, schema_version, operation, account_id,
+				request_id, fingerprint, command_payload, result_payload,
+				journal_payload, projection_payload, state_hash, created_at
+			) VALUES (
+				'BTC-USDT',2,5,2,'alice','client-2','fingerprint-2',
+				'{}','{"events":[]}','[]','{"orders":[],"trades":[],"balances":[]}',
+				'rebuildable-hash-2',$1
+			)
+		`, changedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			UPDATE trading_market SET current_sequence=2 WHERE market_id='BTC-USDT'
+		`); err != nil {
+			t.Fatal(err)
+		}
+		secondOrder := legacyOrder
+		secondOrder.ID = "O-00000000000000000002"
+		secondOrder.ClientOrderID = "client-2"
+		secondOrder.AcceptedSequence = 2
+		secondOrder.LastSequence = 2
+		secondPayload, err := json.Marshal(secondOrder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// This is the exact six-column INSERT shape used by the pre-V1 binary.
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO trading_order (
+				market_id, order_id, account_id, status, updated_sequence, payload
+			) VALUES ('BTC-USDT',$1,'alice','open',2,$2::jsonb)
+		`, secondOrder.ID, string(secondPayload)); err != nil {
+			t.Fatalf("pre-V1 insert after migration: %v", err)
+		}
+		legacyOrder.LastSequence = 2
+		updatedPayload, err := json.Marshal(legacyOrder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// This mirrors the old ON CONFLICT update, which does not name updated_at.
+		if _, err := pool.Exec(ctx, `
+			UPDATE trading_order
+			SET status='open', updated_sequence=2, payload=$1::jsonb
+			WHERE market_id='BTC-USDT' AND order_id='O-00000000000000000001'
+		`, string(updatedPayload)); err != nil {
+			t.Fatalf("pre-V1 update after migration: %v", err)
+		}
+		if err := pool.QueryRow(ctx, `
+			SELECT created_at, updated_at
+			FROM trading_order
+			WHERE market_id='BTC-USDT' AND order_id='O-00000000000000000002'
+		`).Scan(&createdAt, &updatedAt); err != nil {
+			t.Fatal(err)
+		}
+		if !createdAt.Equal(changedAt) || !updatedAt.Equal(changedAt) {
+			t.Fatalf("compat insert timestamps=%s/%s want %s", createdAt, updatedAt, changedAt)
+		}
+		if err := pool.QueryRow(ctx, `
+			SELECT updated_at
+			FROM trading_order
+			WHERE market_id='BTC-USDT' AND order_id='O-00000000000000000001'
+		`).Scan(&updatedAt); err != nil {
+			t.Fatal(err)
+		}
+		if !updatedAt.Equal(changedAt) {
+			t.Fatalf("compat update timestamp=%s want %s", updatedAt, changedAt)
+		}
+
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO trading_order_event (
+				market_id, account_id, order_id, sequence, event_index,
+				timeline_index, event_type, payload, occurred_at
+			) VALUES (
+				'BTC-USDT','alice','O-00000000000000000002',2,1,
+				0,'order_accepted','{}',$1
+			)
+		`, changedAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO trading_order_event_checkpoint (market_id, sequence)
+			VALUES ('BTC-USDT',2)
+		`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+			ALTER TABLE trading_order_event_checkpoint DROP COLUMN row_count
+		`); err != nil {
+			t.Fatal(err)
+		}
+		mustExecMigration(t, ctx, pool, v1Migration)
+		var recordedRows, actualRows int64
+		if err := pool.QueryRow(ctx, `
+			SELECT checkpoint.row_count, count(event.*)
+			FROM trading_order_event_checkpoint AS checkpoint
+			LEFT JOIN trading_order_event AS event USING (market_id)
+			WHERE checkpoint.market_id='BTC-USDT'
+			GROUP BY checkpoint.row_count
+		`).Scan(&recordedRows, &actualRows); err != nil {
+			t.Fatal(err)
+		}
+		if recordedRows != 1 || actualRows != 1 {
+			t.Fatalf("upgraded sequence-only checkpoint rows=%d actual=%d", recordedRows, actualRows)
+		}
 	})
 
 	t.Run("damaged accepted sequence fails closed and rolls back", func(t *testing.T) {

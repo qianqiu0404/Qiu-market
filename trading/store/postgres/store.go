@@ -580,7 +580,7 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 			corestore.ErrSequenceConflict, len(records), current)
 	}
 	for index, record := range records {
-		if err := validateRecord(s.market, uint64(index), record); err != nil {
+		if err := validateRebuildRecord(s.market, uint64(index), record); err != nil {
 			return fmt.Errorf("validate rebuild record %d: %w", index+1, err)
 		}
 	}
@@ -611,8 +611,8 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 			return fmt.Errorf("initialize empty projection checkpoint: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO trading_order_event_checkpoint (market_id, sequence)
-			VALUES ($1,0)
+			INSERT INTO trading_order_event_checkpoint (market_id, sequence, row_count)
+			VALUES ($1,0,0)
 		`, s.market.ID); err != nil {
 			return fmt.Errorf("initialize empty order-event checkpoint: %w", err)
 		}
@@ -621,6 +621,28 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 		return fmt.Errorf("%w: projection rebuild: %v", ErrCommitOutcomeUnknown, err)
 	}
 	return nil
+}
+
+// validateRebuildRecord accepts every event schema that the authoritative
+// exchange recovery path supports. Projection rebuild consumes the immutable
+// result/journal/projection already stored in each batch; it must not reject a
+// valid v3/v4 prefix merely because new appends use v5. The normal Append path
+// remains strict-current through validateRecord.
+func validateRebuildRecord(
+	market domain.Market,
+	expectedSequence uint64,
+	record corestore.Record,
+) error {
+	switch record.SchemaVersion {
+	case corestore.LegacySchemaVersion,
+		corestore.PreviousSchemaVersion,
+		corestore.CurrentSchemaVersion:
+	default:
+		return fmt.Errorf("unsupported event schema version %d", record.SchemaVersion)
+	}
+	currentShape := record
+	currentShape.SchemaVersion = corestore.CurrentSchemaVersion
+	return validateRecord(market, expectedSequence, currentShape)
 }
 
 func (s *Store) OutboxAfter(ctx context.Context, cursor Cursor, limit int) ([]OutboxEvent, error) {

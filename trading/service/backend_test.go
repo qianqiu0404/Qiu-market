@@ -18,8 +18,9 @@ import (
 func TestValidateConfigRequiresLoopback(t *testing.T) {
 	t.Parallel()
 	valid := Config{
-		PostgresURL: "postgres://example.invalid/s78",
-		GRPCAddress: "127.0.0.1:9094",
+		PostgresURL:       "postgres://example.invalid/s78",
+		GRPCAddress:       "127.0.0.1:9094",
+		CursorHMACCurrent: "test:" + strings.Repeat("A", 43),
 	}
 	if err := validateConfig(valid); err != nil {
 		t.Fatal(err)
@@ -27,6 +28,17 @@ func TestValidateConfigRequiresLoopback(t *testing.T) {
 	valid.GRPCAddress = "0.0.0.0:9094"
 	if err := validateConfig(valid); err == nil {
 		t.Fatal("accepted non-loopback trading listener")
+	}
+}
+
+func TestValidateConfigRequiresPersistentCursorKey(t *testing.T) {
+	t.Parallel()
+	config := Config{
+		PostgresURL: "postgres://example.invalid/s78",
+		GRPCAddress: "127.0.0.1:9094",
+	}
+	if err := validateConfig(config); err == nil || !strings.Contains(err.Error(), "cursor") {
+		t.Fatalf("missing cursor key did not fail closed: %v", err)
 	}
 }
 

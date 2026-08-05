@@ -54,8 +54,10 @@ import {
 import {
   LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY,
   PENDING_TRADING_WRITE_STORAGE_KEY,
-  parsePendingTradingWrite,
+  pendingTradingWriteMutationAllowed,
   pendingTradingWriteResolvedByOrders,
+  readLocalPendingTradingWrite,
+  readPersistedPendingTradingWrite,
   updatePendingTradingWriteState,
   type PendingTradingOperation,
   type PendingTradingWrite,
@@ -168,6 +170,9 @@ export function useTradeTerminal() {
   const busy = ref(false)
   const nowMs = ref(Date.now())
   const pendingWrite = ref<PendingTradingWrite | null>(null)
+  const pendingJournalBlocked = ref(false)
+  const pageBusy = reactive({ orders: false, trades: false, ledger: false, events: false })
+  const pageRequestEpoch = reactive({ orders: 0, trades: 0, ledger: 0, events: 0 })
 
   const referencePrice = ref<number | null>(null)
   const referenceFreshness = ref('unavailable')
@@ -220,6 +225,7 @@ export function useTradeTerminal() {
   let marketRefreshRunning = false
   let pendingGapCursor: TradingEventCursor | undefined
   let eventReconcilePromise: Promise<void> | undefined
+  let sessionGeneration = 0
 
   const loggedIn = computed(() => principal.value !== null)
   const marketBuy = computed(() => form.type === 'market' && form.side === 'buy')
@@ -270,10 +276,12 @@ export function useTradeTerminal() {
   ))
   const writesEnabled = computed(() =>
     !busy.value && terminalHealth.value.writesAllowed && recoveryAdmission.value.writesAllowed)
-  const submitEnabled = computed(() => writesEnabled.value && orderPreview.value.valid)
+  const submitEnabled = computed(() => writesEnabled.value &&
+    !pendingJournalBlocked.value && orderPreview.value.valid)
   const writeGateReason = computed(() => {
     if (busy.value) return 'request_in_flight'
     if (!loggedIn.value) return 'login_required'
+    if (pendingJournalBlocked.value) return 'reconcile_pending'
     if (pendingWrite.value) return 'reconcile_pending'
     if (eventReconcilePending.value) return 'transport_reconcile_pending'
     if (!recoveryAdmission.value.writesAllowed) return recoveryAdmission.value.reason
@@ -333,20 +341,38 @@ export function useTradeTerminal() {
     const key = error instanceof TradingRequestError
       ? TRADING_ERROR_MESSAGES[error.code]
       : undefined
-    errorMessage.value = key ? tr(key) : errorText(error)
+    errorMessage.value = key
+      ? tr(key)
+      : typeof error === 'string'
+        ? error
+        : tr('trade.error.backend_unavailable')
     window.setTimeout(() => { errorMessage.value = '' }, 6000)
   }
 
   function invalidateTradingSession(message = ''): void {
+    sessionGeneration += 1
+    invalidatePageRequests()
     principal.value = null
     balances.value = []
     orders.value = []
     privateTrades.value = []
     ledgerEntries.value = []
     resetPrivatePagination()
+    resetOrderDetails()
     lastPrivateAt.value = 0
     closeEvents()
     if (message) notice.value = message
+  }
+
+  function privateRequestIsCurrent(generation: number, accountID: string): boolean {
+    return generation === sessionGeneration && principal.value?.account_id === accountID
+  }
+
+  function invalidatePageRequests(): void {
+    for (const name of ['orders', 'trades', 'ledger', 'events'] as const) {
+      pageRequestEpoch[name] += 1
+      pageBusy[name] = false
+    }
   }
 
   function resetPrivatePagination(): void {
@@ -356,6 +382,14 @@ export function useTradeTerminal() {
     orderPrevious.value = []
     tradePrevious.value = []
     ledgerPrevious.value = []
+  }
+
+  function resetOrderDetails(): void {
+    selectedOrder.value = null
+    orderEvents.value = []
+    Object.assign(eventPage, emptyPage())
+    eventPrevious.value = []
+    pageBusy.events = false
   }
 
   function invalidSessionFailure(error: unknown): boolean {
@@ -373,13 +407,28 @@ export function useTradeTerminal() {
       window.sessionStorage.removeItem(PENDING_TRADING_WRITE_STORAGE_KEY)
       window.sessionStorage.removeItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY)
       window.localStorage.removeItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY)
+      pendingJournalBlocked.value = false
       return true
     } catch {
       return false
     }
   }
 
-  function storePendingWrite(next: PendingTradingWrite | null): boolean {
+  function storePendingWrite(
+    next: PendingTradingWrite | null,
+    expectedOperationID: string | null,
+  ): boolean {
+    if (pendingJournalBlocked.value) return false
+    let authoritative: PendingTradingWrite | null
+    try {
+      authoritative = readLocalPendingTradingWrite(window.localStorage)
+    } catch {
+      return false
+    }
+    if (!pendingTradingWriteMutationAllowed(authoritative, next, expectedOperationID)) {
+      pendingWrite.value = authoritative
+      return false
+    }
     if (!persistPendingWrite(next)) return false
     pendingWrite.value = next
     return true
@@ -395,6 +444,10 @@ export function useTradeTerminal() {
       showError(tr('trade.error.accountRequired'))
       return null
     }
+    if (pendingJournalBlocked.value) {
+      showError(tr('trade.error.persist'))
+      return null
+    }
     const at = Date.now()
     const prepared: PendingTradingWrite = {
       operation_id: randomID('operation'),
@@ -407,7 +460,7 @@ export function useTradeTerminal() {
       order_id: orderID,
       payload,
     }
-    if (!storePendingWrite(prepared)) {
+    if (!storePendingWrite(prepared, null)) {
       showError(tr('trade.error.persist'))
       return null
     }
@@ -418,26 +471,63 @@ export function useTradeTerminal() {
     pending: PendingTradingWrite,
     state: PendingTradingWrite['state'],
   ): boolean {
-    return storePendingWrite(updatePendingTradingWriteState(pending, state, Date.now()))
+    let authoritative: PendingTradingWrite | null
+    try {
+      authoritative = readLocalPendingTradingWrite(window.localStorage)
+    } catch {
+      return false
+    }
+    if (!authoritative || authoritative.operation_id !== pending.operation_id) {
+      pendingWrite.value = authoritative
+      return false
+    }
+    return storePendingWrite(
+      updatePendingTradingWriteState(authoritative, state, Date.now()),
+      pending.operation_id,
+    )
   }
 
   function restorePendingWrite(): void {
     try {
-      const candidates = [
-        window.localStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY),
-        window.sessionStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY),
-        window.localStorage.getItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY),
-        window.sessionStorage.getItem(LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY),
-      ]
-      const restored = candidates.map(parsePendingTradingWrite)
-        .find((candidate) => candidate !== null) ?? null
-      if (!restored) return
-      restored.state = 'unknown'
-      restored.updated_at = Date.now()
-      pendingWrite.value = restored
-      persistPendingWrite(restored)
+      const restored = readPersistedPendingTradingWrite(
+        window.localStorage,
+        window.sessionStorage,
+      )
+      if (!restored) {
+        pendingWrite.value = null
+        pendingJournalBlocked.value = false
+        return
+      }
+      const uncertain = updatePendingTradingWriteState(restored, 'unknown', Date.now())
+      const shared = readLocalPendingTradingWrite(window.localStorage)
+      if (shared) {
+        storePendingWrite(uncertain, restored.operation_id)
+      } else {
+        // Migration from this tab's old session journal: the shared journal is
+        // empty, so it is safe to claim it with the exact persisted operation.
+        storePendingWrite(uncertain, null)
+      }
     } catch {
       pendingWrite.value = null
+      pendingJournalBlocked.value = true
+    }
+  }
+
+  function handlePendingWriteStorage(event: StorageEvent): void {
+    if (event.storageArea && event.storageArea !== window.localStorage) return
+    if (![PENDING_TRADING_WRITE_STORAGE_KEY, LEGACY_PENDING_TRADING_WRITE_STORAGE_KEY]
+      .includes(event.key ?? '')) return
+    try {
+      // Do not persist from a storage listener. It is a mirror of the shared
+      // authority, and writing here would create cross-tab event ping-pong.
+      pendingWrite.value = readPersistedPendingTradingWrite(
+        window.localStorage,
+        window.sessionStorage,
+      )
+      pendingJournalBlocked.value = false
+    } catch {
+      // Storage becoming unreadable is fail-closed: preserve the last lock.
+      pendingJournalBlocked.value = true
     }
   }
 
@@ -513,63 +603,106 @@ export function useTradeTerminal() {
   }
 
   async function loadBalances(): Promise<boolean> {
+    const generation = sessionGeneration
+    const accountID = principal.value?.account_id ?? ''
+    if (!accountID) return false
     beginPanel('balances')
     try {
-      balances.value = (await tradingAPI.balances()).balances ?? []
+      const next = (await tradingAPI.balances()).balances ?? []
+      if (!privateRequestIsCurrent(generation, accountID)) return false
+      balances.value = next
       completePanel('balances')
       return true
     } catch (error) {
-      failPanel('balances', error)
-      if (invalidSessionFailure(error)) throw error
+      if (privateRequestIsCurrent(generation, accountID)) {
+        failPanel('balances', error)
+        if (invalidSessionFailure(error)) throw error
+      }
       return false
     }
   }
 
   async function loadOrders(cursor = orderPage.cursor): Promise<boolean> {
+    if (pageBusy.orders) return false
+    const generation = sessionGeneration
+    const accountID = principal.value?.account_id ?? ''
+    if (!accountID) return false
+    const requestEpoch = ++pageRequestEpoch.orders
+    pageBusy.orders = true
     beginPanel('orders')
     try {
       const page = await tradingAPI.orderPage(orderScope.value, cursor, PAGE_SIZE)
+      if (!privateRequestIsCurrent(generation, accountID)) return false
       orders.value = page.orders ?? []
       orderPage.cursor = cursor
       orderPage.nextCursor = page.next_cursor ?? ''
       completePanel('orders')
       return true
     } catch (error) {
-      failPanel('orders', error)
-      if (invalidSessionFailure(error)) throw error
+      if (privateRequestIsCurrent(generation, accountID) &&
+          requestEpoch === pageRequestEpoch.orders) {
+        failPanel('orders', error)
+        if (invalidSessionFailure(error)) throw error
+      }
       return false
+    } finally {
+      if (requestEpoch === pageRequestEpoch.orders) pageBusy.orders = false
     }
   }
 
   async function loadPrivateTrades(cursor = tradePage.cursor): Promise<boolean> {
+    if (pageBusy.trades) return false
+    const generation = sessionGeneration
+    const accountID = principal.value?.account_id ?? ''
+    if (!accountID) return false
+    const requestEpoch = ++pageRequestEpoch.trades
+    pageBusy.trades = true
     beginPanel('privateTrades')
     try {
       const page = await tradingAPI.accountTradePage(cursor, PAGE_SIZE)
+      if (!privateRequestIsCurrent(generation, accountID)) return false
       privateTrades.value = page.trades ?? []
       tradePage.cursor = cursor
       tradePage.nextCursor = page.next_cursor ?? ''
       completePanel('privateTrades')
       return true
     } catch (error) {
-      failPanel('privateTrades', error)
-      if (invalidSessionFailure(error)) throw error
+      if (privateRequestIsCurrent(generation, accountID) &&
+          requestEpoch === pageRequestEpoch.trades) {
+        failPanel('privateTrades', error)
+        if (invalidSessionFailure(error)) throw error
+      }
       return false
+    } finally {
+      if (requestEpoch === pageRequestEpoch.trades) pageBusy.trades = false
     }
   }
 
   async function loadLedger(cursor = ledgerPage.cursor): Promise<boolean> {
+    if (pageBusy.ledger) return false
+    const generation = sessionGeneration
+    const accountID = principal.value?.account_id ?? ''
+    if (!accountID) return false
+    const requestEpoch = ++pageRequestEpoch.ledger
+    pageBusy.ledger = true
     beginPanel('ledger')
     try {
       const page = await tradingAPI.ledgerPage(cursor, PAGE_SIZE)
+      if (!privateRequestIsCurrent(generation, accountID)) return false
       ledgerEntries.value = page.entries ?? []
       ledgerPage.cursor = cursor
       ledgerPage.nextCursor = page.next_cursor ?? ''
       completePanel('ledger')
       return true
     } catch (error) {
-      failPanel('ledger', error)
-      if (invalidSessionFailure(error)) throw error
+      if (privateRequestIsCurrent(generation, accountID) &&
+          requestEpoch === pageRequestEpoch.ledger) {
+        failPanel('ledger', error)
+        if (invalidSessionFailure(error)) throw error
+      }
       return false
+    } finally {
+      if (requestEpoch === pageRequestEpoch.ledger) pageBusy.ledger = false
     }
   }
 
@@ -585,7 +718,7 @@ export function useTradeTerminal() {
       if (results.every(Boolean)) lastPrivateAt.value = Date.now()
       const active = pendingWrite.value
       if (active && pendingTradingWriteResolvedByOrders(active, orders.value)) {
-        if (storePendingWrite(null)) {
+        if (storePendingWrite(null, active.operation_id)) {
           notice.value = tr('trade.notice.reconciled', { id: active.request_id })
           form.clientOrderID = crypto.randomUUID()
         }
@@ -604,35 +737,53 @@ export function useTradeTerminal() {
   }
 
   async function loadOrderEvents(cursor = eventPage.cursor): Promise<boolean> {
-    if (!selectedOrder.value) return false
+    if (!selectedOrder.value || pageBusy.events) return false
+    const generation = sessionGeneration
+    const accountID = principal.value?.account_id ?? ''
+    const orderID = selectedOrder.value.id
+    if (!accountID) return false
+    const requestEpoch = ++pageRequestEpoch.events
+    pageBusy.events = true
     beginPanel('orderEvents')
     try {
-      const page = await tradingAPI.orderEventPage(selectedOrder.value.id, cursor, PAGE_SIZE)
+      const page = await tradingAPI.orderEventPage(orderID, cursor, PAGE_SIZE)
+      if (!privateRequestIsCurrent(generation, accountID) || selectedOrder.value?.id !== orderID) {
+        return false
+      }
       orderEvents.value = page.events ?? []
       eventPage.cursor = cursor
       eventPage.nextCursor = page.next_cursor ?? ''
       completePanel('orderEvents')
       return true
     } catch (error) {
-      failPanel('orderEvents', error)
+      if (privateRequestIsCurrent(generation, accountID) &&
+          selectedOrder.value?.id === orderID && requestEpoch === pageRequestEpoch.events) {
+        failPanel('orderEvents', error)
+      }
       return false
+    } finally {
+      if (requestEpoch === pageRequestEpoch.events) pageBusy.events = false
     }
   }
 
   function closeOrder(): void {
-    selectedOrder.value = null
-    orderEvents.value = []
+    pageRequestEpoch.events += 1
+    resetOrderDetails()
   }
 
   async function discoverSession(): Promise<void> {
+    const generation = ++sessionGeneration
+    invalidatePageRequests()
     try {
-      principal.value = (await tradingAPI.session()).principal
+      const next = (await tradingAPI.session()).principal
+      if (generation !== sessionGeneration) return
+      principal.value = next
       resetPrivatePagination()
       await loadPrivate()
       adoptStatusCheckpoint()
       void connectEvents()
     } catch {
-      principal.value = null
+      if (generation === sessionGeneration) invalidateTradingSession()
     }
   }
 
@@ -645,24 +796,29 @@ export function useTradeTerminal() {
   }
 
   async function localLogin(): Promise<void> {
+    const generation = ++sessionGeneration
+    invalidatePageRequests()
     busy.value = true
     try {
-      principal.value = (await tradingAPI.localLogin()).principal
+      const next = (await tradingAPI.localLogin()).principal
+      if (generation !== sessionGeneration) return
+      principal.value = next
       resetPrivatePagination()
       notice.value = tr('trade.notice.localLogin')
       await loadPrivate()
       adoptStatusCheckpoint()
       void connectEvents()
     } catch (error) {
-      showError(error)
+      if (generation === sessionGeneration) showError(error)
     } finally {
       busy.value = false
     }
   }
 
   async function logout(): Promise<void> {
-    try { await tradingAPI.logout() } catch (error) { showError(error) }
+    busy.value = true
     invalidateTradingSession(tr('trade.notice.logout'))
+    try { await tradingAPI.logout() } catch (error) { showError(error) } finally { busy.value = false }
   }
 
   async function submitOrder(): Promise<void> {
@@ -683,7 +839,9 @@ export function useTradeTerminal() {
     busy.value = true
     try {
       await tradingAPI.submit(payload)
-      if (!storePendingWrite(null)) throw new Error(tr('trade.error.journalClear'))
+      if (!storePendingWrite(null, operation.operation_id)) {
+        throw new Error(tr('trade.error.journalClear'))
+      }
       notice.value = tr('trade.notice.submitHandled', { id: requestID })
       form.clientOrderID = crypto.randomUUID()
       await refreshAll()
@@ -693,7 +851,7 @@ export function useTradeTerminal() {
         notice.value = tr('trade.notice.submitUnknown', { id: requestID })
         window.setTimeout(() => void loadPrivate(), 1500)
       } else {
-        storePendingWrite(null)
+        storePendingWrite(null, operation.operation_id)
         showError(error)
       }
     } finally {
@@ -708,14 +866,16 @@ export function useTradeTerminal() {
     busy.value = true
     try {
       await tradingAPI.cancel(order.id, requestID)
-      if (!storePendingWrite(null)) throw new Error(tr('trade.error.journalClear'))
+      if (!storePendingWrite(null, operation.operation_id)) {
+        throw new Error(tr('trade.error.journalClear'))
+      }
       await refreshAll()
     } catch (error) {
       if (error instanceof TradingRequestError && error.uncertain) {
         transitionPendingWrite(operation, 'unknown')
         notice.value = tr('trade.notice.cancelUnknown', { id: requestID })
       } else {
-        storePendingWrite(null)
+        storePendingWrite(null, operation.operation_id)
         showError(error)
       }
     } finally {
@@ -724,7 +884,14 @@ export function useTradeTerminal() {
   }
 
   async function reconcilePendingWrite(): Promise<void> {
-    const current = pendingWrite.value
+    let current: PendingTradingWrite | null
+    try {
+      current = readLocalPendingTradingWrite(window.localStorage)
+      pendingWrite.value = current
+    } catch {
+      showError(tr('trade.error.persist'))
+      return
+    }
     if (!current || current.state === 'reconciling') return
     if (!principal.value || current.account_id !== principal.value.account_id) {
       showError(tr('trade.error.accountMismatch'))
@@ -769,7 +936,9 @@ export function useTradeTerminal() {
           String(current.payload.account_id ?? ''),
         )
       }
-      if (!storePendingWrite(null)) throw new Error(tr('trade.error.journalClear'))
+      if (!storePendingWrite(null, current.operation_id)) {
+        throw new Error(tr('trade.error.journalClear'))
+      }
       form.clientOrderID = crypto.randomUUID()
       notice.value = tr('trade.notice.reconciled', { id: current.request_id })
       await refreshAll()
@@ -781,6 +950,22 @@ export function useTradeTerminal() {
 
   async function refreshAll(): Promise<void> {
     await Promise.all([loadPublic(), loadPrivate()])
+    if (selectedOrder.value) {
+      const generation = sessionGeneration
+      const accountID = principal.value?.account_id ?? ''
+      const orderID = selectedOrder.value.id
+      try {
+        const current = await tradingAPI.order(orderID)
+        if (privateRequestIsCurrent(generation, accountID) && selectedOrder.value?.id === orderID) {
+          selectedOrder.value = current
+        }
+      } catch (error) {
+        if (privateRequestIsCurrent(generation, accountID) && selectedOrder.value?.id === orderID) {
+          failPanel('orderEvents', error)
+        }
+      }
+      await loadOrderEvents(eventPage.cursor)
+    }
   }
 
   function scheduleRefresh(): void {
@@ -992,6 +1177,7 @@ export function useTradeTerminal() {
   }
 
   async function changeOrderScope(scope: TradeV1OrderScope): Promise<void> {
+    if (pageBusy.orders) return
     orderScope.value = scope
     orders.value = []
     Object.assign(orderPage, emptyPage())
@@ -1037,6 +1223,7 @@ export function useTradeTerminal() {
 
   onMounted(async () => {
     restoreEventCursor()
+    window.addEventListener('storage', handlePendingWriteStorage)
     restorePendingWrite()
     clockTimer = window.setInterval(() => { nowMs.value = Date.now() }, 1000)
     await Promise.all([loadPublic(), refreshMarketData(), loadAuthCapabilities()])
@@ -1053,6 +1240,7 @@ export function useTradeTerminal() {
   })
 
   onBeforeUnmount(() => {
+    window.removeEventListener('storage', handlePendingWriteStorage)
     if (publicTimer) window.clearInterval(publicTimer)
     if (marketTimer) window.clearInterval(marketTimer)
     if (clockTimer) window.clearInterval(clockTimer)
@@ -1079,6 +1267,8 @@ export function useTradeTerminal() {
     notice,
     busy,
     pendingWrite,
+    pendingJournalBlocked,
+    pageBusy,
     pendingWriteLabel,
     canReconcilePending,
     referencePrice,

@@ -2,6 +2,7 @@
 import type { Trade } from '../../api/trading'
 import { useI18n } from '../../i18n'
 import { shortTradeID } from './useTradeTerminal'
+import { tradeEnumKey } from './labels'
 
 defineProps<{
   trades: Trade[]
@@ -12,15 +13,16 @@ defineProps<{
   panelClass: string
 }>()
 const { tr } = useI18n()
+function enumLabel(value: string): string { return tr(tradeEnumKey(value)) }
 </script>
 
 <template>
   <article class="card public-card">
     <header>
       <div><span>{{ tr('trade.public.eyebrow') }}</span><h2>{{ tr('trade.public.title') }}</h2></div>
-      <div><span data-testid="panel-public-trades-state" class="panel-state" :class="panelClass">{{ panelState }}</span><span class="badge" :class="transportState === 'websocket' ? 'badge--live' : 'badge--delayed'">{{ transportState }}</span></div>
+      <div><span data-testid="panel-public-trades-state" class="panel-state" :class="panelClass">{{ panelState }}</span><span class="badge" :class="transportState === 'websocket' ? 'badge--live' : 'badge--delayed'">{{ enumLabel(transportState) }}</span></div>
     </header>
-    <div v-if="error" class="panel-warning">{{ tr('trade.panel.failed', { panel: tr('trade.public.title'), error }) }}<template v-if="lastGood">{{ tr('trade.panel.keepLastGood') }}</template></div>
+    <div v-if="error" class="panel-warning">{{ tr('trade.panel.failed', { panel: tr('trade.public.title'), error: tr('trade.error.backend_unavailable') }) }}<template v-if="lastGood">{{ tr('trade.panel.keepLastGood') }}</template></div>
     <div class="trade-list">
       <div v-for="trade in trades" :key="trade.id" class="trade-row"><strong>{{ trade.price }}</strong><span>{{ trade.quantity }} BTC</span><code>{{ shortTradeID(trade.id) }}</code></div>
       <div v-if="!trades.length" class="empty">{{ tr('trade.public.empty') }}</div>

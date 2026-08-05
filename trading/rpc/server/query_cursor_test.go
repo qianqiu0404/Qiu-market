@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -145,6 +146,36 @@ func TestQueryCursorConfigurationFailsClosed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := newQueryCursorCodec(config); err == nil {
 				t.Fatal("invalid cursor configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestParseCursorConfigUsesPersistentRuntimeFormat(t *testing.T) {
+	currentSecret := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	previousSecret := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
+	config, err := ParseCursorConfig(
+		"current:"+currentSecret,
+		"previous:"+previousSecret,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Current.KeyID != "current" || config.Previous == nil ||
+		config.Previous.KeyID != "previous" {
+		t.Fatalf("unexpected parsed cursor config: %+v", config)
+	}
+
+	for name, value := range map[string]string{
+		"missing":        "",
+		"missing-id":     ":" + currentSecret,
+		"missing-secret": "current:",
+		"padded":         "current:" + currentSecret + "=",
+		"short":          "current:" + base64.RawURLEncoding.EncodeToString([]byte("short")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseCursorConfig(value, ""); err == nil {
+				t.Fatal("invalid persistent cursor key was accepted")
 			}
 		})
 	}

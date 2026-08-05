@@ -247,6 +247,16 @@ func toEvent(market domain.Market, event domain.Event) (*tradingv1.Event, error)
 	if err != nil {
 		return nil, err
 	}
+	remainingQuoteBudget := ""
+	if event.RemainingQuoteBudget != nil {
+		remainingQuoteBudget, err = decimal.Format(
+			*event.RemainingQuoteBudget,
+			market.QuoteScale,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 	quoteAmount, err := decimal.Format(event.QuoteAmount, market.QuoteScale)
 	if err != nil {
 		return nil, err
@@ -270,22 +280,23 @@ func toEvent(market domain.Market, event domain.Event) (*tradingv1.Event, error)
 		}
 	}
 	return &tradingv1.Event{
-		Sequence:      strconv.FormatUint(event.Sequence, 10),
-		Index:         event.Index,
-		Type:          string(event.Type),
-		AccountId:     string(event.AccountID),
-		OrderId:       string(event.OrderID),
-		ClientOrderId: event.ClientOrderID,
-		Status:        event.Status.String(),
-		Side:          event.Side.String(),
-		Price:         price,
-		Quantity:      quantity,
-		Remaining:     remaining,
-		QuoteAmount:   quoteAmount,
-		Asset:         string(event.Asset),
-		Amount:        amount,
-		Reason:        event.Reason,
-		Trade:         trade,
+		Sequence:             strconv.FormatUint(event.Sequence, 10),
+		Index:                event.Index,
+		Type:                 string(event.Type),
+		AccountId:            string(event.AccountID),
+		OrderId:              string(event.OrderID),
+		ClientOrderId:        event.ClientOrderID,
+		Status:               event.Status.String(),
+		Side:                 event.Side.String(),
+		Price:                price,
+		Quantity:             quantity,
+		Remaining:            remaining,
+		RemainingQuoteBudget: remainingQuoteBudget,
+		QuoteAmount:          quoteAmount,
+		Asset:                string(event.Asset),
+		Amount:               amount,
+		Reason:               event.Reason,
+		Trade:                trade,
 	}, nil
 }
 

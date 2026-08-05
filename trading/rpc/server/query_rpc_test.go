@@ -140,6 +140,21 @@ func TestQueryRPCValidationAndReaderAbsenceFailClosed(t *testing.T) {
 		t.Fatalf("wrong-account cursor error = %v", err)
 	}
 
+	timeline, err := server.ListOrderEvents(ctx, &tradingv1.ListOrderEventsRequest{
+		MarketId: "BTC-USDT", AccountId: "alice", OrderId: "order-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.ListOrderEvents(ctx, &tradingv1.ListOrderEventsRequest{
+		MarketId: "BTC-USDT", AccountId: "mallory", OrderId: "missing-order",
+		Cursor: timeline.NextCursor,
+	})
+	if status.Code(err) != codes.InvalidArgument ||
+		!containsStatusMessage(err, "invalid_cursor") {
+		t.Fatalf("wrong-account timeline cursor error = %v", err)
+	}
+
 	withoutReader := &Server{engine: queryRPCMarketEngine{}}
 	_, err = withoutReader.ListAccountTrades(ctx, &tradingv1.ListAccountTradesRequest{
 		MarketId: "BTC-USDT", AccountId: "alice",

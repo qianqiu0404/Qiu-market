@@ -229,6 +229,7 @@ func startRecoveryIntegratedStack(
 		PostgresURL:        dsn,
 		GRPCAddress:        "127.0.0.1:0",
 		DemoMakerEnabled:   false,
+		CursorHMACCurrent:  integratedCursorKey,
 		RecoveryGate:       true,
 		RecoveryProvenance: integratedRecoveryProvenance(productionOrigin),
 	}, func(error) { appCancel() })
@@ -452,6 +453,7 @@ func assertBackendRecoveryFailsClosed(
 		PostgresURL:        dsn,
 		GRPCAddress:        "127.0.0.1:0",
 		DemoMakerEnabled:   false,
+		CursorHMACCurrent:  integratedCursorKey,
 		RecoveryGate:       true,
 		RecoveryProvenance: integratedRecoveryProvenance("https://qiu-market.example"),
 	}, func(error) { appCancel() })

@@ -1,5 +1,7 @@
 import type { MessageKey } from '../../i18n'
 
+export const MAX_INT64_ATOMS = 9_223_372_036_854_775_807n
+
 export const TRADE_MARKET_RULES = {
   baseAsset: 'BTC',
   quoteAsset: 'USDT',
@@ -43,13 +45,14 @@ export interface OrderPreview {
 }
 
 export function parseDecimal(value: string, precision: number): bigint | null {
-  const normalized = value.trim()
-  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(normalized)) return null
-  const [whole, fraction = ''] = normalized.split('.')
+  if (value !== value.trim()) return null
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) return null
+  const [whole, fraction = ''] = value.split('.')
   if (fraction.length > precision) return null
   try {
-    return BigInt(whole) * 10n ** BigInt(precision) +
+    const atoms = BigInt(whole) * 10n ** BigInt(precision) +
       BigInt((fraction + '0'.repeat(precision)).slice(0, precision))
+    return atoms <= MAX_INT64_ATOMS ? atoms : null
   } catch {
     return null
   }
@@ -121,27 +124,47 @@ export function previewOrder(input: OrderPreviewInput): OrderPreview {
 
   const marketPriceAtoms = parseDecimal(input.marketPrice ?? '', 6) ?? 0n
   const pricingPriceAtoms = input.type === 'limit' ? priceAtoms : marketPriceAtoms
-  const estimatedQuantityAtoms = input.type === 'market' && input.side === 'buy' && pricingPriceAtoms > 0n
+  const rawEstimatedQuantityAtoms = input.type === 'market' && input.side === 'buy' && pricingPriceAtoms > 0n
     ? floorToStep(
       mulDivFloor(quoteBudgetAtoms, TRADE_MARKET_RULES.baseScale, pricingPriceAtoms),
       TRADE_MARKET_RULES.quantityStep,
     )
     : quantityAtoms
-  const notionalAtoms = input.type === 'market' && input.side === 'buy'
+  if (rawEstimatedQuantityAtoms > MAX_INT64_ATOMS) {
+    errors.push('trade.validation.invalidBudget')
+  }
+  const estimatedQuantityAtoms = rawEstimatedQuantityAtoms <= MAX_INT64_ATOMS
+    ? rawEstimatedQuantityAtoms
+    : 0n
+  const rawNotionalAtoms = input.type === 'market' && input.side === 'buy'
     ? quoteBudgetAtoms
     : pricingPriceAtoms > 0n && quantityAtoms > 0n
       ? mulDivFloor(pricingPriceAtoms, quantityAtoms, TRADE_MARKET_RULES.baseScale)
       : 0n
+  if (rawNotionalAtoms > MAX_INT64_ATOMS) {
+    errors.push('trade.validation.invalidQuantity')
+  }
+  const notionalAtoms = rawNotionalAtoms <= MAX_INT64_ATOMS ? rawNotionalAtoms : 0n
   if (input.type === 'limit' && notionalAtoms < TRADE_MARKET_RULES.minimumNotional) {
     errors.push('trade.validation.minNotional')
   }
+  if (input.type === 'market' && input.side === 'sell') {
+    if (marketPriceAtoms <= 0n) errors.push('trade.validation.invalidPrice')
+    else if (notionalAtoms < TRADE_MARKET_RULES.minimumNotional) {
+      errors.push('trade.validation.minNotional')
+    }
+  }
 
   const heldAsset = input.side === 'buy' ? 'USDT' : 'BTC'
-  const heldAtoms = input.side === 'buy'
+  const rawHeldAtoms = input.side === 'buy'
     ? input.type === 'market'
       ? quoteBudgetAtoms
       : mulDivCeil(priceAtoms, quantityAtoms, TRADE_MARKET_RULES.baseScale)
     : quantityAtoms
+  if (rawHeldAtoms > MAX_INT64_ATOMS) {
+    errors.push(input.type === 'market' ? 'trade.validation.invalidBudget' : 'trade.validation.invalidQuantity')
+  }
+  const heldAtoms = rawHeldAtoms <= MAX_INT64_ATOMS ? rawHeldAtoms : 0n
   if (input.side === 'buy' && heldAtoms > availableUSDT) {
     errors.push('trade.validation.insufficientUSDT')
   }

@@ -70,6 +70,53 @@ qiu_require_command() {
   fi
 }
 
+qiu_validate_cursor_hmac_value() {
+  local value="$1"
+  local key_id
+  local encoded_secret
+  local padded_secret
+  local remainder
+  local decoded_bytes
+
+  if [[ "$value" != *:* ]] || [[ "${value#*:}" == *:* ]]; then
+    echo "Cursor HMAC key must use key_id:unpadded-base64url-secret." >&2
+    return 1
+  fi
+  key_id="${value%%:*}"
+  encoded_secret="${value#*:}"
+  if [[ ! "$key_id" =~ ^[A-Za-z0-9._-]{1,32}$ ]] ||
+    [[ ! "$encoded_secret" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "Cursor HMAC key ID or unpadded base64url secret is invalid." >&2
+    return 1
+  fi
+  remainder=$((${#encoded_secret} % 4))
+  if [ "$remainder" -eq 1 ]; then
+    echo "Cursor HMAC secret has an invalid base64url length." >&2
+    return 1
+  fi
+  padded_secret="$encoded_secret"
+  if [ "$remainder" -eq 2 ]; then
+    padded_secret="${padded_secret}=="
+  elif [ "$remainder" -eq 3 ]; then
+    padded_secret="${padded_secret}="
+  fi
+  if ! decoded_bytes="$(
+    printf '%s' "$padded_secret" |
+      tr '_-' '/+' |
+      base64 -D 2>/dev/null |
+      wc -c |
+      tr -d ' '
+  )"; then
+    echo "Cursor HMAC secret is not valid base64url." >&2
+    return 1
+  fi
+  if [[ ! "$decoded_bytes" =~ ^[0-9]+$ ]] || [ "$decoded_bytes" -lt 32 ]; then
+    echo "Cursor HMAC secret must decode to at least 32 bytes." >&2
+    return 1
+  fi
+  printf '%s\n' "$key_id"
+}
+
 qiu_require_release_coordination() {
   local expected_operation="$1"
   local expected_subject="$2"

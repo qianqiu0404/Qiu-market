@@ -418,6 +418,11 @@ func (s *Server) listOrders(writer http.ResponseWriter, request *http.Request) {
 		Side:      request.URL.Query().Get("side"),
 		Type:      request.URL.Query().Get("type"),
 	})
+	if err == nil {
+		for _, order := range response.GetOrders() {
+			redactPrivateOrderAccount(order)
+		}
+	}
 	s.writeGRPC(writer, response, err)
 }
 
@@ -431,7 +436,16 @@ func (s *Server) getOrder(writer http.ResponseWriter, request *http.Request) {
 		AccountId: session.Principal.AccountID,
 		OrderId:   request.PathValue("order"),
 	})
+	if err == nil {
+		redactPrivateOrderAccount(response)
+	}
 	s.writeGRPC(writer, response, err)
+}
+
+func redactPrivateOrderAccount(order *tradingv1.Order) {
+	if order != nil {
+		order.AccountId = ""
+	}
 }
 
 type cancelOrderBody struct {

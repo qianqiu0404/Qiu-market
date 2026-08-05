@@ -25,8 +25,9 @@ import (
 )
 
 const (
-	integratedMarketID = "BTC-USDT"
-	integratedOrigin   = "http://trade.integration.test"
+	integratedMarketID  = "BTC-USDT"
+	integratedOrigin    = "http://trade.integration.test"
+	integratedCursorKey = "test:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 )
 
 func TestCanonicalMigrationIntegratedGatewayAndRestartRecovery(t *testing.T) {
@@ -176,9 +177,10 @@ func startIntegratedStack(t *testing.T, parent context.Context, dsn string) *int
 	t.Helper()
 	appContext, appCancel := context.WithCancel(parent)
 	backend, err := tradingservice.New(appContext, tradingservice.Config{
-		PostgresURL:      dsn,
-		GRPCAddress:      "127.0.0.1:0",
-		DemoMakerEnabled: false,
+		PostgresURL:       dsn,
+		GRPCAddress:       "127.0.0.1:0",
+		DemoMakerEnabled:  false,
+		CursorHMACCurrent: integratedCursorKey,
 	}, func(error) { appCancel() })
 	if err != nil {
 		appCancel()

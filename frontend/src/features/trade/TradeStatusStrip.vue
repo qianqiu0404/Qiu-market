@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from '../../i18n'
+import { tradeEnumKey, tradeWriteReasonKey } from './labels'
 
 const props = defineProps<{
   availability: 'LIVE' | 'DEGRADED' | 'OFFLINE'
@@ -17,6 +18,10 @@ const lastSuccess = computed(() => props.lastSuccessAt
   ? new Intl.DateTimeFormat(locale.value, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     .format(new Date(props.lastSuccessAt))
   : tr('trade.status.noObservation'))
+const matchingLabel = computed(() => tr(tradeEnumKey(props.matchingState)))
+const liquidityLabel = computed(() => tr(tradeEnumKey(props.liquidityState)))
+const transportLabel = computed(() => tr(tradeEnumKey(props.transportState)))
+const writeReasonLabel = computed(() => tr(tradeWriteReasonKey(props.writeGateReason)))
 </script>
 
 <template>
@@ -27,15 +32,15 @@ const lastSuccess = computed(() => props.lastSuccessAt
       <span>{{ tr('trade.status.lastSuccess', { time: lastSuccess }) }}</span>
     </div>
     <div class="trade-status__facts">
-      <span data-testid="matching-state">{{ tr('trade.status.matching', { state: matchingState }) }}</span>
-      <span>{{ tr('trade.status.liquidity', { state: liquidityState }) }}</span>
-      <span data-testid="transport-state">{{ tr('trade.status.transport', { state: transportState }) }}</span>
+      <span data-testid="matching-state">{{ tr('trade.status.matching', { state: matchingLabel }) }}</span>
+      <span>{{ tr('trade.status.liquidity', { state: liquidityLabel }) }}</span>
+      <span data-testid="transport-state">{{ tr('trade.status.transport', { state: transportLabel }) }}</span>
       <span>{{ tr('trade.status.age', { age: dataAgeSeconds < 0 ? '—' : `${dataAgeSeconds}s` }) }}</span>
     </div>
     <div class="trade-status__gate" data-testid="write-gate-reason">
       {{ writeGateReason === 'ready'
         ? tr('trade.status.writeReady')
-        : tr('trade.status.writeBlocked', { reason: writeGateReason }) }}
+        : tr('trade.status.writeBlocked', { reason: writeReasonLabel }) }}
       <RouterLink to="/system">{{ tr('trade.status.systemLink') }}</RouterLink>
     </div>
   </section>

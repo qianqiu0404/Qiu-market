@@ -453,7 +453,7 @@ export const tradingAPI = {
     cursor = '',
     limit = 50,
   ) => request<TradeV1OrderPage>(queryPath('/orders', { scope, cursor, limit })),
-  order: (orderID: string) => request<Order>(
+  order: (orderID: string) => request<TradeV1Order>(
     `/orders/${encodeURIComponent(orderID)}`,
   ),
   trades: () => request<{ trades: Trade[] }>('/trades?limit=100'),
@@ -534,6 +534,7 @@ export function tradingEventMode(): 'websocket' | 'polling' {
 import type {
   TradeV1AccountTradePage,
   TradeV1LedgerPage,
+  TradeV1Order,
   TradeV1OrderEventPage,
   TradeV1OrderPage,
   TradeV1OrderScope,

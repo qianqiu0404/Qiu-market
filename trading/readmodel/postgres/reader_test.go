@@ -46,7 +46,7 @@ func TestAccountTradeViewReturnsOnlyCurrentAccountPerspective(t *testing.T) {
 		9,
 		3,
 		time.Unix(9, 0).UTC(),
-		market.ID,
+		market,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestAccountTradeViewReturnsOnlyCurrentAccountPerspective(t *testing.T) {
 		9,
 		3,
 		time.Unix(9, 0).UTC(),
-		market.ID,
+		market,
 	); !errors.Is(err, ErrIntegrity) {
 		t.Fatalf("non-participant error=%v", err)
 	}

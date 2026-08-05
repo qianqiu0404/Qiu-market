@@ -11,15 +11,17 @@ import (
 )
 
 type config struct {
-	postgresDSN    string
-	grpcAddress    string
-	httpAddress    string
-	allowedOrigins []string
-	localAuth      bool
-	secureCookies  bool
-	githubClientID string
-	githubSecret   string
-	githubRedirect string
+	postgresDSN        string
+	grpcAddress        string
+	httpAddress        string
+	allowedOrigins     []string
+	localAuth          bool
+	secureCookies      bool
+	githubClientID     string
+	githubSecret       string
+	githubRedirect     string
+	cursorHMACCurrent  string
+	cursorHMACPrevious string
 }
 
 func loadConfig() (config, error) {
@@ -29,6 +31,14 @@ func loadConfig() (config, error) {
 		httpAddress:    envOrDefault("S78_TRADING_HTTP_ADDR", "127.0.0.1:8084"),
 		githubClientID: os.Getenv("S78_TRADING_GITHUB_CLIENT_ID"),
 		githubSecret:   os.Getenv("S78_TRADING_GITHUB_CLIENT_SECRET"),
+		cursorHMACCurrent: firstEnvironment(
+			"MARKET_TRADING_CURSOR_HMAC_CURRENT",
+			"S78_TRADING_CURSOR_HMAC_CURRENT",
+		),
+		cursorHMACPrevious: firstEnvironment(
+			"MARKET_TRADING_CURSOR_HMAC_PREVIOUS",
+			"S78_TRADING_CURSOR_HMAC_PREVIOUS",
+		),
 	}
 	if result.postgresDSN == "" {
 		return config{}, fmt.Errorf("S78_TRADING_POSTGRES_DSN is required")
@@ -70,6 +80,15 @@ func loadConfig() (config, error) {
 		return config{}, fmt.Errorf("invalid GitHub redirect URL: %w", err)
 	}
 	return result, nil
+}
+
+func firstEnvironment(names ...string) string {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func envOrDefault(name, fallback string) string {

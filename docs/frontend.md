@@ -102,11 +102,18 @@ rejected / older tick rejected`。超过五分钟就 Unavailable。
 `Trade.vue` 同时读取两个边界：
 
 - 现有 market-data API 提供 S78 BTC 综合参考和当前可用 spot venue 的真实 K 线；
-- `/api/v1/trading/**` 提供虚拟订单簿、公共成交、状态、登录、余额、订单、个人成交、下单、撤单和管理虚拟入金。
+- `/api/v1/trading/**` 提供虚拟订单簿、公共成交、状态、登录、余额、cursor 分页订单、个人成交、账本、事件真值订单时间线、下单和撤单；管理员虚拟入金只在 System 的 Trading Admin 区域出现。
 
 价格、数量、余额、费用和 sequence 在 TypeScript 中都保持十进制字符串，不先转成 JavaScript `number`。写请求由 `trading.ts` 自动读取 CSRF cookie 并发送 `X-CSRF-Token`，账户身份只来自 HttpOnly session。页面启动先读取 `/auth/capabilities`：只有后端显式开启本地模式才展示 Local login，只有 OAuth 配置完整才展示 GitHub login。
 
 WebSocket 连接前先领取一次性 ticket，并携带最后 cursor 重连。连接状态、撮合恢复状态和重试原因必须可见。可信参考或 K 线缺失时显示 unavailable；不得用静态 BTC、随机蜡烛或过期响应填图。
+
+Trade 只展示用户做决定所需的 `LIVE / DEGRADED / OFFLINE`、最后成功时间和禁写原因；
+recovery epoch、state hash、deployment、outbox 与 transport proof 留在 System。订单抽屉从
+权威订单接口和 event-derived lifecycle projection 读取 accepted、rested、partial fill、fee、
+release、cancel 等事实，不能由浏览器拼出一条看似真实的时间线。System 的管理员虚拟入金
+与 Trade 的 submit/cancel 共用 pending-write journal：发送前落原 operation/request ID 和
+原始 payload，超时先查权威事实，只允许 exact-ID replay。
 
 ### Recovery 准入证据
 

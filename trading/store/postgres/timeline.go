@@ -26,6 +26,21 @@ type journalBinding struct {
 	bound        map[string]bool
 }
 
+type lifecycleRecord struct {
+	Record     corestore.Record
+	OccurredAt time.Time
+}
+
+type lifecycleIntegrity struct {
+	Sequence        uint64
+	RecordedRows    uint64
+	ActualRows      uint64
+	MaximumSequence uint64
+	Found           bool
+}
+
+const lifecycleBackfillBatchSize = 500
+
 func (s *Store) ensureTradeV1Projections(ctx context.Context) error {
 	var current int64
 	if err := s.pool.QueryRow(ctx, `
@@ -33,35 +48,408 @@ func (s *Store) ensureTradeV1Projections(ctx context.Context) error {
 	`, s.market.ID).Scan(&current); err != nil {
 		return fmt.Errorf("read stream for Trade V1 projection: %w", err)
 	}
+	integrity, err := s.readLifecycleIntegrity(ctx)
+	if err != nil {
+		return err
+	}
+	if err := validateLifecycleIntegrity(integrity); err != nil {
+		return err
+	}
 	if current == 0 {
+		if integrity.Found && integrity.Sequence != 0 {
+			return fmt.Errorf("order-event checkpoint %d is ahead of empty event stream", integrity.Sequence)
+		}
 		return nil
 	}
-	var checkpoint int64
-	err := s.pool.QueryRow(ctx, `
-		SELECT sequence
-		FROM trading_order_event_checkpoint
-		WHERE market_id=$1
-	`, s.market.ID).Scan(&checkpoint)
-	if err == nil && checkpoint == current {
+	if integrity.Sequence == uint64(current) {
 		return nil
 	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("read order-event checkpoint: %w", err)
-	}
-	if checkpoint > current {
+	if integrity.Sequence > uint64(current) {
 		return fmt.Errorf(
 			"order-event checkpoint %d is ahead of event stream %d",
-			checkpoint,
+			integrity.Sequence,
 			current,
 		)
 	}
-	if err := s.RebuildProjections(ctx); err != nil {
+	if err := s.backfillOrderLifecycle(ctx, integrity.Sequence, integrity.RecordedRows); err != nil {
 		return fmt.Errorf(
-			"rebuild Trade V1 projections from event authority at %d/%d: %w",
-			checkpoint,
+			"backfill Trade V1 lifecycle from event authority at %d/%d: %w",
+			integrity.Sequence,
 			current,
 			err,
 		)
+	}
+	completed, err := s.readLifecycleIntegrity(ctx)
+	if err != nil {
+		return err
+	}
+	if err := validateLifecycleIntegrity(completed); err != nil {
+		return err
+	}
+	if !completed.Found || completed.Sequence != uint64(current) {
+		return fmt.Errorf(
+			"lifecycle backfill checkpoint=%d found=%t, want event head %d",
+			completed.Sequence,
+			completed.Found,
+			current,
+		)
+	}
+	return nil
+}
+
+func (s *Store) readLifecycleIntegrity(ctx context.Context) (lifecycleIntegrity, error) {
+	var (
+		sequence     int64
+		recordedRows int64
+		actualRows   int64
+		maximum      int64
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT checkpoint.sequence,
+		       checkpoint.row_count,
+		       count(event.*),
+		       COALESCE(max(event.sequence), 0)
+		FROM trading_order_event_checkpoint AS checkpoint
+		LEFT JOIN trading_order_event AS event
+		  ON event.market_id=checkpoint.market_id
+		WHERE checkpoint.market_id=$1
+		GROUP BY checkpoint.sequence, checkpoint.row_count
+	`, s.market.ID).Scan(&sequence, &recordedRows, &actualRows, &maximum)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if err := s.pool.QueryRow(ctx, `
+			SELECT count(*), COALESCE(max(sequence), 0)
+			FROM trading_order_event
+			WHERE market_id=$1
+		`, s.market.ID).Scan(&actualRows, &maximum); err != nil {
+			return lifecycleIntegrity{}, fmt.Errorf("inspect orphaned lifecycle rows: %w", err)
+		}
+		return lifecycleIntegrity{
+			ActualRows:      uint64(actualRows),
+			MaximumSequence: uint64(maximum),
+		}, nil
+	}
+	if err != nil {
+		return lifecycleIntegrity{}, fmt.Errorf("read order-event checkpoint integrity: %w", err)
+	}
+	return lifecycleIntegrity{
+		Sequence:        uint64(sequence),
+		RecordedRows:    uint64(recordedRows),
+		ActualRows:      uint64(actualRows),
+		MaximumSequence: uint64(maximum),
+		Found:           true,
+	}, nil
+}
+
+func validateLifecycleIntegrity(integrity lifecycleIntegrity) error {
+	if !integrity.Found {
+		if integrity.ActualRows != 0 {
+			return fmt.Errorf(
+				"order lifecycle projection has %d orphaned rows without a checkpoint",
+				integrity.ActualRows,
+			)
+		}
+		return nil
+	}
+	if integrity.RecordedRows != integrity.ActualRows {
+		return fmt.Errorf(
+			"order lifecycle row-count mismatch at checkpoint %d: recorded=%d actual=%d",
+			integrity.Sequence,
+			integrity.RecordedRows,
+			integrity.ActualRows,
+		)
+	}
+	if integrity.MaximumSequence > integrity.Sequence {
+		return fmt.Errorf(
+			"order lifecycle row sequence %d is ahead of checkpoint %d",
+			integrity.MaximumSequence,
+			integrity.Sequence,
+		)
+	}
+	return nil
+}
+
+// backfillOrderLifecycle builds only the new lifecycle projection. Existing
+// order/trade/balance/ledger projections are already authoritative and must not
+// be deleted during a deploy. Progress is committed in bounded batches, so a
+// crash resumes after the last checkpoint instead of replaying every SQL write.
+func (s *Store) backfillOrderLifecycle(
+	ctx context.Context,
+	checkpoint uint64,
+	rowCount uint64,
+) error {
+	states := make(map[domain.OrderID]domain.Order)
+	var replayed uint64
+	for replayed < checkpoint {
+		batch, err := queryLifecycleRecordsAfter(
+			ctx,
+			s.pool,
+			s.market.ID,
+			replayed,
+			lifecycleBackfillBatchSize,
+		)
+		if err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			return fmt.Errorf("lifecycle checkpoint %d exceeds available event records", checkpoint)
+		}
+		for _, item := range batch {
+			if item.Record.Command.Sequence > checkpoint {
+				break
+			}
+			if err := validateRebuildRecord(s.market, replayed, item.Record); err != nil {
+				return fmt.Errorf("validate lifecycle history %d: %w", replayed+1, err)
+			}
+			updateLifecycleStates(states, item.Record)
+			replayed = item.Record.Command.Sequence
+		}
+	}
+
+	for {
+		batch, err := queryLifecycleRecordsAfter(
+			ctx,
+			s.pool,
+			s.market.ID,
+			checkpoint,
+			lifecycleBackfillBatchSize,
+		)
+		if err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			var head int64
+			if err := s.pool.QueryRow(ctx, `
+				SELECT current_sequence FROM trading_market WHERE market_id=$1
+			`, s.market.ID).Scan(&head); err != nil {
+				return fmt.Errorf("confirm lifecycle head: %w", err)
+			}
+			if uint64(head) != checkpoint {
+				return fmt.Errorf(
+					"lifecycle backfill stopped at %d while stream head is %d",
+					checkpoint,
+					head,
+				)
+			}
+			return nil
+		}
+
+		tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+		if err != nil {
+			return fmt.Errorf("begin lifecycle backfill batch: %w", err)
+		}
+		start := checkpoint
+		startRowCount := rowCount
+		committed := false
+		func() {
+			defer func() { _ = tx.Rollback(context.Background()) }()
+			var head int64
+			if err = tx.QueryRow(ctx, `
+				SELECT current_sequence
+				FROM trading_market
+				WHERE market_id=$1
+				FOR UPDATE
+			`, s.market.ID).Scan(&head); err != nil {
+				err = fmt.Errorf("lock market for lifecycle backfill: %w", err)
+				return
+			}
+			for _, item := range batch {
+				if item.Record.Command.Sequence > uint64(head) {
+					break
+				}
+				if err = validateRebuildRecord(s.market, checkpoint, item.Record); err != nil {
+					err = fmt.Errorf("validate lifecycle record %d: %w", checkpoint+1, err)
+					return
+				}
+				previous := lifecyclePreviousOrders(states, item.Record)
+				rows, buildErr := buildLifecycleRows(item.Record, previous, item.OccurredAt)
+				if buildErr != nil {
+					err = fmt.Errorf(
+						"build lifecycle record %d: %w",
+						item.Record.Command.Sequence,
+						buildErr,
+					)
+					return
+				}
+				if err = insertLifecycleRows(ctx, tx, rows); err != nil {
+					return
+				}
+				if uint64(len(rows)) > uint64(math.MaxInt64)-rowCount {
+					err = fmt.Errorf("lifecycle row count overflow")
+					return
+				}
+				rowCount += uint64(len(rows))
+				updateLifecycleStates(states, item.Record)
+				checkpoint = item.Record.Command.Sequence
+			}
+			if checkpoint == start {
+				err = fmt.Errorf("lifecycle backfill made no progress at %d", start)
+				return
+			}
+			tag, checkpointErr := tx.Exec(ctx, `
+				INSERT INTO trading_order_event_checkpoint (market_id, sequence, row_count, updated_at)
+				VALUES ($1,$2,$3,clock_timestamp())
+				ON CONFLICT (market_id) DO UPDATE
+				SET sequence=EXCLUDED.sequence,
+				    row_count=EXCLUDED.row_count,
+				    updated_at=EXCLUDED.updated_at
+				WHERE trading_order_event_checkpoint.sequence=$4
+				  AND trading_order_event_checkpoint.row_count=$5
+			`, s.market.ID, int64(checkpoint), int64(rowCount), int64(start), int64(startRowCount))
+			if checkpointErr != nil {
+				err = fmt.Errorf("advance lifecycle backfill checkpoint: %w", checkpointErr)
+				return
+			}
+			if tag.RowsAffected() != 1 {
+				err = fmt.Errorf("lifecycle backfill checkpoint compare-and-set failed")
+				return
+			}
+			if err = tx.Commit(ctx); err != nil {
+				err = fmt.Errorf("%w: lifecycle backfill: %v", ErrCommitOutcomeUnknown, err)
+				return
+			}
+			committed = true
+		}()
+		if err != nil {
+			return err
+		}
+		if !committed {
+			return fmt.Errorf("lifecycle backfill batch did not commit")
+		}
+	}
+}
+
+func queryLifecycleRecordsAfter(
+	ctx context.Context,
+	querier recordQuerier,
+	marketID domain.MarketID,
+	sequence uint64,
+	limit int,
+) ([]lifecycleRecord, error) {
+	if sequence > math.MaxInt64 || limit <= 0 || limit > lifecycleBackfillBatchSize {
+		return nil, fmt.Errorf("invalid lifecycle record query")
+	}
+	rows, err := querier.Query(ctx, `
+		SELECT schema_version, sequence, command_payload, result_payload,
+		       journal_payload, projection_payload, state_hash, created_at
+		FROM trading_event_batch
+		WHERE market_id=$1 AND sequence>$2
+		ORDER BY sequence ASC
+		LIMIT $3
+	`, marketID, int64(sequence), limit)
+	if err != nil {
+		return nil, fmt.Errorf("query lifecycle records: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]lifecycleRecord, 0, limit)
+	for rows.Next() {
+		var (
+			schemaVersion     int16
+			storedSequence    int64
+			commandPayload    []byte
+			resultPayload     []byte
+			journalPayload    []byte
+			projectionPayload []byte
+			stateHash         string
+			occurredAt        time.Time
+		)
+		if err := rows.Scan(
+			&schemaVersion,
+			&storedSequence,
+			&commandPayload,
+			&resultPayload,
+			&journalPayload,
+			&projectionPayload,
+			&stateHash,
+			&occurredAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan lifecycle record: %w", err)
+		}
+		record := corestore.Record{
+			SchemaVersion: uint16(schemaVersion),
+			MarketID:      marketID,
+			StateHash:     stateHash,
+		}
+		if err := json.Unmarshal(commandPayload, &record.Command); err != nil {
+			return nil, fmt.Errorf("decode lifecycle command %d: %w", storedSequence, err)
+		}
+		if err := json.Unmarshal(resultPayload, &record.Result); err != nil {
+			return nil, fmt.Errorf("decode lifecycle result %d: %w", storedSequence, err)
+		}
+		if err := json.Unmarshal(journalPayload, &record.Journal); err != nil {
+			return nil, fmt.Errorf("decode lifecycle journal %d: %w", storedSequence, err)
+		}
+		if err := json.Unmarshal(projectionPayload, &record.Projection); err != nil {
+			return nil, fmt.Errorf("decode lifecycle projection %d: %w", storedSequence, err)
+		}
+		if uint64(storedSequence) != record.Command.Sequence {
+			return nil, fmt.Errorf(
+				"lifecycle sequence metadata=%d command=%d",
+				storedSequence,
+				record.Command.Sequence,
+			)
+		}
+		result = append(result, lifecycleRecord{Record: record, OccurredAt: occurredAt})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate lifecycle records: %w", err)
+	}
+	return result, nil
+}
+
+func lifecyclePreviousOrders(
+	states map[domain.OrderID]domain.Order,
+	record corestore.Record,
+) map[domain.OrderID]domain.Order {
+	ids := make(map[domain.OrderID]struct{}, len(record.Projection.Orders)+2)
+	for _, order := range record.Projection.Orders {
+		ids[order.ID] = struct{}{}
+	}
+	if record.Command.Cancel != nil {
+		ids[record.Command.Cancel.OrderID] = struct{}{}
+	}
+	for _, event := range record.Result.Events {
+		if event.OrderID != "" {
+			ids[event.OrderID] = struct{}{}
+		}
+		if event.Trade != nil {
+			ids[event.Trade.MakerOrderID] = struct{}{}
+			ids[event.Trade.TakerOrderID] = struct{}{}
+		}
+	}
+	previous := make(map[domain.OrderID]domain.Order, len(ids))
+	for orderID := range ids {
+		if order, ok := states[orderID]; ok {
+			previous[orderID] = order
+		}
+	}
+	return previous
+}
+
+func updateLifecycleStates(states map[domain.OrderID]domain.Order, record corestore.Record) {
+	for _, order := range record.Projection.Orders {
+		states[order.ID] = order
+	}
+}
+
+func insertLifecycleRows(ctx context.Context, tx pgx.Tx, rows []lifecycleRow) error {
+	for _, row := range rows {
+		payload, err := json.Marshal(row.Event)
+		if err != nil {
+			return fmt.Errorf("marshal lifecycle event %s: %w", row.Event.EventID, err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO trading_order_event (
+				market_id, account_id, order_id, sequence, event_index,
+				timeline_index, event_type, payload, occurred_at
+			)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+		`, row.Event.MarketID, row.AccountID, row.Event.OrderID,
+			int64(row.Event.Sequence), int32(row.Event.EventIndex),
+			int32(row.Event.TimelineIndex), row.Event.Type, string(payload),
+			row.Event.OccurredAt); err != nil {
+			return fmt.Errorf("insert lifecycle event %s: %w", row.Event.EventID, err)
+		}
 	}
 	return nil
 }
@@ -75,13 +463,13 @@ func applyOrderLifecycleProjection(
 	if record.Command.Sequence == 0 || record.Command.Sequence > math.MaxInt64 {
 		return fmt.Errorf("invalid lifecycle sequence %d", record.Command.Sequence)
 	}
-	var checkpoint int64
+	var checkpoint, rowCount int64
 	err := tx.QueryRow(ctx, `
-		SELECT sequence
+		SELECT sequence, row_count
 		FROM trading_order_event_checkpoint
 		WHERE market_id=$1
 		FOR UPDATE
-	`, record.MarketID).Scan(&checkpoint)
+	`, record.MarketID).Scan(&checkpoint, &rowCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		checkpoint = 0
 	} else if err != nil {
@@ -104,32 +492,23 @@ func applyOrderLifecycleProjection(
 	if err != nil {
 		return fmt.Errorf("build order lifecycle at sequence %d: %w", record.Command.Sequence, err)
 	}
-	for _, row := range rows {
-		payload, err := json.Marshal(row.Event)
-		if err != nil {
-			return fmt.Errorf("marshal lifecycle event %s: %w", row.Event.EventID, err)
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO trading_order_event (
-				market_id, account_id, order_id, sequence, event_index,
-				timeline_index, event_type, payload, occurred_at
-			)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
-		`, record.MarketID, row.AccountID, row.Event.OrderID,
-			int64(row.Event.Sequence), int32(row.Event.EventIndex),
-			int32(row.Event.TimelineIndex), row.Event.Type, string(payload),
-			occurredAt); err != nil {
-			return fmt.Errorf("insert lifecycle event %s: %w", row.Event.EventID, err)
-		}
+	if err := insertLifecycleRows(ctx, tx, rows); err != nil {
+		return err
 	}
+	if int64(len(rows)) > math.MaxInt64-rowCount {
+		return fmt.Errorf("lifecycle row count overflow")
+	}
+	nextRowCount := rowCount + int64(len(rows))
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO trading_order_event_checkpoint (market_id, sequence, updated_at)
-		VALUES ($1,$2,$3)
+		INSERT INTO trading_order_event_checkpoint (market_id, sequence, row_count, updated_at)
+		VALUES ($1,$2,$3,$4)
 		ON CONFLICT (market_id) DO UPDATE
 		SET sequence=EXCLUDED.sequence,
+		    row_count=EXCLUDED.row_count,
 		    updated_at=EXCLUDED.updated_at
-		WHERE trading_order_event_checkpoint.sequence=$4
-	`, record.MarketID, int64(record.Command.Sequence), occurredAt, expected)
+		WHERE trading_order_event_checkpoint.sequence=$5
+		  AND trading_order_event_checkpoint.row_count=$6
+	`, record.MarketID, int64(record.Command.Sequence), nextRowCount, occurredAt, expected, rowCount)
 	if err != nil {
 		return fmt.Errorf("advance order-event checkpoint: %w", err)
 	}

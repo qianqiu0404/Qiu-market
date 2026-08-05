@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -224,10 +225,155 @@ func TestPostgresEventSnapshotOutboxAndRecovery(t *testing.T) {
 		t.Fatalf("stream sequence after stale writer = %d, want 5", sequence)
 	}
 
+	if _, err := pool.Exec(ctx, `
+		UPDATE trading_event_batch
+		SET schema_version=CASE WHEN sequence<=2 THEN 3 WHEN sequence=3 THEN 4 ELSE 5 END
+		WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM trading_order_event WHERE market_id=$1`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM trading_order_event_checkpoint WHERE market_id=$1`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	persistence, err = postgresstore.New(ctx, pool, market)
+	if err != nil {
+		t.Fatalf("mixed-schema lifecycle backfill: %v", err)
+	}
+	var lifecycleCheckpoint int64
+	var lifecycleRecordedRows int64
+	var lifecycleRows int64
+	if err := pool.QueryRow(ctx, `
+		SELECT checkpoint.sequence, checkpoint.row_count, count(events.*)
+		FROM trading_order_event_checkpoint AS checkpoint
+		LEFT JOIN trading_order_event AS events USING (market_id)
+		WHERE checkpoint.market_id=$1
+		GROUP BY checkpoint.sequence, checkpoint.row_count
+	`, market.ID).Scan(&lifecycleCheckpoint, &lifecycleRecordedRows, &lifecycleRows); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleCheckpoint != 5 || lifecycleRows == 0 || lifecycleRecordedRows != lifecycleRows {
+		t.Fatalf(
+			"mixed lifecycle checkpoint/recorded/actual=%d/%d/%d",
+			lifecycleCheckpoint,
+			lifecycleRecordedRows,
+			lifecycleRows,
+		)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event WHERE market_id=$1 AND sequence>3
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE trading_order_event_checkpoint
+		SET sequence=3,
+		    row_count=(
+		        SELECT count(*) FROM trading_order_event
+		        WHERE market_id=$1
+		    )
+		WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err != nil {
+		t.Fatalf("resume mixed lifecycle backfill: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT sequence, row_count FROM trading_order_event_checkpoint WHERE market_id=$1
+	`, market.ID).Scan(&lifecycleCheckpoint, &lifecycleRecordedRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM trading_order_event WHERE market_id=$1
+	`, market.ID).Scan(&lifecycleRows); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleCheckpoint != 5 || lifecycleRecordedRows != lifecycleRows {
+		t.Fatalf(
+			"resumed lifecycle checkpoint/recorded/actual=%d/%d/%d",
+			lifecycleCheckpoint,
+			lifecycleRecordedRows,
+			lifecycleRows,
+		)
+	}
+
 	conflict := market
 	conflict.MakerFeeBPS++
 	if _, err := postgresstore.New(ctx, pool, conflict); !errors.Is(err, postgresstore.ErrMarketConfigConflict) {
 		t.Fatalf("market config conflict error = %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event
+		WHERE ctid=(
+			SELECT ctid FROM trading_order_event
+			WHERE market_id=$1
+			ORDER BY sequence, event_index, timeline_index
+			LIMIT 1
+		)
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err == nil ||
+		!strings.Contains(err.Error(), "row-count mismatch") {
+		t.Fatalf("missing lifecycle row did not fail closed: %v", err)
+	}
+
+	// Dropping both the rebuildable lifecycle and its checkpoint is the safe
+	// operator repair. A checkpoint alone is never rewritten to bless damage.
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event_checkpoint WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err != nil {
+		t.Fatalf("safe lifecycle rebuild after damage: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event_checkpoint WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err == nil ||
+		!strings.Contains(err.Error(), "orphaned rows") {
+		t.Fatalf("orphaned lifecycle rows did not fail closed: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM trading_order_event WHERE market_id=$1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err != nil {
+		t.Fatalf("safe lifecycle rebuild after orphan repair: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO trading_order_event (
+			market_id, account_id, order_id, sequence, event_index,
+			timeline_index, event_type, payload, occurred_at
+		)
+		SELECT market_id, account_id, order_id, sequence, event_index,
+		       timeline_index+1000, event_type, payload, occurred_at
+		FROM trading_order_event
+		WHERE market_id=$1
+		ORDER BY sequence, event_index, timeline_index
+		LIMIT 1
+	`, market.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresstore.New(ctx, pool, market); err == nil ||
+		!strings.Contains(err.Error(), "row-count mismatch") {
+		t.Fatalf("extra lifecycle row did not fail closed: %v", err)
 	}
 }
 

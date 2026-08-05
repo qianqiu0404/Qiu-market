@@ -286,7 +286,7 @@ func (r *Reader) ListAccountTrades(
 			sequence,
 			eventIndex,
 			occurredAt,
-			r.market.ID,
+			r.market,
 		)
 		if err != nil {
 			return query.TradePage{}, err
@@ -630,9 +630,9 @@ func accountTradeView(
 	sequence int64,
 	eventIndex int32,
 	occurredAt time.Time,
-	marketID domain.MarketID,
+	market domain.Market,
 ) (query.AccountTrade, error) {
-	if trade.MarketID != marketID || trade.ID == "" || trade.Price <= 0 ||
+	if trade.MarketID != market.ID || trade.ID == "" || trade.Price <= 0 ||
 		trade.Quantity <= 0 || trade.QuoteAmount <= 0 || trade.MakerOrderID == "" ||
 		trade.TakerOrderID == "" || trade.MakerAccountID == "" || trade.TakerAccountID == "" ||
 		trade.BuyerAccountID == "" || trade.SellerAccountID == "" || sequence <= 0 ||
@@ -674,9 +674,24 @@ func accountTradeView(
 	if fee.AccountID != accountID || fee.Role != role || fee.Asset == "" || fee.Amount < 0 {
 		return query.AccountTrade{}, fmt.Errorf("%w: trade fee identity mismatch", ErrIntegrity)
 	}
+	expectedRate := market.TakerFeeBPS
+	if role == domain.LiquidityRoleMaker {
+		expectedRate = market.MakerFeeBPS
+	}
+	expectedAsset := market.QuoteAsset
+	feeBasis := trade.QuoteAmount
+	if side == domain.SideBuy {
+		expectedAsset = market.BaseAsset
+		feeBasis = trade.Quantity
+	}
+	expectedAmount, err := domain.FeeAmount(feeBasis, expectedRate)
+	if err != nil || fee.Asset != expectedAsset || fee.RateBPS != expectedRate ||
+		fee.Amount != expectedAmount {
+		return query.AccountTrade{}, fmt.Errorf("%w: trade fee formula mismatch", ErrIntegrity)
+	}
 	return query.AccountTrade{
 		ID:            trade.ID,
-		MarketID:      marketID,
+		MarketID:      market.ID,
 		OrderID:       orderID,
 		Side:          side,
 		LiquidityRole: role,
@@ -755,6 +770,27 @@ func (r *Reader) validateTimelineEvent(
 				event.Fee.Role != domain.LiquidityRoleTaker) {
 			return fmt.Errorf("%w: invalid lifecycle fee", ErrIntegrity)
 		}
+		expectedRate := r.market.TakerFeeBPS
+		if event.Fee.Role == domain.LiquidityRoleMaker {
+			expectedRate = r.market.MakerFeeBPS
+		}
+		if event.Quantity == nil || event.Price == nil || event.Type != domain.EventTradeExecuted {
+			return fmt.Errorf("%w: lifecycle fee lacks trade basis", ErrIntegrity)
+		}
+		expectedAsset := r.market.QuoteAsset
+		feeBasis, err := r.market.QuoteAmountFloor(*event.Price, *event.Quantity)
+		if order.Side == domain.SideBuy {
+			expectedAsset = r.market.BaseAsset
+			feeBasis = *event.Quantity
+		}
+		if err != nil {
+			return fmt.Errorf("%w: lifecycle fee basis: %v", ErrIntegrity, err)
+		}
+		expectedAmount, err := domain.FeeAmount(feeBasis, expectedRate)
+		if err != nil || event.Fee.Asset != expectedAsset ||
+			event.Fee.RateBPS != expectedRate || event.Fee.Amount != expectedAmount {
+			return fmt.Errorf("%w: lifecycle fee formula mismatch", ErrIntegrity)
+		}
 	}
 	for _, effect := range event.BalanceEffects {
 		if (effect.Asset != r.market.BaseAsset && effect.Asset != r.market.QuoteAsset) ||
@@ -823,7 +859,7 @@ func (r *Reader) ledgerEntry(
 		if err := json.Unmarshal(tradePayload, &trade); err != nil {
 			return query.LedgerEntry{}, fmt.Errorf("%w: decode linked trade: %v", ErrIntegrity, err)
 		}
-		view, err := accountTradeView(trade, accountID, sequence, 1, occurredAt, r.market.ID)
+		view, err := accountTradeView(trade, accountID, sequence, 1, occurredAt, r.market)
 		if err != nil {
 			return query.LedgerEntry{}, err
 		}

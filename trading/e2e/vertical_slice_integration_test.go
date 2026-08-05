@@ -29,6 +29,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/httpapi"
 	"github.com/the-web3/s78-market-services/trading/ledger"
 	"github.com/the-web3/s78-market-services/trading/outbox"
+	readmodelpostgres "github.com/the-web3/s78-market-services/trading/readmodel/postgres"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
@@ -138,11 +139,11 @@ func TestVirtualSpotTransportTradeFeesCancelAndRestart(t *testing.T) {
 	assertTradeArrived(t, ws, "4", userAccount)
 	_ = ws.Close()
 
-	var privateTrades tradingv1.ListTradesResponse
+	var privateTrades tradingv1.ListAccountTradesResponse
 	doJSON(t, browserClient, http.MethodGet,
-		first.http.URL+"/api/v1/trading/trades?limit=100",
+		first.http.URL+"/api/v1/trading/account/trades?limit=100",
 		nil, "", http.StatusOK, &privateTrades)
-	assertTrade(t, privateTrades.Trades, userAccount, makerAccount)
+	assertAccountTrade(t, privateTrades.Trades)
 
 	canceled, err := first.client.CancelOrder(context.Background(),
 		&tradingv1.CancelOrderRequest{
@@ -208,11 +209,11 @@ func TestVirtualSpotTransportTradeFeesCancelAndRestart(t *testing.T) {
 	assertBalancesBeforeRestart(t, browserClient, second, market.ID, userAccount, makerAccount)
 	assertPlatformFeeLedger(t, adminPool, market.ID)
 
-	privateTrades = tradingv1.ListTradesResponse{}
+	privateTrades = tradingv1.ListAccountTradesResponse{}
 	doJSON(t, browserClient, http.MethodGet,
-		second.http.URL+"/api/v1/trading/trades?limit=100",
+		second.http.URL+"/api/v1/trading/account/trades?limit=100",
 		nil, "", http.StatusOK, &privateTrades)
-	assertTrade(t, privateTrades.Trades, userAccount, makerAccount)
+	assertAccountTrade(t, privateTrades.Trades)
 
 	second.stop(t)
 	after := loadRecoveryProof(t, adminPool, market.ID)
@@ -265,10 +266,27 @@ func startStack(
 		pool.Close()
 		t.Fatal(err)
 	}
+	queries, err := readmodelpostgres.New(pool, market)
+	if err != nil {
+		closeRunner(t, runner)
+		pool.Close()
+		t.Fatal(err)
+	}
+	rpcConfig := tradingserver.DefaultConfig()
+	rpcConfig.Queries = queries
+	rpcConfig.Cursors, err = tradingserver.ParseCursorConfig(
+		"e2e:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"",
+	)
+	if err != nil {
+		closeRunner(t, runner)
+		pool.Close()
+		t.Fatal(err)
+	}
 	rpcService, err := tradingserver.New(
 		runner,
 		tradingserver.NewPostgresEventSource(persistence),
-		tradingserver.DefaultConfig(),
+		rpcConfig,
 	)
 	if err != nil {
 		closeRunner(t, runner)
@@ -450,10 +468,9 @@ func assertTradeArrived(
 	}
 }
 
-func assertTrade(
+func assertAccountTrade(
 	t *testing.T,
-	trades []*tradingv1.Trade,
-	buyer, seller string,
+	trades []*tradingv1.AccountTrade,
 ) {
 	t.Helper()
 	if len(trades) != 1 {
@@ -461,19 +478,13 @@ func assertTrade(
 	}
 	trade := trades[0]
 	if trade.Price != "60000" || trade.Quantity != "0.07" ||
-		trade.QuoteAmount != "4200" ||
-		trade.BuyerAccountId != buyer || trade.SellerAccountId != seller {
+		trade.QuoteAmount != "4200" || trade.Side != "buy" ||
+		trade.LiquidityRole != "taker" {
 		t.Fatalf("trade settlement = %+v", trade)
 	}
-	if trade.BuyerFee == nil || trade.BuyerFee.Amount != "0.00014" ||
-		trade.BuyerFee.Asset != "BTC" || trade.BuyerFee.RateBps != "20" ||
-		trade.BuyerFee.Role != "taker" {
-		t.Fatalf("buyer fee = %+v", trade.BuyerFee)
-	}
-	if trade.SellerFee == nil || trade.SellerFee.Amount != "4.2" ||
-		trade.SellerFee.Asset != "USDT" || trade.SellerFee.RateBps != "10" ||
-		trade.SellerFee.Role != "maker" {
-		t.Fatalf("seller fee = %+v", trade.SellerFee)
+	if trade.FeeAmount != "0.00014" || trade.FeeAsset != "BTC" ||
+		trade.FeeRateBps != "20" {
+		t.Fatalf("account fee = %+v", trade)
 	}
 }
 
@@ -671,6 +682,8 @@ func cleanupFixture(
 		return
 	}
 	for _, table := range []string{
+		"trading_order_event_checkpoint",
+		"trading_order_event",
 		"trading_projection_checkpoint",
 		"trading_outbox_checkpoint",
 		"trading_ledger_entry",

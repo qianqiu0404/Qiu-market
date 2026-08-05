@@ -5,6 +5,7 @@ import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
 import ErrorState from '../components/ErrorState.vue'
+import TradingAdminCard from '../features/system/TradingAdminCard.vue'
 import { usePolling } from '../composables/usePolling'
 import {
   getSystemStatus,
@@ -95,8 +96,8 @@ const pageSubtitle = computed(() => {
     return t('Tracked trading-pair catalog', '查看正在跟踪的交易对目录')
   default:
     return t(
-      'Read-only health evidence for matching, liquidity, transport, database, disk, retention, and data sources. This page does not start, stop, or promote services.',
-      '只读查看撮合、流动性、传输、数据库、磁盘、保留任务和数据源健康；本页不会启动、停止服务或执行切流。',
+      'Health and recovery evidence, plus an admin-only virtual-funding control. This page does not start, stop, or promote services.',
+      '查看健康与恢复证据，并提供仅管理员可用的虚拟入金入口；本页不会启动、停止服务或执行切流。',
     )
   }
 })
@@ -495,6 +496,8 @@ function recoveryVariant(): BadgeVariant {
             <p>{{ recovery.error.value || t('Reading the public recovery status.', '正在读取公开恢复状态。') }}</p>
           </template>
         </div>
+
+        <TradingAdminCard :admission="recoveryAdmission" />
 
         <div class="section-heading provider-heading">
           <div>

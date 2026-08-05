@@ -49,6 +49,27 @@ manager="$fixture_repo/ops/macos/manage-release-candidate.sh"
 release_tool="$fixture_repo/ops/macos/release-production.sh"
 runtime_tool="$fixture_repo/ops/macos/manage-runtime-release.sh"
 
+# Release preflight must reject malformed or undersized cursor keys before any
+# backup, migration, or process switch. The helper prints only the non-secret
+# key ID, never the decoded material.
+# shellcheck disable=SC1091
+source "$fixture_repo/ops/macos/production-lib.sh"
+valid_cursor_secret="$(printf '0123456789abcdef0123456789abcdef' | base64 | tr -d '=\n' | tr '/+' '_-')"
+test "$(qiu_validate_cursor_hmac_value "current:$valid_cursor_secret")" = current
+if qiu_validate_cursor_hmac_value 'current:too-short' >/dev/null 2>&1; then
+  echo "Cursor HMAC validation accepted an undersized secret." >&2
+  exit 1
+fi
+if qiu_validate_cursor_hmac_value 'current:not+base64url' >/dev/null 2>&1; then
+  echo "Cursor HMAC validation accepted padded or non-base64url material." >&2
+  exit 1
+fi
+if qiu_validate_cursor_hmac_value "$(printf 'k%.0s' {1..33}):$valid_cursor_secret" \
+  >/dev/null 2>&1; then
+  echo "Cursor HMAC validation accepted a key ID longer than the Go runtime limit." >&2
+  exit 1
+fi
+
 "$manager" prepare "$commit" > "$fixture_dir/prepare.out"
 
 binary_manifest="$support_dir/releases/$commit/manifest.env"

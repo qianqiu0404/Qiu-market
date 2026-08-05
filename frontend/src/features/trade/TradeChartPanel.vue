@@ -85,17 +85,17 @@ function observedAt(): string {
       </div>
     </header>
     <div v-if="error && klines.length" class="panel-warning">
-      {{ tr('trade.panel.failed', { panel: tr('trade.chart.title'), error }) }}
+      {{ tr('trade.panel.failed', { panel: tr('trade.chart.title'), error: tr('trade.error.backend_unavailable') }) }}
       {{ tr('trade.panel.keepLastGood') }}
     </div>
     <div v-show="klines.length" ref="chartElement" class="trade-chart"></div>
     <div v-if="!klines.length" class="truth-empty">
       <strong>{{ tr('trade.chart.emptyTitle') }}</strong>
-      <p>{{ error || referenceError || tr('trade.chart.emptyBody') }}</p>
+      <p>{{ error || referenceError ? tr('trade.chart.sourceUnavailable') : tr('trade.chart.emptyBody') }}</p>
       <span>{{ tr('trade.chart.noMock') }}</span>
     </div>
     <footer>
-      <span>{{ referenceError || tr('trade.chart.referenceCaption') }}</span>
+      <span>{{ referenceError ? tr('trade.chart.referenceUnavailable') : tr('trade.chart.referenceCaption') }}</span>
       <span>{{ observedAt() }}</span>
     </footer>
   </article>

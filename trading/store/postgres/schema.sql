@@ -113,6 +113,45 @@ ALTER TABLE trading_order
     ADD COLUMN IF NOT EXISTS created_at timestamptz,
     ADD COLUMN IF NOT EXISTS updated_at timestamptz;
 
+CREATE OR REPLACE FUNCTION trading_order_v1_compat_columns()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.accepted_sequence IS NULL THEN
+        NEW.accepted_sequence := (NEW.payload->>'accepted_sequence')::bigint;
+    END IF;
+    IF NEW.created_at IS NULL THEN
+        SELECT source.created_at
+        INTO NEW.created_at
+        FROM trading_event_batch AS source
+        WHERE source.market_id=NEW.market_id
+          AND source.sequence=NEW.accepted_sequence;
+    END IF;
+    IF TG_OP='INSERT' THEN
+        SELECT source.created_at
+        INTO NEW.updated_at
+        FROM trading_event_batch AS source
+        WHERE source.market_id=NEW.market_id
+          AND source.sequence=NEW.updated_sequence;
+    ELSIF NEW.updated_sequence IS DISTINCT FROM OLD.updated_sequence
+       OR NEW.updated_at IS NULL THEN
+        SELECT source.created_at
+        INTO NEW.updated_at
+        FROM trading_event_batch AS source
+        WHERE source.market_id=NEW.market_id
+          AND source.sequence=NEW.updated_sequence;
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+DROP TRIGGER IF EXISTS trading_order_v1_compat_columns_trigger ON trading_order;
+CREATE TRIGGER trading_order_v1_compat_columns_trigger
+BEFORE INSERT OR UPDATE ON trading_order
+FOR EACH ROW
+EXECUTE FUNCTION trading_order_v1_compat_columns();
+
 UPDATE trading_order
 SET accepted_sequence=(payload->>'accepted_sequence')::bigint
 WHERE accepted_sequence IS NULL;
@@ -181,8 +220,30 @@ CREATE INDEX IF NOT EXISTS trading_order_event_account_idx
 CREATE TABLE IF NOT EXISTS trading_order_event_checkpoint (
     market_id       text PRIMARY KEY REFERENCES trading_market(market_id) ON DELETE RESTRICT,
     sequence        bigint NOT NULL CHECK (sequence >= 0),
+    row_count       bigint NOT NULL DEFAULT 0 CHECK (row_count >= 0),
     updated_at      timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE trading_order_event_checkpoint
+    ADD COLUMN IF NOT EXISTS row_count bigint;
+
+UPDATE trading_order_event_checkpoint AS checkpoint
+SET row_count=(
+    SELECT count(*)
+    FROM trading_order_event AS event
+    WHERE event.market_id=checkpoint.market_id
+)
+WHERE checkpoint.row_count IS NULL;
+
+ALTER TABLE trading_order_event_checkpoint
+    ALTER COLUMN row_count SET DEFAULT 0,
+    ALTER COLUMN row_count SET NOT NULL;
+
+ALTER TABLE trading_order_event_checkpoint
+    DROP CONSTRAINT IF EXISTS trading_order_event_checkpoint_row_count_check;
+ALTER TABLE trading_order_event_checkpoint
+    ADD CONSTRAINT trading_order_event_checkpoint_row_count_check
+        CHECK (row_count >= 0);
 
 CREATE TABLE IF NOT EXISTS trading_trade (
     market_id       text NOT NULL REFERENCES trading_market(market_id) ON DELETE RESTRICT,

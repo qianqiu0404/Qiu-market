@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { OrderPreview } from './decimal'
 import { useI18n } from '../../i18n'
+import { tradeEnumKey } from './labels'
 
 const props = defineProps<{
   form: {
@@ -29,6 +30,7 @@ const emit = defineEmits<{
   percent: [value: 25 | 50 | 75 | 100]
 }>()
 const { tr } = useI18n()
+function enumLabel(value: string): string { return tr(tradeEnumKey(value)) }
 const marketBuy = computed(() => props.form.type === 'market' && props.form.side === 'buy')
 const inputAsset = computed(() => marketBuy.value || props.form.side === 'buy' ? 'USDT' : 'BTC')
 const available = computed(() => inputAsset.value === 'USDT' ? props.availableUSDT : props.availableBTC)
@@ -52,7 +54,7 @@ function previewText(value: bigint, asset: 'BTC' | 'USDT'): string {
     </header>
     <form class="entry-body" @submit.prevent="emit('submit')">
       <div class="switch"><button type="button" :class="{ active: form.side === 'buy' }" @click="form.side = 'buy'">{{ tr('trade.entry.buy') }}</button><button type="button" :class="{ active: form.side === 'sell' }" @click="form.side = 'sell'">{{ tr('trade.entry.sell') }}</button></div>
-      <div class="switch"><button type="button" :class="{ active: form.type === 'limit' }" @click="form.type = 'limit'">Limit</button><button type="button" :class="{ active: form.type === 'market' }" @click="form.type = 'market'">Market</button></div>
+      <div class="switch"><button type="button" :class="{ active: form.type === 'limit' }" @click="form.type = 'limit'">{{ enumLabel('limit') }}</button><button type="button" :class="{ active: form.type === 'market' }" @click="form.type = 'market'">{{ enumLabel('market') }}</button></div>
       <label>{{ tr('trade.entry.clientOrderID') }}<span class="input-pair"><input v-model="form.clientOrderID" class="input" autocomplete="off" /><button type="button" class="btn" :disabled="pending" @click="emit('reset')">{{ tr('trade.entry.reset') }}</button></span></label>
       <label v-if="form.type === 'limit'">{{ tr('trade.entry.price') }}<span class="input-pair"><input v-model="form.price" class="input" inputmode="decimal" :placeholder="tr('trade.entry.pricePlaceholder')" /><button type="button" class="btn" :disabled="!referenceFresh" @click="emit('reference')">{{ tr('trade.entry.referencePrice') }}</button></span></label>
       <label v-if="!marketBuy">{{ tr('trade.entry.quantity') }}<input v-model="form.quantity" class="input" inputmode="decimal" /></label>
@@ -62,7 +64,7 @@ function previewText(value: bigint, asset: 'BTC' | 'USDT'): string {
         <div><button v-for="value in ([25,50,75,100] as const)" :key="value" type="button" @click="emit('percent', value)">{{ tr('trade.entry.percent', { percent: value }) }}</button></div>
       </div>
       <div v-if="form.type === 'limit'" class="tif-row">
-        <label>{{ tr('trade.entry.timeInForce') }}<select v-model="form.timeInForce" class="input"><option value="gtc">GTC</option><option value="ioc">IOC</option><option value="fok">FOK</option></select></label>
+        <label>{{ tr('trade.entry.timeInForce') }}<select v-model="form.timeInForce" class="input"><option value="gtc">{{ enumLabel('gtc') }}</option><option value="ioc">{{ enumLabel('ioc') }}</option><option value="fok">{{ enumLabel('fok') }}</option></select></label>
         <label class="checkbox"><input v-model="form.postOnly" type="checkbox" /> {{ tr('trade.entry.postOnly') }}</label>
       </div>
       <p class="hint">{{ form.type === 'market' ? (marketBuy ? tr('trade.entry.marketBuyHint') : tr('trade.entry.marketSellHint')) : tr('trade.entry.rules') }}</p>

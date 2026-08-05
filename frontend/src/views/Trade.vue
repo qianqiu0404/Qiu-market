@@ -9,6 +9,7 @@ import TradeOrderDrawer from '../features/trade/TradeOrderDrawer.vue'
 import TradeOrderEntry from '../features/trade/TradeOrderEntry.vue'
 import TradePublicTrades from '../features/trade/TradePublicTrades.vue'
 import TradeStatusStrip from '../features/trade/TradeStatusStrip.vue'
+import { tradeEnumKey } from '../features/trade/labels'
 import {
   TRADE_KLINE_INTERVALS,
   useTradeTerminal,
@@ -23,6 +24,8 @@ const referenceFormatted = computed(() => terminal.referencePrice.value === null
   }).format(terminal.referencePrice.value))
 const referenceFresh = computed(() =>
   terminal.referencePrice.value !== null && terminal.referenceFreshness.value === 'fresh')
+const referenceStateLabel = computed(() =>
+  `${terminal.tr(tradeEnumKey(terminal.referenceFreshness.value))} · ${terminal.tr(tradeEnumKey(terminal.referenceConfidence.value))}`)
 </script>
 
 <template>
@@ -68,7 +71,7 @@ const referenceFresh = computed(() =>
 
     <section class="market-header card">
       <div><span>BTC / USDT</span><strong>{{ referenceFormatted }} <small>USDT</small></strong></div>
-      <div><span>{{ terminal.tr('trade.status.reference') }}</span><strong :class="`freshness--${terminal.referenceFreshness.value}`">{{ terminal.referenceFreshness.value }} · {{ terminal.referenceConfidence.value }}</strong></div>
+      <div><span>{{ terminal.tr('trade.status.reference') }}</span><strong :class="`freshness--${terminal.referenceFreshness.value}`">{{ referenceStateLabel }}</strong></div>
       <div><span>{{ terminal.tr('trade.status.bestBid') }}</span><strong>{{ terminal.bestBid.value || '—' }}</strong></div>
       <div><span>{{ terminal.tr('trade.status.bestAsk') }}</span><strong>{{ terminal.bestAsk.value || '—' }}</strong></div>
     </section>
@@ -82,8 +85,10 @@ const referenceFresh = computed(() =>
       :last-success-at="terminal.lastSuccessAt.value"
       :write-gate-reason="terminal.writeGateReason.value"
     />
-    <div v-if="terminal.eventReconcilePending.value || terminal.cursorError.value" class="transport-warning">
-      cursor_reconcile={{ terminal.eventReconcilePending.value ? 'pending' : 'complete' }} · {{ terminal.cursorError.value }}
+    <div v-if="terminal.eventReconcilePending.value || terminal.cursorError.value" class="transport-warning" data-testid="transport-reconcile" aria-live="polite">
+      {{ terminal.eventReconcilePending.value
+        ? terminal.tr('trade.transport.reconciling')
+        : terminal.tr('trade.transport.degraded') }}
     </div>
 
     <section class="trading-workspace">
@@ -168,6 +173,9 @@ const referenceFresh = computed(() =>
       :ledger-state="terminal.panelStateLabel('ledger')"
       :ledger-class="terminal.panelStateClass('ledger')"
       :writes-enabled="terminal.writesEnabled.value"
+      :orders-busy="terminal.pageBusy.orders"
+      :trades-busy="terminal.pageBusy.trades"
+      :ledger-busy="terminal.pageBusy.ledger"
       @refresh="terminal.refreshAll"
       @scope="terminal.changeOrderScope"
       @order="terminal.openOrder"
@@ -188,6 +196,7 @@ const referenceFresh = computed(() =>
       :error="terminal.panels.orderEvents.error"
       :page="terminal.eventPage.page"
       :has-next="Boolean(terminal.eventPage.nextCursor)"
+      :busy="terminal.pageBusy.events"
       @close="terminal.closeOrder"
       @previous="terminal.previousEvents"
       @next="terminal.nextEvents"

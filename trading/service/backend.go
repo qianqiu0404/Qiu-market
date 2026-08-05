@@ -20,6 +20,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/marketmaker"
 	"github.com/the-web3/s78-market-services/trading/netutil"
 	"github.com/the-web3/s78-market-services/trading/outbox"
+	readmodelpostgres "github.com/the-web3/s78-market-services/trading/readmodel/postgres"
 	"github.com/the-web3/s78-market-services/trading/recovery"
 	"github.com/the-web3/s78-market-services/trading/reference"
 	"github.com/the-web3/s78-market-services/trading/reliability"
@@ -41,6 +42,8 @@ type Config struct {
 	DemoMakerEnabled   bool
 	DiskPath           string
 	MinWriteBytes      int64
+	CursorHMACCurrent  string
+	CursorHMACPrevious string
 	RecoveryGate       bool
 	RecoveryProvenance recovery.Provenance
 }
@@ -150,6 +153,17 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	queries, err := readmodelpostgres.New(pool, market)
+	if err != nil {
+		return nil, fmt.Errorf("create Trade V1 reader: %w", err)
+	}
+	cursors, err := tradingserver.ParseCursorConfig(
+		config.CursorHMACCurrent,
+		config.CursorHMACPrevious,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure Trade V1 cursors: %w", err)
+	}
 	runnerConfig := tradingruntime.DefaultConfig()
 	if recoveryCoordinator != nil {
 		runnerConfig.WriteGate = recoveryCoordinator
@@ -244,6 +258,8 @@ func New(
 	}
 	rpcConfig := tradingserver.DefaultConfig()
 	rpcConfig.Recovery = recoveryCoordinator
+	rpcConfig.Queries = queries
+	rpcConfig.Cursors = cursors
 	rpcService, err := tradingserver.New(
 		runner,
 		tradingserver.NewPostgresEventSource(persistence),
@@ -340,6 +356,12 @@ func validateConfig(config Config) error {
 		if _, err := recovery.NormalizeProvenance(config.RecoveryProvenance); err != nil {
 			return fmt.Errorf("invalid trading recovery provenance: %w", err)
 		}
+	}
+	if _, err := tradingserver.ParseCursorConfig(
+		config.CursorHMACCurrent,
+		config.CursorHMACPrevious,
+	); err != nil {
+		return fmt.Errorf("invalid Trade V1 cursor configuration: %w", err)
 	}
 	return nil
 }

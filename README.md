@@ -92,8 +92,9 @@ K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 s
 
 ### 虚拟现货交易实施状态
 
-- `implemented`：`BTC-USDT` 定点数撮合、全部首版订单语义、双重记账、每市场串行 runner、PostgreSQL 事件/快照/outbox/投影、正式迁移 `2026082100023.sql`、loopback gRPC、共享 HTTP gateway、单用户鉴权、WebSocket cursor、可信参考 demo-maker 和共享 `/trade/BTC-USDT` 已落地。
-- `build-verified`：2026-07-26 的全仓 Go test/vet、交易 race、10 秒 fuzz、benchmark、一次性 PostgreSQL 测试、前端 8 个 Vitest、production build、npm audit 0 和 16 个 Playwright 回归通过。
+- `implemented`：`BTC-USDT` 定点数撮合、全部首版订单语义、双重记账、每市场串行 runner、PostgreSQL 事件/快照/outbox/投影、正式迁移已覆盖至 `2026082800030.sql`、loopback gRPC、共享 HTTP gateway、单用户鉴权、WebSocket cursor、可信参考 demo-maker 和共享 `/trade/BTC-USDT` 已落地。
+- `implemented`（Trade Product V1）：订单/个人成交/账本/事件真值时间线已提供账户绑定的 cursor 分页；Trade 展示专业单市场终端，管理员虚拟入金迁至 System；submit、cancel、fund 三种写入都持久化原 request ID 并按权威事实核对。cursor 使用私有持久化 HMAC 轮换键，订单 lifecycle checkpoint 同时记录 sequence 和 row count，缺行、多行或孤儿行会 fail closed。
+- `build-verified`：2026-08-05 的 `go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./trading/...`、真实临时 PostgreSQL 串行专项、前端 125 个 Vitest、production build、49 个 Playwright、production dependency audit 0、不可变候选 fixture 与 `git diff --check` 通过。
 - `integration-verified`：一次性真实 PostgreSQL 上执行正式 migration，启动真实 gRPC + REST，完成虚拟入金、挂单、撤单、优雅快照、整套重启、session 延续、跨重启幂等，并确认 snapshot/event state hash 完全一致。
 - `production-pending`：真实资金、充值提现、私钥、实盘下单不在目标内；生产 HTTPS/OAuth 回调、容量压测、备份恢复演练、监控告警和长期 soak 仍未验收。
 - `implemented / build-verified / integration-verified (isolated local PostgreSQL + loopback gRPC) / activation-pending`：持久化 Recovery Coordinator、runner 权威写门禁、30 秒 TransportProbe、loopback gRPC status/promote、store 连续性粘性熔断和 demo-maker 受控恢复已落地，且随机隔离数据库中的 migration/CAS/fault 与真实 loopback gRPC 集成已通过。兼容开关默认关闭；Mac mini production PostgreSQL/epoch、实际外部 HTTPS、Production origin/deployment provenance、浏览器 cursor 和断电故障注入完成前不得在生产启用。
@@ -385,6 +386,7 @@ README 全局架构
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、submitted/unknown、fill/cancel 竞态、cursor reconcile、崩溃恢复、鉴权和验收边界 |
 | [docs/prd-qm-trade-001.md](docs/prd-qm-trade-001.md) | Trade Product V1 用户主流程、页面范围、P0/P1、非目标、验收与并行所有权 |
 | [docs/contracts/qm-trade-v1-api.md](docs/contracts/qm-trade-v1-api.md) | Trade Product V1 cursor、订单时间线、账本、账户摘要和 Cancel All 冻结 API Schema |
+| [docs/qm-trade-v1-goal-context.md](docs/qm-trade-v1-goal-context.md) | Trade Product V1 的持续目标、冻结范围、并行所有权、证据状态和终止条件 |
 | [docs/klines-pipeline.md](docs/klines-pipeline.md) | K 线 market identity、显式时间、业务唯一键、分周期续传与刷新 |
 | [docs/redis-top-movers.md](docs/redis-top-movers.md) | Redis ZSET 涨跌榜、TTL 抖动防雪崩、SQL 回退 |
 | [docs/catalog-audit.md](docs/catalog-audit.md) | provider 审核清单、版本化资产选择、候选市场、rollout、安全 CLI 与源码可重建边界 |

@@ -37,6 +37,45 @@ type CursorConfig struct {
 	Now      func() time.Time
 }
 
+// ParseCursorConfig decodes the private runtime representation documented by
+// PRD-QM-TRADE-001: key_id:base64url-secret. It deliberately rejects missing
+// current keys instead of generating an ephemeral secret that would invalidate
+// every outstanding cursor after a restart.
+func ParseCursorConfig(currentValue, previousValue string) (CursorConfig, error) {
+	current, err := parseCursorKeyValue(currentValue)
+	if err != nil {
+		return CursorConfig{}, fmt.Errorf("current cursor key: %w", err)
+	}
+	config := CursorConfig{Current: current}
+	if previousValue != "" {
+		previous, previousErr := parseCursorKeyValue(previousValue)
+		if previousErr != nil {
+			return CursorConfig{}, fmt.Errorf("previous cursor key: %w", previousErr)
+		}
+		config.Previous = &previous
+	}
+	if _, err := newQueryCursorCodec(config); err != nil {
+		return CursorConfig{}, err
+	}
+	return config, nil
+}
+
+func parseCursorKeyValue(value string) (CursorKeyConfig, error) {
+	keyID, encodedSecret, ok := strings.Cut(value, ":")
+	if !ok || keyID == "" || encodedSecret == "" {
+		return CursorKeyConfig{}, fmt.Errorf("must use key_id:base64url-secret")
+	}
+	secret, err := base64.RawURLEncoding.DecodeString(encodedSecret)
+	if err != nil {
+		return CursorKeyConfig{}, fmt.Errorf("secret must be unpadded base64url")
+	}
+	key := CursorKeyConfig{KeyID: keyID, Secret: secret}
+	if err := validateCursorKey(key); err != nil {
+		return CursorKeyConfig{}, err
+	}
+	return key, nil
+}
+
 type queryCursorPayload struct {
 	Version       int      `json:"v"`
 	KeyID         string   `json:"k"`

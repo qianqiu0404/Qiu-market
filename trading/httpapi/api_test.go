@@ -133,8 +133,8 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 	}
 	var orders tradingv1.ListOrdersResponse
 	decodeResponse(t, response, &orders)
-	if len(orders.Orders) != 1 || orders.Orders[0].AccountId != "github:qianqiu0404" {
-		t.Fatalf("forged account was not ignored: %+v", orders.Orders)
+	if len(orders.Orders) != 1 || orders.Orders[0].AccountId != "" {
+		t.Fatalf("private order account was not minimized: %+v", orders.Orders)
 	}
 	if response.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("private orders cache control = %q", response.Header.Get("Cache-Control"))
