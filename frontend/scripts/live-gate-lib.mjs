@@ -130,6 +130,20 @@ export function oauthCallbackError(bodyText) {
   return undefined
 }
 
+export function isExpectedVercelToolbarCSPError(message) {
+  return typeof message === 'string' &&
+    message.includes(
+      "Loading the script 'https://vercel.live/_next-live/feedback/feedback.js'",
+    ) &&
+    message.includes('Content Security Policy directive') &&
+    message.includes("script-src 'self'") &&
+    message.includes('The action has been blocked')
+}
+
+export function isOAuthRedirectNavigationAbort(error) {
+  return error instanceof Error && error.message.includes('net::ERR_ABORTED')
+}
+
 export async function requirePrivateRegularFile(file) {
   const stat = await lstat(file)
   invariant(stat.isFile() && !stat.isSymbolicLink(), `unsafe private file: ${file}`)

@@ -7,6 +7,8 @@ import test from 'node:test'
 import {
   canonicalJSON,
   formatDecimalAtoms,
+  isExpectedVercelToolbarCSPError,
+  isOAuthRedirectNavigationAbort,
   loopbackHTTPProxy,
   oauthCallbackError,
   parseDecimalAtoms,
@@ -43,6 +45,10 @@ test('OAuth callback replay uses one same-origin browser request', async () => {
   assert.doesNotMatch(collector, /context\.request\.get\(callbackURL/)
   assert.match(collector, /if \(proxy\) browserOptions\.proxy = proxy/)
   assert.match(collector, /if \(proxy\) apiContextOptions\.proxy = proxy/)
+  assert.match(
+    collector,
+    /auth\/github\/start`, \{[\s\S]*?timeout: loginTimeoutMs/,
+  )
 })
 
 test('Production gate replays one persisted virtual-fund request and binds database proof', async () => {
@@ -150,6 +156,33 @@ test('OAuth callback errors are detected without retaining code or state', () =>
     oauthCallbackError(JSON.stringify({ code: 'validation_failed', message: 'bad' })),
     undefined,
   )
+})
+
+test('only the exact Vercel Toolbar CSP error is classified as platform noise', () => {
+  const expected = "Loading the script 'https://vercel.live/_next-live/feedback/feedback.js' " +
+    "violates the following Content Security Policy directive: \"script-src 'self'\". " +
+    'The action has been blocked.'
+  assert.equal(isExpectedVercelToolbarCSPError(expected), true)
+  assert.equal(
+    isExpectedVercelToolbarCSPError(expected.replace('vercel.live', 'attacker.invalid')),
+    false,
+  )
+  assert.equal(
+    isExpectedVercelToolbarCSPError(expected.replace('feedback.js', 'other.js')),
+    false,
+  )
+  assert.equal(isExpectedVercelToolbarCSPError('application console error'), false)
+})
+
+test('OAuth redirect navigation aborts are deferred to the session authority', () => {
+  assert.equal(
+    isOAuthRedirectNavigationAbort(
+      new Error('page.goto: net::ERR_ABORTED at https://fixture.vercel.app/callback'),
+    ),
+    true,
+  )
+  assert.equal(isOAuthRedirectNavigationAbort(new Error('page.goto: timeout')), false)
+  assert.equal(isOAuthRedirectNavigationAbort('net::ERR_ABORTED'), false)
 })
 
 test('private JSON writer uses an atomic 0600 destination', async () => {

@@ -12,6 +12,8 @@ import {
   balanceAvailable,
   canonicalJSON,
   invariant,
+  isExpectedVercelToolbarCSPError,
+  isOAuthRedirectNavigationAbort,
   loopbackHTTPProxy,
   parseDecimalAtoms,
   requestID,
@@ -137,7 +139,19 @@ async function waitForSession(page, origin, timeoutMs) {
     }
     await page.waitForTimeout(500)
   }
-  throw new Error('GitHub OAuth session was not created before the deadline')
+  let currentPage = 'unavailable'
+  let currentTitle = 'unavailable'
+  try {
+    const observed = new URL(page.url())
+    currentPage = `${observed.origin}${observed.pathname}`
+    currentTitle = (await page.title()).replace(/[\r\n]+/g, ' ').slice(0, 160)
+  } catch {
+    // Keep the failure report free of OAuth query parameters and secrets.
+  }
+  throw new Error(
+    `GitHub OAuth session was not created before the deadline; ` +
+      `current_page=${currentPage}; title=${currentTitle}`,
+  )
 }
 
 async function committedResponseLostOnce(page, context, origin, endpoint, body) {
@@ -423,6 +437,7 @@ async function main() {
   let callbackResponses = 0
   const callbackStatuses = []
   const consoleErrors = []
+  const previewPlatformWarnings = []
   const proxy = loopbackHTTPProxy()
 
   try {
@@ -439,7 +454,13 @@ async function main() {
     const pages = context.pages()
     const page = pages[0] ?? await context.newPage()
     page.on('console', (message) => {
-      if (message.type() === 'error') consoleErrors.push(message.text())
+      if (message.type() !== 'error') return
+      const text = message.text()
+      if (isExpectedVercelToolbarCSPError(text)) {
+        previewPlatformWarnings.push(text)
+        return
+      }
+      consoleErrors.push(text)
     })
     page.on('request', (request) => {
       const url = new URL(request.url())
@@ -476,10 +497,20 @@ async function main() {
     invariant(capabilities.local_login_enabled === false, 'local login must stay disabled')
 
     console.log('Complete GitHub authorization as qianqiu0404 if requested.')
-    await page.goto(`${identity.deploymentURL}/api/v1/trading/auth/github/start`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 30_000,
-    })
+    try {
+      await page.goto(`${identity.deploymentURL}/api/v1/trading/auth/github/start`, {
+        waitUntil: 'domcontentloaded',
+        // This navigation includes the interactive GitHub authorization and its
+        // callback redirect. Keep it aligned with the advertised login window
+        // instead of aborting a healthy human flow after 30 seconds.
+        timeout: loginTimeoutMs,
+      })
+    } catch (error) {
+      // Chromium can abort the outer goto when GitHub authorization replaces
+      // it with the callback navigation. The authoritative session check below
+      // still fails closed if that redirect did not establish a valid session.
+      if (!isOAuthRedirectNavigationAbort(error)) throw error
+    }
     const session = await waitForSession(page, identity.deploymentURL, loginTimeoutMs)
     const principal = session?.principal
     invariant(principal?.github_login === 'qianqiu0404', 'unexpected GitHub principal')
@@ -568,6 +599,7 @@ async function main() {
       order_id: unknown.orderID,
       visual_trade_page: true,
       console_error_count: 0,
+      preview_platform_warning_count: previewPlatformWarnings.length,
       completed_at: new Date().toISOString(),
     }
     await writePrivateJSON(precloseEvidenceFile, precloseEvidence)
@@ -627,6 +659,7 @@ async function main() {
       order_id: unknown.orderID,
       visual_trade_page: true,
       console_error_count: 0,
+      preview_platform_warning_count: previewPlatformWarnings.length,
       completed_at: new Date().toISOString(),
     })
 
