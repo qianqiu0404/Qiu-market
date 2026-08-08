@@ -68,6 +68,9 @@ dev-restart:
 verify-local:
 	bash script/verify-local.sh
 
+repo-audit:
+	bash script/repo-audit.sh
+
 mac-production-build:
 	bash ops/macos/manage-release-candidate.sh prepare "$(RELEASE_REV)"
 
@@ -116,6 +119,7 @@ proto:
 	dev-logs \
 	dev-restart \
 	verify-local \
+	repo-audit \
 	mac-production-build \
 	mac-production-verify \
 	mac-production-preflight \

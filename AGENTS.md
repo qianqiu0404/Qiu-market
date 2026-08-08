@@ -6,6 +6,15 @@ Any change that materially alters behavior, architecture, data flow, storage, in
 
 Before editing, read `README.md`, the matching document under `docs/`, and the real entrypoints. Preserve the current canonical document instead of creating a parallel summary.
 
+## Workspace hygiene
+
+- Before repository-wide work, run `make repo-audit` and record the exact comparison SHA. The command is read-only and does not fetch, switch, delete, or clean anything.
+- Treat a dirty or behind primary checkout as investigation evidence, not as the integration baseline. Start changes from a clean, verified commit in an independent worktree.
+- Keep one owned change scope per branch/worktree. Do not mix unrelated research, release, production, and documentation changes in the same lane.
+- `ancestor` in the audit only means the worktree HEAD is reachable from the comparison ref. Dirty files, squashed changes, PR state, deployment, and cleanup safety require separate evidence.
+- Do not create new root-level `PLAN.md`, `TODO.md`, or session handoff files. Merge stable knowledge into the existing canonical README/docs; keep historical snapshots explicitly marked as historical.
+- Never remove a worktree or branch until its unique changes and dirty files are accounted for and the owner confirms cleanup after reviewing the audit report.
+
 For each material engineering delivery:
 
 1. Explain the problem and the observable result.

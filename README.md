@@ -4,6 +4,14 @@ Qiu Market 是一个行情与虚拟交易学习产品：从外部交易所与行
 
 仓库中的 Go module、可执行文件 `market-services`、数据库表和 `MARKET_*` 环境变量暂时保留原技术标识，避免一次品牌更名破坏迁移与现有运行环境；用户可见产品、Vercel 项目和运维服务统一使用 **Qiu Market**。
 
+## 仓库身份与工作区约定
+
+- 唯一 GitHub 代码仓库是 [`qianqiu0404/zxq-s78-market-services`](https://github.com/qianqiu0404/zxq-s78-market-services)。`Qiu Market` 是产品名，`market-services` / `S78 Market Services` 是仍在使用的技术标识。
+- `WorkSpace` 根目录中的 `qiu-market-*` 目录是这个仓库的 Git worktree，不是独立项目或独立 GitHub 仓库。一个 worktree 只承载一个明确的分支任务。
+- `release-*` 用于固定验证快照，`trade-v1-*` 用于产品纵切片，`research-*` 及 contract/publication/accounting 类目录用于研究与契约切片，`trading-lab-*` 用于实验；分类名不代表已经合入、部署或验收。
+- 新改动从已核对的干净 `origin/main` 建独立 worktree。脏工作区只作调查线索；完成的 worktree 在确认无独有改动并由 Owner 审阅清理报告后移除。
+- 开始跨模块改动或整理工作区前运行 `make repo-audit`。输出中的 `ancestor` 只证明提交可达，不证明脏文件、squash patch、PR、部署或清理安全。
+
 ## 架构
 
 ```text
@@ -345,6 +353,12 @@ make verify-local
 - **生产构建**：`cd frontend && npm run build` 产出 `frontend/dist`。部署时需要任意静态服务器托管 dist，并把 `/api` 反向代理到后端 9092（后端自身不托管静态文件）。
 
 ## 构建与测试
+
+开始跨模块改动或判断 worktree 是否可清理前，先运行只读仓库审计。它只比较本地已有的 `origin/main`，不会 fetch、切分支或删除文件：
+
+```bash
+make repo-audit
+```
 
 后端：
 

@@ -57,6 +57,7 @@ jobs:
           fetch-depth: 0
       - name: Validate shell syntax
         run: |
+          bash -n script/repo-audit.sh
           for script in ops/macos/*.sh; do
             bash -n "$script"
           done
