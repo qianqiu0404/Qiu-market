@@ -2,6 +2,7 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -17,6 +18,8 @@ type Crawler struct {
 	ExchangeOrderbook   *cryptoexchange.ExchangeOrderbook
 	FiatCurrencyCrawler *fiatcurrency.FiatCurrencyCrawler
 	BinanceTicker       *BinanceTickerCrawler
+	db                  *database.DB
+	redisClient         *redis.Client
 	stopped             atomic.Bool
 }
 
@@ -41,6 +44,8 @@ func NewCrawler(db *database.DB, redisClient *redis.Client, config *config.Confi
 		// ExchangeOrderbook:   exchangeOrderbook,
 		FiatCurrencyCrawler: fiatCurrencyCrawler,
 		BinanceTicker:       binanceTicker,
+		db:                  db,
+		redisClient:         redisClient,
 	}, nil
 }
 
@@ -72,27 +77,34 @@ func (cl *Crawler) Stop(ctx context.Context) error {
 		return nil
 	}
 
+	var result error
 	if cl.ExchangeOrderbook != nil {
 		if err := cl.ExchangeOrderbook.Close(); err != nil {
-			log.Error("Crawler ExchangeOrderbook Stop error", err)
-			return err
+			log.Error("Crawler ExchangeOrderbook Stop error", "err", err)
+			result = errors.Join(result, err)
 		}
 	}
 
 	if cl.FiatCurrencyCrawler != nil {
 		if err := cl.FiatCurrencyCrawler.Close(); err != nil {
-			log.Error("Crawler FiatCurrencyCrawler error", err)
-			return err
+			log.Error("Crawler FiatCurrencyCrawler error", "err", err)
+			result = errors.Join(result, err)
 		}
 	}
 
 	if cl.BinanceTicker != nil {
 		if err := cl.BinanceTicker.Stop(); err != nil {
-			log.Error("Crawler BinanceTicker Stop error", err)
-			return err
+			log.Error("Crawler BinanceTicker Stop error", "err", err)
+			result = errors.Join(result, err)
 		}
 	}
-	return nil
+	if cl.redisClient != nil {
+		result = errors.Join(result, cl.redisClient.Close())
+	}
+	if cl.db != nil {
+		result = errors.Join(result, cl.db.Close())
+	}
+	return result
 }
 
 func (cl *Crawler) Stopped() bool {

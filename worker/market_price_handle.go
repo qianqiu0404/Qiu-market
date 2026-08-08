@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cockroachdb/errors"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/google/uuid"
 	"github.com/the-web3/s78-market-services/common/marketkey"
@@ -57,7 +56,7 @@ func (mph *MarketPriceHandle) Start() error {
 				}
 			case <-mph.resourceCtx.Done():
 				log.Info("market price handle shutting down")
-				return errors.New("market price service stopped")
+				return nil
 			}
 		}
 	})
@@ -83,13 +82,13 @@ func (mph *MarketPriceHandle) onPriceData() error {
 			}
 
 			key := marketkey.Build(exchange.Guid, exchange.Name, symbol.Guid, symbol.SymbolName)
-			
+
 			avgPrice, err := mph.redisCli.Get(mph.resourceCtx, key)
 			if err != nil {
 				log.Debug("Get avgPrice fail", "key", key, "error", err)
 				continue
 			}
-			
+
 			askPrice, _ := mph.redisCli.Get(mph.resourceCtx, key+"askPrice")
 			bidPrice, _ := mph.redisCli.Get(mph.resourceCtx, key+"bidPrice")
 			volume, _ := mph.redisCli.Get(mph.resourceCtx, key+"volume")
@@ -98,8 +97,8 @@ func (mph *MarketPriceHandle) onPriceData() error {
 			}
 
 			guid, _ := uuid.NewUUID()
-			radio := strconv.FormatFloat(mph.calcRate(avgPrice), 'f', 4, 64)
-			
+			radio := strconv.FormatFloat(mph.calcRate(symbol.Guid, avgPrice), 'f', 4, 64)
+
 			dataSymbolMk := &database.SymbolMarket{
 				Guid:       guid.String(),
 				SymbolGuid: symbol.Guid,
@@ -124,21 +123,21 @@ func (mph *MarketPriceHandle) onPriceData() error {
 	return nil
 }
 
-func (mph *MarketPriceHandle) calcRate(currentPriceStr string) float64 {
-	marketDataPrice, err := mph.db.SymbolMarket.QuerySymbolMarketTodayFirstData()
+func (mph *MarketPriceHandle) calcRate(symbolGuid, currentPriceStr string) float64 {
+	marketDataPrice, err := mph.db.SymbolMarket.QuerySymbolMarketTodayFirstData(symbolGuid)
 	if err != nil {
 		// If no data today, rate is 0
 		return 0
 	}
-	
+
 	startOfDayPrice, _ := strconv.ParseFloat(marketDataPrice.Price, 64)
 	currentPrice, _ := strconv.ParseFloat(currentPriceStr, 64)
-	
+
 	if startOfDayPrice == 0 {
 		return 0
 	}
-	
-	return (currentPrice - startOfDayPrice) / startOfDayPrice
+
+	return (currentPrice - startOfDayPrice) / startOfDayPrice * 100
 }
 
 func (mph *MarketPriceHandle) Stop() error {

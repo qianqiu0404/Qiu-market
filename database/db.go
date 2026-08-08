@@ -46,7 +46,7 @@ func NewDB(ctx context.Context, dbConfig config.DBConfig) (*DB, error) {
 	}
 
 	retryStrategy := &retry.ExponentialStrategy{Min: 1000, Max: 20_000, MaxJitter: 250}
-	gorm, err := retry.Do[*gorm.DB](context.Background(), 10, retryStrategy, func() (*gorm.DB, error) {
+	gorm, err := retry.Do[*gorm.DB](ctx, 10, retryStrategy, func() (*gorm.DB, error) {
 		gorm, err := gorm.Open(postgres.Open(dsn), &gormConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to database: %w", err)

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -13,6 +14,8 @@ import (
 
 type Worker struct {
 	marketPriceHandle *MarketPriceHandle
+	db                *database.DB
+	redisClient       *redis.Client
 	stopped           atomic.Bool
 }
 
@@ -23,6 +26,8 @@ func NewWorker(db *database.DB, redisClient *redis.Client, config *config.Config
 	}
 	return &Worker{
 		marketPriceHandle: marketPriceHandle,
+		db:                db,
+		redisClient:       redisClient,
 	}, nil
 }
 
@@ -37,13 +42,23 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 
 func (w *Worker) Stop(ctx context.Context) error {
+	if w.stopped.Swap(true) {
+		return nil
+	}
 	log.Info("Stopping worker")
+	var result error
 	if w.marketPriceHandle != nil {
 		if err := w.marketPriceHandle.Close(); err != nil {
-			return err
+			result = errors.Join(result, err)
 		}
 	}
-	return nil
+	if w.redisClient != nil {
+		result = errors.Join(result, w.redisClient.Close())
+	}
+	if w.db != nil {
+		result = errors.Join(result, w.db.Close())
+	}
+	return result
 }
 
 func (w *Worker) Stopped() bool {

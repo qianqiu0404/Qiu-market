@@ -102,3 +102,7 @@ func (c *Client) Publish(ctx context.Context, channel string, message interface{
 func (c *Client) Subscribe(ctx context.Context, channels ...string) *redis.PubSub {
 	return c.rdb.Subscribe(ctx, channels...)
 }
+
+func (c *Client) Close() error {
+	return c.rdb.Close()
+}

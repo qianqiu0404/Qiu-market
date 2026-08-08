@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cockroachdb/errors"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/the-web3/s78-market-services/common/tasks"
 	"github.com/the-web3/s78-market-services/config"
@@ -40,7 +39,6 @@ func NewFiatCurrencyCrawler(db *database.DB, conf *config.Config, shutdown conte
 	}
 
 	resourceCtx, resourceCancel := context.WithCancel(context.Background())
-	defer resourceCancel()
 	return &FiatCurrencyCrawler{
 		db:                 db,
 		exchangeRateWorker: exchangeRateWorker,
@@ -59,15 +57,15 @@ func (bc *FiatCurrencyCrawler) Close() error {
 
 func (bc *FiatCurrencyCrawler) Start() error {
 	bc.tasks.Go(func() error {
+		tickerOperator := time.NewTicker(time.Second * 5)
+		defer tickerOperator.Stop()
 		for {
-			tickerOperator := time.NewTicker(time.Second * 5)
-			defer tickerOperator.Stop()
 			select {
 			case <-tickerOperator.C:
 				bc.exchangeRateWorker.FetchAndStoreRates()
 			case <-bc.resourceCtx.Done():
 				log.Info("Fiat Currency shutting down")
-				return errors.New("Fiat Currency stopped")
+				return nil
 			}
 		}
 	})

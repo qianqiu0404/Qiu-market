@@ -2,7 +2,7 @@ GITCOMMIT := $(shell git rev-parse HEAD)
 GITDATE := $(shell git show -s --format='%ct')
 
 LDFLAGSSTRING +=-X main.GitCommit=$(GITCOMMIT)
-LDFLAGSSTRING +=-X main.GitDate=$(GITDATE)
+LDFLAGSSTRING +=-X main.GitData=$(GITDATE)
 LDFLAGS := -ldflags "$(LDFLAGSSTRING)"
 
 market-services:

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,10 +26,10 @@ type binanceTicker struct {
 
 // CoinGecko 价格响应
 type coingeckoPriceResponse map[string]struct {
-	Usd            float64 `json:"usd"`
-	UsdMarketCap   float64 `json:"usd_market_cap"`
-	Usd24hVol      float64 `json:"usd_24h_vol"`
-	Usd24hChange   float64 `json:"usd_24h_change"`
+	Usd          float64 `json:"usd"`
+	UsdMarketCap float64 `json:"usd_market_cap"`
+	Usd24hVol    float64 `json:"usd_24h_vol"`
+	Usd24hChange float64 `json:"usd_24h_change"`
 }
 
 // symbol_guid 到 CoinGecko coin id 映射
@@ -43,11 +44,11 @@ var coingeckoIDMap = map[string]string{
 
 // symbol 到 symbol_guid 映射
 var symbolGuidMap = map[string]string{
-	"BTCUSDT": "s1",
-	"ETHUSDT": "s2",
-	"SOLUSDT": "s3",
-	"BNBUSDT": "s4",
-	"XRPUSDT": "s5",
+	"BTCUSDT":  "s1",
+	"ETHUSDT":  "s2",
+	"SOLUSDT":  "s3",
+	"BNBUSDT":  "s4",
+	"XRPUSDT":  "s5",
 	"DOGEUSDT": "s6",
 }
 
@@ -55,9 +56,10 @@ var symbolGuidMap = map[string]string{
 var tickerSymbols = []string{"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"}
 
 type BinanceTickerCrawler struct {
-	db       *database.DB
-	stopped  atomic.Bool
-	cancel   context.CancelFunc
+	db      *database.DB
+	stopped atomic.Bool
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 	// CoinGecko 调用节流
 	lastCGTime time.Time
 }
@@ -72,7 +74,11 @@ func (b *BinanceTickerCrawler) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancel = cancel
 
-	go b.runLoop(ctx)
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		b.runLoop(ctx)
+	}()
 	log.Info("BinanceTickerCrawler started")
 	return nil
 }
@@ -81,6 +87,7 @@ func (b *BinanceTickerCrawler) Stop() error {
 	if b.cancel != nil {
 		b.cancel()
 	}
+	b.wg.Wait()
 	b.stopped.Store(true)
 	log.Info("BinanceTickerCrawler stopped")
 	return nil
@@ -233,12 +240,17 @@ func (b *BinanceTickerCrawler) fetchAndStoreMarketCap() {
 
 func (b *BinanceTickerCrawler) fetchAndStoreKline(symbol, guid string) {
 	url := fmt.Sprintf("https://api.binance.com/api/v3/klines?symbol=%s&interval=1m&limit=20", symbol)
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
 	if err != nil {
 		log.Error("fetch kline failed", "symbol", symbol, "err", err)
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		log.Error("fetch kline returned bad status", "symbol", symbol, "status", resp.StatusCode)
+		return
+	}
 
 	var klines [][]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&klines); err != nil {

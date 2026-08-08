@@ -56,7 +56,7 @@ func runMigrations(ctx *cli.Context) error {
 
 func runRestApi(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
 	cfg := config.NewConfig(ctx)
-	return rest.NewApi(context.Background(), &cfg)
+	return rest.NewApi(ctx.Context, &cfg)
 }
 
 func runCrawler(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
@@ -77,9 +77,16 @@ func runCrawler(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 	redisClient, err := redis.New(redisConfig)
 	if err != nil {
 		log.Error("fail to connect to redis", "err", err)
+		_ = db.Close()
 		return nil, err
 	}
-	return crawler.NewCrawler(db, redisClient, &cfg, shutdown)
+	service, err := crawler.NewCrawler(db, redisClient, &cfg, shutdown)
+	if err != nil {
+		_ = redisClient.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	return service, nil
 }
 
 func runWorker(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
@@ -100,9 +107,16 @@ func runWorker(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifec
 	redisClient, err := redis.New(redisConfig)
 	if err != nil {
 		log.Error("fail to connect to redis", "err", err)
+		_ = db.Close()
 		return nil, err
 	}
-	return worker.NewWorker(db, redisClient, &cfg, shutdown)
+	service, err := worker.NewWorker(db, redisClient, &cfg, shutdown)
+	if err != nil {
+		_ = redisClient.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	return service, nil
 }
 
 func NewCli(GitCommit string, GitData string) *cli.App {

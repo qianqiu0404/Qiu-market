@@ -45,7 +45,7 @@ func NewCurrencyDB(db *gorm.DB) CurrencyDB {
 
 func (c *currencyDB) QueryActiveCurrency() ([]*Currency, error) {
 	var currencies []*Currency
-	if err := c.gorm.Table("currency").Where("is_active = ?", false).Find(&currencies).Error; err != nil {
+	if err := c.gorm.Table("currency").Where("is_active = ?", true).Find(&currencies).Error; err != nil {
 		log.Error("failed to query active currency", "error", err)
 		return nil, err
 	}

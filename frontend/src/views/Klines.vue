@@ -55,7 +55,19 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { request } from '../api/common'
-import * as echarts from 'echarts'
+import { use, init } from 'echarts/core'
+import { BarChart, CandlestickChart } from 'echarts/charts'
+import { DataZoomComponent, GridComponent, TooltipComponent } from 'echarts/components'
+import { SVGRenderer } from 'echarts/renderers'
+
+use([
+  BarChart,
+  CandlestickChart,
+  DataZoomComponent,
+  GridComponent,
+  TooltipComponent,
+  SVGRenderer,
+])
 
 const selectedSymbol = ref('s1')
 const selectedInterval = ref('1m')
@@ -83,7 +95,7 @@ const formatNum = (val) => {
 const initChart = () => {
   if (chartRef.value) {
     if (chartInstance) chartInstance.dispose()
-    chartInstance = echarts.init(chartRef.value, 'dark')
+    chartInstance = init(chartRef.value, 'dark', { renderer: 'svg' })
   }
 }
 
@@ -282,15 +294,17 @@ const fetchKlines = async () => {
   }
 }
 
+const handleResize = () => chartInstance?.resize()
+
 onMounted(() => {
   initChart()
   fetchKlines()
-  window.addEventListener('resize', () => chartInstance?.resize())
+  window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
   chartInstance?.dispose()
-  window.removeEventListener('resize', () => chartInstance?.resize())
+  window.removeEventListener('resize', handleResize)
 })
 </script>
 

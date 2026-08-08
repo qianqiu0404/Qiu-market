@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	HealthPath          = "healthz"
+	HealthPath          = "/healthz"
 	SupportAssetPath    = "/api/v1/get_support_assets"
 	MarketDashboardPath = "/api/v1/get_market_dashboard"
 	ExchangePath        = "/api/v1/get_exchanges"
@@ -71,7 +72,7 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 	apiRouter.Use(middleware.Timeout(time.Second * 12))
 	apiRouter.Use(middleware.Recoverer)
 
-	apiRouter.Use(middleware.Heartbeat(HealthPath))
+	registerHealthRoute(apiRouter)
 
 	apiRouter.Post(fmt.Sprintf(SupportAssetPath), h.GetSupportAssets)
 	apiRouter.Post(fmt.Sprintf(MarketDashboardPath), h.GetMarketDashboard)
@@ -82,6 +83,14 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 	apiRouter.Post(fmt.Sprintf(FiatRatePath), h.GetFiatRates)
 
 	a.router = apiRouter
+}
+
+func registerHealthRoute(router chi.Router) {
+	router.Get(HealthPath, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("."))
+	})
 }
 
 func (a *API) initDB(ctx context.Context, cfg *config.Config) error {

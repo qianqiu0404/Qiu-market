@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ccxt/ccxt/go/v4"
-	"github.com/cockroachdb/errors"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/the-web3/s78-market-services/common/marketkey"
 	"github.com/the-web3/s78-market-services/common/tasks"
@@ -70,7 +69,7 @@ func (bc *ExchangeOrderbook) Start() error {
 				}
 			case <-bc.resourceCtx.Done():
 				log.Info("exchange fetcher shutting down")
-				return errors.New("exchange stopped")
+				return nil
 			}
 		}
 	})

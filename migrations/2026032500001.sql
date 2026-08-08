@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS currency(
     currency_code      VARCHAR(100) NOT NULL,
     rate               NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (rate >= 0),
     buy_spread         NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (buy_spread >= 0),
-    sell_spread        NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (buy_spread >= 0),
+    sell_spread        NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (sell_spread >= 0),
     is_active          BOOLEAN NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS exchange_symbol(
     ask_price          NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (ask_price >= 0),
     bid_price          NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (bid_price >= 0),
     volume             UINT256 NOT NULL,
-    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (radio >= 0),
+    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0,
     is_active          BOOLEAN NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS symbol_market(
     bid_price          NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (bid_price >= 0),
     volume             UINT256 NOT NULL,
     market_cap         UINT256 NOT NULL,
-    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0 CHECK (radio >= 0),
+    radio              NUMERIC(65, 18) NOT NULL DEFAULT 0,
     is_active          BOOLEAN NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP

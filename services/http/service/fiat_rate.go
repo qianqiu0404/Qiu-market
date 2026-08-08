@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -26,7 +27,10 @@ var (
 )
 
 func (h HandleSvc) GetFiatRates(request *model.FiatRatesRequest) (*model.FiatRatesResponse, error) {
-	rates, source := fetchFiatRates()
+	rates, source, err := fetchFiatRates()
+	if err != nil {
+		return nil, err
+	}
 
 	return &model.FiatRatesResponse{
 		Code:    2000,
@@ -39,8 +43,9 @@ func (h HandleSvc) GetFiatRates(request *model.FiatRatesRequest) (*model.FiatRat
 	}, nil
 }
 
-// fetchFiatRates tries cache first, then external API, falls back to defaults.
-func fetchFiatRates() (rates map[string]float64, source string) {
+// fetchFiatRates tries the fresh cache first, then the external API, and finally
+// a stale cache. It never fabricates exchange-rate data.
+func fetchFiatRates() (rates map[string]float64, source string, err error) {
 	// 1. 检查缓存
 	cacheMu.RLock()
 	hit := cachedRates != nil && time.Since(cachedAt) < cacheDuration
@@ -49,7 +54,7 @@ func fetchFiatRates() (rates map[string]float64, source string) {
 		s := cachedSource
 		cacheMu.RUnlock()
 		log.Debug("Fiat rates cache hit", "source", s)
-		return r, "cached:" + s
+		return r, "cached:" + s, nil
 	}
 	cacheMu.RUnlock()
 
@@ -57,23 +62,24 @@ func fetchFiatRates() (rates map[string]float64, source string) {
 	url := "https://open.er-api.com/v6/latest/USD"
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
-	if err == nil && resp.StatusCode == http.StatusOK {
+	if err == nil {
 		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err == nil {
-			var result openErAPIResponse
-			if err := json.Unmarshal(body, &result); err == nil {
-				if cny, ok := result.Rates["CNY"]; ok && cny > 0 {
-					if hkd, ok := result.Rates["HKD"]; ok && hkd > 0 {
-						r := map[string]float64{"USD": 1, "CNY": cny, "HKD": hkd}
-						// 更新缓存
-						cacheMu.Lock()
-						cachedRates = r
-						cachedSource = "open.er-api"
-						cachedAt = time.Now()
-						cacheMu.Unlock()
-						log.Info("Fiat rates fetched from open.er-api", "CNY", cny, "HKD", hkd)
-						return r, "open.er-api"
+		if resp.StatusCode == http.StatusOK {
+			body, readErr := io.ReadAll(resp.Body)
+			if readErr == nil {
+				var result openErAPIResponse
+				if decodeErr := json.Unmarshal(body, &result); decodeErr == nil {
+					if cny, ok := result.Rates["CNY"]; ok && cny > 0 {
+						if hkd, ok := result.Rates["HKD"]; ok && hkd > 0 {
+							r := map[string]float64{"USD": 1, "CNY": cny, "HKD": hkd}
+							cacheMu.Lock()
+							cachedRates = r
+							cachedSource = "open.er-api"
+							cachedAt = time.Now()
+							cacheMu.Unlock()
+							log.Info("Fiat rates fetched from open.er-api", "CNY", cny, "HKD", hkd)
+							return r, "open.er-api", nil
+						}
 					}
 				}
 			}
@@ -92,15 +98,9 @@ func fetchFiatRates() (rates map[string]float64, source string) {
 		r := cachedRates
 		cacheMu.RUnlock()
 		log.Warn("Using stale cache for fiat rates")
-		return r, "stale-cache"
+		return r, "stale-cache", nil
 	}
 	cacheMu.RUnlock()
 
-	// 4. 无缓存 → fallback
-	log.Warn("Using fallback fiat rates")
-	return map[string]float64{
-		"USD": 1,
-		"CNY": 7.2,
-		"HKD": 7.8,
-	}, "fallback"
+	return nil, "", fmt.Errorf("fiat-rate provider unavailable and no cached data exists")
 }

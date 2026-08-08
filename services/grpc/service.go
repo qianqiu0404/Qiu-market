@@ -2,8 +2,10 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -14,7 +16,7 @@ import (
 	"github.com/the-web3/s78-market-services/services/grpc/proto"
 )
 
-const MaxRecvMessageSize = 1024 * 1024 * 30000
+const MaxRecvMessageSize = 16 * 1024 * 1024
 
 type MarketRpcConfig struct {
 	Host string
@@ -24,7 +26,10 @@ type MarketRpcConfig struct {
 type MarketRpcService struct {
 	*MarketRpcConfig
 
-	db *database.DB
+	db       *database.DB
+	mu       sync.Mutex
+	server   *grpc.Server
+	listener net.Listener
 
 	proto.UnimplementedMarketServicesServer
 	stopped atomic.Bool
@@ -38,37 +43,61 @@ func NewMarketRpcService(conf *MarketRpcConfig, db *database.DB) (*MarketRpcServ
 }
 
 func (ms *MarketRpcService) Start(ctx context.Context) error {
-	go func(ms *MarketRpcService) {
-		rpcAddr := fmt.Sprintf("%s:%d", ms.MarketRpcConfig.Host, ms.MarketRpcConfig.Port)
-		listener, err := net.Listen("tcp", rpcAddr)
-		if err != nil {
-			log.Error("Could not start tcp listener. ")
+	rpcAddr := net.JoinHostPort(ms.MarketRpcConfig.Host, fmt.Sprint(ms.MarketRpcConfig.Port))
+	listener, err := net.Listen("tcp", rpcAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", rpcAddr, err)
+	}
+
+	gs := grpc.NewServer(grpc.MaxRecvMsgSize(MaxRecvMessageSize))
+	reflection.Register(gs)
+	proto.RegisterMarketServicesServer(gs, ms)
+
+	ms.mu.Lock()
+	ms.server = gs
+	ms.listener = listener
+	ms.mu.Unlock()
+
+	log.Info("grpc server started", "addr", listener.Addr())
+	go func() {
+		if err := gs.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			log.Error("gRPC server stopped unexpectedly", "err", err)
 		}
-
-		opt := grpc.MaxRecvMsgSize(MaxRecvMessageSize)
-
-		gs := grpc.NewServer(
-			opt,
-			grpc.ChainUnaryInterceptor(
-				nil,
-			),
-		)
-
-		reflection.Register(gs)
-
-		proto.RegisterMarketServicesServer(gs, ms)
-
-		log.Info("grpc info", "addr", listener.Addr())
-
-		if err := gs.Serve(listener); err != nil {
-			log.Error("start rpc server fail", "err", err)
-		}
-	}(ms)
+	}()
 	return nil
 }
 
 func (ms *MarketRpcService) Stop(ctx context.Context) error {
-	ms.stopped.Store(true)
+	if ms.stopped.Swap(true) {
+		return nil
+	}
+
+	ms.mu.Lock()
+	gs := ms.server
+	ms.server = nil
+	ms.listener = nil
+	ms.mu.Unlock()
+
+	if gs != nil {
+		done := make(chan struct{})
+		go func() {
+			gs.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			gs.Stop()
+			<-done
+		}
+	}
+
+	if ms.db != nil {
+		if err := ms.db.Close(); err != nil {
+			return fmt.Errorf("close database: %w", err)
+		}
+	}
+	log.Info("gRPC server stopped")
 	return nil
 }
 
