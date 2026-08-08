@@ -33,6 +33,10 @@ const (
 	marketSnapshotV2Stream   = "market_snapshot_v2"
 	marketSnapshotV2Table    = "dws_market_snapshot_v2"
 	klineV2ReconcileInterval = 24 * time.Hour
+	// A full personal-server reconciliation walks every market/interval stream.
+	// The 2.5M-row Mac mini baseline exceeded the old two-minute budget while
+	// still making progress, so allow one bounded five-minute audit per day.
+	klineV2ReconcileTimeout  = 5 * time.Minute
 	klineV2ReconcileMinRetry = 5 * time.Minute
 	klineV2ReconcileMaxRetry = time.Hour
 )

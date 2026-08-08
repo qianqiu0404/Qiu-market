@@ -15,7 +15,7 @@ binary_dir="$support_dir/bin"
 managed_binary="$binary_dir/market-services"
 state_dir="$support_dir/release-state"
 lock_dir="$state_dir/deploy.lock"
-migration_name="2026082300025.sql"
+migration_name="2026082400026.sql"
 migration_path="$repo_root/migrations/$migration_name"
 minimum_deploy_bytes="${QIU_MARKET_MINIMUM_DEPLOY_BYTES:-35000000000}"
 

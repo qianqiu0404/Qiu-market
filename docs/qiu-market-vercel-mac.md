@@ -352,7 +352,7 @@ Cookie 带 Secure，错误 Origin、过期 WebSocket ticket 与伪造 CSRF 均�
 
 ## 6. 极省空间 K 线治理
 
-保留策略固定为 `1m=7天`、`15m=90天`、`1h=365天`、`1d=永久`。Worker 启动时及
+APFS 外置 SSD 上的个人服务器保留策略为 `1m=30天`、`15m=180天`、`1h=2年`、`1d=永久`。Worker 启动时及
 之后每 24 小时执行一次；使用同一 PostgreSQL 专用连接持有 advisory lock，每批最多
 删除 10,000 行并设置 5 秒 statement timeout。生产维护命令为：
 

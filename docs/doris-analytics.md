@@ -143,8 +143,18 @@ PostgreSQL + Redis
 
 ## 验证
 
+Mac mini 32GB 的长期运行配置使用 6 CPU / 10GB Colima VM 和 4GB Doris FE
+堆。`COLIMA_HOME` 放在 `/Volumes/MacMiniData/Containers/colima`，因此镜像、
+虚拟磁盘和 Doris named volumes 都写入外置 APFS SSD。本地大模型与 Doris
+应使用不同资源模式，避免同时峰值运行。
+
+首次回填依赖 `migrations/2026082400026.sql` 的
+`(symbol_guid, interval, created_at)` 游标索引；否则旧 K 线同步会为每个
+500 行批次重复扫描整张 `symbol_kline` 表。v2 每日全流对账使用有界 5 分钟
+预算；超时或内容冲突都只会阻止影子表切换，不影响旧公开查询。
+
 ```bash
-docker compose up -d doris
+docker compose --env-file /dev/null up -d doris
 docker exec -i s78-market-doris mysql -h127.0.0.1 -P9030 -uroot < script/doris-init.sql
 make dw
 

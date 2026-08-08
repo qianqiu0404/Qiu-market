@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-func TestExtremeSpaceKlineRetentionPolicies(t *testing.T) {
+func TestPersonalServerKlineRetentionPolicies(t *testing.T) {
 	t.Parallel()
-	policies := ExtremeSpaceKlineRetentionPolicies()
+	policies := PersonalServerKlineRetentionPolicies()
 	if err := validateKlineRetentionPolicies(policies); err != nil {
 		t.Fatal(err)
 	}
@@ -15,13 +15,13 @@ func TestExtremeSpaceKlineRetentionPolicies(t *testing.T) {
 	for _, policy := range policies {
 		got[policy.Interval] = policy.Keep
 	}
-	if got["1m"] != 7*24*time.Hour {
+	if got["1m"] != 30*24*time.Hour {
 		t.Fatalf("1m retention = %s", got["1m"])
 	}
-	if got["15m"] != 90*24*time.Hour {
+	if got["15m"] != 180*24*time.Hour {
 		t.Fatalf("15m retention = %s", got["15m"])
 	}
-	if got["1h"] != 365*24*time.Hour {
+	if got["1h"] != 2*365*24*time.Hour {
 		t.Fatalf("1h retention = %s", got["1h"])
 	}
 	if _, exists := got["1d"]; exists {
@@ -46,10 +46,10 @@ func TestRetainedKlinesPreventsExpiredRowsFromReturning(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	rows := []SymbolKline{
-		{Guid: "old-1m", Interval: "1m", OpenTime: now.Add(-7*24*time.Hour - time.Minute)},
-		{Guid: "new-1m", Interval: "1m", OpenTime: now.Add(-7 * 24 * time.Hour)},
-		{Guid: "old-15m", Interval: "15m", OpenTime: now.Add(-91 * 24 * time.Hour)},
-		{Guid: "old-1h", Interval: "1h", OpenTime: now.Add(-366 * 24 * time.Hour)},
+		{Guid: "old-1m", Interval: "1m", OpenTime: now.Add(-30*24*time.Hour - time.Minute)},
+		{Guid: "new-1m", Interval: "1m", OpenTime: now.Add(-30 * 24 * time.Hour)},
+		{Guid: "old-15m", Interval: "15m", OpenTime: now.Add(-181 * 24 * time.Hour)},
+		{Guid: "old-1h", Interval: "1h", OpenTime: now.Add(-(2*365*24*time.Hour + time.Hour))},
 		{Guid: "old-1d", Interval: "1d", OpenTime: now.Add(-10 * 365 * 24 * time.Hour)},
 	}
 	retained := RetainedKlines(rows, now)

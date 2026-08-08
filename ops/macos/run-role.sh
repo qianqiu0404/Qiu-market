@@ -4,7 +4,7 @@ set -euo pipefail
 role="${1:-}"
 repo_root="${2:-}"
 case "$role" in
-  api|trading|crawler|worker|dex) ;;
+  api|trading|crawler|worker|dex|dw) ;;
   *)
     echo "unsupported Qiu Market managed role: $role" >&2
     exit 2

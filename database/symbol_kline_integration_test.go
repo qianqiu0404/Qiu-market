@@ -184,10 +184,10 @@ func TestIntegrationKlineRetentionDeletesOnlyExpiredBoundedIntervals(t *testing.
 		interval string
 		openTime time.Time
 	}{
-		{guid: "retention-old-1m", interval: "1m", openTime: now.Add(-8 * 24 * time.Hour)},
-		{guid: "retention-new-1m", interval: "1m", openTime: now.Add(-6 * 24 * time.Hour)},
-		{guid: "retention-old-15m", interval: "15m", openTime: now.Add(-91 * 24 * time.Hour)},
-		{guid: "retention-old-1h", interval: "1h", openTime: now.Add(-366 * 24 * time.Hour)},
+		{guid: "retention-old-1m", interval: "1m", openTime: now.Add(-31 * 24 * time.Hour)},
+		{guid: "retention-new-1m", interval: "1m", openTime: now.Add(-29 * 24 * time.Hour)},
+		{guid: "retention-old-15m", interval: "15m", openTime: now.Add(-181 * 24 * time.Hour)},
+		{guid: "retention-old-1h", interval: "1h", openTime: now.Add(-(2*365*24*time.Hour + time.Hour))},
 		{guid: "retention-old-1d", interval: "1d", openTime: now.Add(-10 * 365 * 24 * time.Hour)},
 	}
 	for _, fixture := range fixtures {
@@ -207,7 +207,7 @@ INSERT INTO symbol_kline(
 	result, err := store.Run(
 		context.Background(),
 		now,
-		ExtremeSpaceKlineRetentionPolicies(),
+		PersonalServerKlineRetentionPolicies(),
 		2,
 	)
 	if err != nil {

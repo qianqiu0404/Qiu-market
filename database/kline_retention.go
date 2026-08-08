@@ -16,16 +16,21 @@ type KlineRetentionPolicy struct {
 	Keep     time.Duration
 }
 
-func ExtremeSpaceKlineRetentionPolicies() []KlineRetentionPolicy {
+// PersonalServerKlineRetentionPolicies uses the external-SSD capacity without
+// turning the single-user staging host into an unbounded archive. Daily bars
+// remain permanent; shorter intervals keep enough history for strategy and
+// market-microstructure study while leaving generous headroom for models,
+// backups, and container data.
+func PersonalServerKlineRetentionPolicies() []KlineRetentionPolicy {
 	return []KlineRetentionPolicy{
-		{Interval: "1m", Keep: 7 * 24 * time.Hour},
-		{Interval: "15m", Keep: 90 * 24 * time.Hour},
-		{Interval: "1h", Keep: 365 * 24 * time.Hour},
+		{Interval: "1m", Keep: 30 * 24 * time.Hour},
+		{Interval: "15m", Keep: 180 * 24 * time.Hour},
+		{Interval: "1h", Keep: 2 * 365 * 24 * time.Hour},
 	}
 }
 
 func KlineRetentionCutoff(interval string, now time.Time) (time.Time, bool) {
-	for _, policy := range ExtremeSpaceKlineRetentionPolicies() {
+	for _, policy := range PersonalServerKlineRetentionPolicies() {
 		if policy.Interval == interval {
 			return now.UTC().Add(-policy.Keep), true
 		}

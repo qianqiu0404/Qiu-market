@@ -31,17 +31,18 @@ services:
   # 镜像 tag 与官方 quickstart（start-doris.sh -v 3.0.8）对应的 3.x 稳定版一致；
   # 官方 3.x quickstart 脚本实际编排 fe/be 双容器，本 compose 用官方发布的
   # all-in-one 单容器镜像（apache/doris:3.0.8-all，amd64/arm64 均有）简化本地启动。
-  # 注意：Linux 宿主机需先执行 sysctl -w vm.max_map_count=2000000（Docker Desktop 的
-  # macOS/Windows 虚拟机一般已满足）。首次启动 FE/BE 初始化约需 1~2 分钟。
+  # 注意：运行 Doris 的 Linux/Colima VM 必须先设置 vm.max_map_count=2000000；
+  # macOS 宿主机上的 sysctl 不会自动传入 VM。首次启动 FE/BE 初始化约需 1~2 分钟。
   doris:
     image: apache/doris:3.0.8-all
     container_name: s78-market-doris
-    # 本地小内存 VM（colima / Docker Desktop 默认 2~8G）必须降 FE 堆：
+    # Mac mini 32GB / SSD staging profile：FE 堆使用 4G。容器 VM 预算为
+    # 10G，给 BE 和系统页缓存保留空间；本地大模型与 Doris 不同时跑峰值。
     # 镜像 fe.conf 默认 -Xms8192m -Xmx8192m，JVM 启动即 mmap commit 失败退出
     # （表象是 entrypoint 反复刷 "Register BE to FE is failed"，最终容器静默退出 0）。
-    # 启动前把 FE 堆改为 2G（本地分析数据量足够），再执行镜像原 entrypoint。
+    # 启动前把 FE 堆改为 4G，再执行镜像原 entrypoint。
     entrypoint: >
-      bash -c "sed -i 's/-Xmx8192m -Xms8192m/-Xmx2048m -Xms2048m/'
+      bash -c "sed -i 's/-Xmx8192m -Xms8192m/-Xmx4096m -Xms4096m/'
       /opt/apache-doris/fe/conf/fe.conf && exec bash entry_point.sh"
     # BE 启动硬性要求 nofile > 60000，否则 start_be.sh 直接拒绝启动
     # （表象是 FE 正常、BE 注册后容器随即退出 0）。

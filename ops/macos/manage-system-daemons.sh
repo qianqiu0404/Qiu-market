@@ -5,7 +5,7 @@ action="${1:-status}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 log_dir="/Users/xiuqiu/Library/Application Support/Qiu Market/logs"
 daemon_dir="/Library/LaunchDaemons"
-roles=(trading api crawler worker dex)
+roles=(trading api crawler worker dex dw)
 
 render_role() {
   local role="$1"

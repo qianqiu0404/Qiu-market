@@ -52,7 +52,7 @@ func (w *Worker) applyKlineRetention(ctx context.Context, now time.Time) {
 	result, err := w.db.KlineRetention.Run(
 		ctx,
 		now,
-		database.ExtremeSpaceKlineRetentionPolicies(),
+		database.PersonalServerKlineRetentionPolicies(),
 		10_000,
 	)
 	if err != nil {

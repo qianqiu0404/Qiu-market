@@ -63,7 +63,7 @@ bash ops/macos/summarize-production-slo.sh
 |---|---|
 | `crawler` | 刷新 CoinGecko Top 200 候选池、维护四家独立 selection、以 WebSocket 主链路 + REST 对账采集 Spot、计算综合现货价，并维护四家版本化 K 线 |
 | `dex` | 在同一进程内隔离运行 Hyperliquid Perp、Ethereum Uniswap V2+V3、BNB Chain PancakeSwap V2+V3；都不参与 All 综合现货价（详见 [docs/dex-hyperliquid.md](docs/dex-hyperliquid.md)） |
-| `worker` | 扫描 K 线缺口并生成持久化 `kline_repair_task`；每日执行 `1m=7天 / 15m=90天 / 1h=1年 / 1d=永久` 的有界保留，不访问交易所、不写价格 |
+| `worker` | 扫描 K 线缺口并生成持久化 `kline_repair_task`；每日执行个人服务器档 `1m=30天 / 15m=180天 / 1h=2年 / 1d=永久` 的有界保留，不访问交易所、不写价格 |
 | `dw` | PostgreSQL → Apache Doris 数仓同步进程；旧公开流旁边已增加 `sync_seq` 固定回看 + UNIQUE KEY 的 v2 影子流（详见 [docs/doris-analytics.md](docs/doris-analytics.md)） |
 | `database` | GORM + PostgreSQL 表模型和查询 |
 | `services/http` | v1 市场/Insights/K 线与 v2 综合资产首页、按需市场抽屉、Catalog Audit |

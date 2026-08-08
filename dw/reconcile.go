@@ -7,7 +7,6 @@ import (
 	"math/big"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/ethereum/go-ethereum/log"
 
@@ -121,7 +120,7 @@ func (d *DW) reconcileKlinesV2() error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(d.resourceCtx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(d.resourceCtx, klineV2ReconcileTimeout)
 	defer cancel()
 	for _, stream := range streams {
 		if err := d.reconcileOneKlineV2Stream(ctx, stream); err != nil {
