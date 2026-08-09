@@ -153,7 +153,7 @@ CoinGecko reference <= 15m -------------------------> display_price
 
 ## Provider contract 与确定性路由（Q-M3）
 
-`marketdata/providercontract` 是现有 crawler adapter 与未来信息源之间的只读契约层，不替代 `SnapshotWriter`，也不拥有数据库、Redis、订单、撮合或账本。当前只有 deterministic fake provider；没有真实 HTTP client、API key 或线上响应，因此证据等级是 `implemented / build-verified`，不是外部 provider `integration-verified`。
+`marketdata/providercontract` 是现有 crawler adapter 与未来信息源之间的只读契约层，不替代 `SnapshotWriter`，也不拥有数据库、Redis、订单、撮合或账本。Q-M3 的 provider-neutral contract/router 继续用 deterministic fake provider 做门禁；Q-M4A 在独立 `binancepublic` 子包增加一个默认关闭的真实 HTTP adapter。它只读 Binance 官方 market-data-only 域的 BTC/USDT Spot ticker 与 1m OHLCV，仍未注册到 crawler、公开 API/UI 或交易参考价，因此其离线证据是 `contract-verified`，opt-in smoke 成功时才是该时刻的 `external-read-verified`，不是 production rollout。
 
 四种 capability 使用同一信封：`spot_ticker`、`ohlcv`、`derivatives`、`signals`。每条事实都必须携带 schema version、实际 provider、可审计 source ID 或 URL、canonical identity、显式单位/精度、`observed_at`、本地 `received_at`、TTL 与 quality flags；事件类另有 `event_time` 和稳定 event ID。所有价格、数量、比率、费用或置信度均为规范十进制字符串，不能穿过该边界变成 `float64`。当前 TTL 是 Go 进程内 `time.Duration`（JSON 数值单位为纳秒），不是对外 wire 格式；M4 的 HTTP adapter 必须把持续时间映射为字段名或 schema 明示单位的值。
 
@@ -181,7 +181,7 @@ Provider 先通过 capability discovery 声明能力；缺失能力返回 typed 
 | CoinMarketCap 类资产/市场信息 | external asset ID → canonical Asset；provider timestamp、价格/市值或获许可的 signal | 先确认具体 endpoint、缓存与再分发许可；key 仅服务端注入 | 每 endpoint 建独立 token bucket 与成本记录；不能假设免费额度或抓网页 |
 | xiuqiu-site 内容/消息 | stream、稳定 event ID、event/publish time、asset refs、source URLs、review/license 状态 | server-to-server；保留 attribution 与内容许可，reviewed snapshot 和 shadow event 不静默合并 | 条件请求、last-good 与明确 stale；degraded+empty 不能解释为“没有事件” |
 
-M4 adapter 必须提交官方契约 fixture、许可/费率记录、字段映射表、超时/429/坏 payload 测试和明确成本预算后才可注册；真实密钥、收费订阅或私有接口缺失时只完成 adapter/config seam，不能用 fake provider 冒充外部集成。
+M4 adapter 必须提交官方契约 fixture、许可/费率记录、字段映射表、超时/429/坏 payload 测试和明确成本预算后才可注册；真实密钥、收费订阅或私有接口缺失时只完成 adapter/config seam，不能用 fake provider 冒充外部集成。Q-M4A 的 Binance 选择、精确字段、HTTP/SSRF 边界、429 预算和许可门记录在 [`docs/binance-public-provider.md`](binance-public-provider.md)；即使 online smoke 通过，未完成 owner 法务确认也不能自动启用或向用户展示。
 
 ## 设计决策、代价和边界
 
@@ -202,7 +202,7 @@ M4 adapter 必须提交官方契约 fixture、许可/费率记录、字段映射
 3. `crawler/catalog_supervisor.go` + `crawler/spot_ticker_supervisor.go` + `crawler/spot_ticker_streams.go`：刷新目录、确保选择，并隔离四家 WS primary / REST reconcile。
 4. `marketdata/snapshot_writer.go` + `marketdata/composite.go`：PG-first 快照、30 秒 Fresh 参与者、异常值和 water-filling 限权。
 5. `database/market_aggregation.go` + `services/http/service/market_index.go`：查询三类来源列并组装 `MarketPriceFact`；HTTP dashboard/tick 共享同一事实契约。
-6. `marketdata/providercontract/`：Q-M3 的 provider-neutral 类型、canonical identity、规范化、typed error、确定性 router/cache/fake provider 和纯读 consumer seam；当前未接现有真实 adapter。
+6. `marketdata/providercontract/`：Q-M3 的 provider-neutral 类型、canonical identity、规范化、typed error、确定性 router/cache/fake provider 和纯读 consumer seam；`binancepublic/` 是 Q-M4A 默认关闭的 BTC/USDT Spot ticker/OHLCV read adapter，不接写链或交易链。
 
 K 线与 DEX 的后续入口是：
 

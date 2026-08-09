@@ -263,7 +263,9 @@ test('Vue drives the real HTTP harness from open through fill without duplicatin
 
   await page.getByRole('button', { name: 'Refresh' }).click()
   await page.locator('.scope-switch').getByRole('button', { name: 'Order history' }).click()
-  await expect(page.getByText('Filled', { exact: true })).toBeVisible()
+  await expect(
+    page.locator('.record-row.order-grid').getByText('Filled', { exact: true }),
+  ).toBeVisible()
 
   const filledBalances = await browserJSON<{ balances: Balance[] }>(page, '/api/v1/trading/balances')
   expect(filledBalances.status).toBe(200)
