@@ -71,6 +71,9 @@ verify-local:
 verify-trading-golden:
 	cd frontend && npm ci && npm run test:e2e:golden
 
+verify-trading-partial-golden:
+	cd frontend && npm ci && npm run test:e2e:partial-golden
+
 repo-audit:
 	bash script/repo-audit.sh
 
@@ -123,6 +126,7 @@ proto:
 	dev-restart \
 	verify-local \
 	verify-trading-golden \
+	verify-trading-partial-golden \
 	repo-audit \
 	mac-production-build \
 	mac-production-verify \

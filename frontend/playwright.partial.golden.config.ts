@@ -1,16 +1,16 @@
 import { defineConfig } from '@playwright/test'
 
-const frontendPort = 4176
-const harnessPort = Number(process.env.QIU_GOLDEN_HARNESS_PORT ?? 19092)
+const frontendPort = 4177
+const harnessPort = Number(process.env.QIU_PARTIAL_GOLDEN_HARNESS_PORT ?? 19093)
 const frontendURL = `http://127.0.0.1:${frontendPort}`
 const harnessURL = `http://127.0.0.1:${harnessPort}`
-const harnessCommand = process.env.QIU_GOLDEN_HARNESS_COMMAND?.trim() ||
-  `go run ./trading/cmd/golden --bind 127.0.0.1:${harnessPort}`
+const harnessCommand = process.env.QIU_PARTIAL_GOLDEN_HARNESS_COMMAND?.trim() ||
+  `go run ./trading/cmd/partial-golden --bind 127.0.0.1:${harnessPort}`
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: '**/trading.golden.spec.ts',
-  timeout: 45_000,
+  testMatch: '**/*.partial.golden.spec.ts',
+  timeout: 60_000,
   expect: { timeout: 10_000 },
   workers: 1,
   fullyParallel: false,
@@ -21,21 +21,20 @@ export default defineConfig({
   },
   webServer: [
     {
-      name: 'golden-harness',
+      name: 'partial-golden-harness',
       command: harnessCommand,
       cwd: '..',
       env: {
         ...process.env,
-        QIU_GOLDEN_HARNESS_ADDR: `127.0.0.1:${harnessPort}`,
-        QIU_GOLDEN_FRONTEND_ORIGIN: frontendURL,
+        QIU_PARTIAL_GOLDEN_FRONTEND_ORIGIN: frontendURL,
       },
-      url: `${harnessURL}/__golden/ready`,
+      url: `${harnessURL}/__partial-golden/ready`,
       reuseExistingServer: false,
       timeout: 60_000,
       gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
     },
     {
-      name: 'vue',
+      name: 'partial-golden-vue',
       command: `npm run dev -- --port ${frontendPort}`,
       env: {
         ...process.env,

@@ -392,6 +392,17 @@ PostgreSQL、真实交易所或真实资金。浏览器通过现有认证、CSRF
 `PATH`，可用 `QIU_GOLDEN_HARNESS_COMMAND` 指向等价的 `go run
 ./trading/cmd/golden --bind 127.0.0.1:19092` 命令。
 
+部分成交、标准 store 恢复和撤销余量的独立竖切使用：
+
+```bash
+make verify-trading-partial-golden
+```
+
+该命令在独立端口启动 Q-M2 harness，提交 `60000 USDT × 0.02 BTC` 买单，先成交
+`0.01 BTC`，关闭旧 `MarketRunner` 并从同一 snapshot + event tail 创建新 runner，
+最后由真实 Vue 取消余量并重放相同 cancel request。它同样不读取根 `.env`，不连接
+共享数据库、外部行情或真实资金。
+
 ## 文档索引
 
 每个工程专题都按“功能是什么 → 设计决策 → 数据流 → 关键代码位置 → 验证步骤 → 边界 → 大白话术语 → Owner 60 秒口述 → 闭卷自检”组织。推荐阅读顺序：
