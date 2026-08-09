@@ -96,6 +96,8 @@ Q-M4A 在该边界下新增默认关闭的 `marketdata/providercontract/binancep
 
 Q-M4B 在同一只读边界下增加默认关闭的 CoinGlass 衍生品 adapter：只对官方明确单位的 Binance `BTCUSD_PERP` 4h OI 与清算历史建模；funding 相关端点未明确 ratio/percent 单位，因此在发网前返回 typed `unsupported`，不猜值。凭据只允许由服务端 secret provider 注入，adapter 不读 `.env`、不注册到 UI/写链/交易链，也不持久化原始响应。端点、套餐、许可、字段和 Q-M4C 激活门见 [CoinGlass derivatives provider](docs/coinglass-derivatives-provider.md)。
 
+Q-M5A 增加默认关闭的 xiuqiu-site 动态 Market Radar 只读研究流。后端只允许官方 HTTPS origin 的 `summary`、`events` 与 `events/:id` 三个 GET，固定查询 `market=crypto&asset=BTC&window=168`，将事件转换为 `researchsignal/v1`，并在 `/insights` 独立显示来源、事件/发布/接收时间、观察与失效条件。研究优先级不是交易建议，所有事件固定 `executable=false`；该包没有数据库、Redis、行情快照、订单、撮合、余额或账本依赖。默认 `MARKET_RESEARCH_SIGNALS_ENABLED=false`，一键隔离验收为 `make verify-research-golden`。
+
 ### 可信行情底座与多交易所实施状态
 
 - `implemented`：七家独立版本化 50 资产选择、All canonical 去重并集、本地预览与正式 rollout 隔离、四家 WebSocket/REST feed、四家版本化 50 market K 线、V2+V3 最多两跳 AMM、权威 DEX snapshot、最后成功值与 Fresh/Stale/Unavailable、手动 rollout 门和统一 venue 快照已落地。

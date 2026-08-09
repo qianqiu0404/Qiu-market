@@ -183,6 +183,14 @@ Provider 先通过 capability discovery 声明能力；缺失能力返回 typed 
 
 M4 adapter 必须提交官方契约 fixture、许可/费率记录、字段映射表、超时/429/坏 payload 测试和明确成本预算后才可注册；真实密钥、收费订阅或私有接口缺失时只完成 adapter/config seam，不能用 fake provider 冒充外部集成。Q-M4A 的 Binance 选择、精确字段、HTTP/SSRF 边界、429 预算和许可门记录在 [`docs/binance-public-provider.md`](binance-public-provider.md)；Q-M4B 的 CoinGlass `BTCUSD_PERP` OI/清算字段、secret/套餐/许可边界和 funding typed-unsupported 决策记录在 [`docs/coinglass-derivatives-provider.md`](coinglass-derivatives-provider.md)。即使后续 online smoke 通过，未完成 owner 法务确认也不能自动启用或向用户展示。
 
+### xiuqiu-site 动态研究流（Q-M5A）
+
+`marketdata/researchsignal` 是与行情事实、交易参考价完全分开的只读边界。它只向固定 `https://xiuqiu-site.vercel.app` 发起 `GET /api/market-radar/summary`、`GET /api/market-radar/events` 与 `GET /api/market-radar/events/:id`；生产代码不能覆盖 origin，测试只能注入显式 loopback。列表固定为 crypto/BTC/168 小时，limit 不超过 50，cursor 原样转发且永不解析或自行构造。HTTP 总预算 5 秒、响应上限 1 MiB，要求 JSON 单值、严格 schema、HTTPS 公开来源 URL，并使用 ETag/Last-Modified 与 30 秒有界缓存；只有完整验证后的 fresh/empty/legacy 结果可缓存，错误、degraded、stale、partial 不做 stale-on-error 回放。
+
+对外 DTO 固定 `researchsignals/v1`，单项为 `researchsignal/v1`。`eventTime` 与 `publishedAt` 来自上游，`receivedAt` 是本服务实际收包时间；上游没有 item-level observation time，所以 `observedAt=null` 并标 `observed_time_missing`，不得拿接收时间伪造观察时间。旧生产缺少 `watchFor/invalidation` 时保留 null、标 `legacy_fields_missing`；同页同 ID 同 hash 只保留一次并标 duplicate，同 ID 不同 hash 全部抑制并标 partial。研究来源状态统一由 HTTP 200 的 typed `status/error` 表达并 `no-store`，因此 degraded 绝不能被前端解释为 verified empty。
+
+依赖方向是单向的：`services/http/researchsignals` 只把只读 Reader 暴露为 `/api/v1/research/signals/**`；Vue Insights 只消费该 DTO。静态依赖门禁止 `trading/**` 导入 research 包，也禁止 research 包导入 database、Redis、SnapshotWriter、reference、exchange 或 ledger。每项固定 `sourceKind=xiuqiu_automated_dynamic`、`provider=xiuqiu-site`、`executable=false`，不会触发价格、风控、订单、撮合或资金写入。当前仅有 30 秒进程内响应缓存，不归档上游原始响应；正式开启和公开展示仍须 xiuqiu 内容 owner 确认许可，并等待目标 production SHA 完成受保护发布审批。
+
 ## 设计决策、代价和边界
 
 1. **CoinGecko 只管资产主数据。** 被拒绝的是用 CoinGecko 当前价填补交易所失败；那会把来源不同的价格伪装成一个口径。代价是全部 venue 失败时首页必须显示 Unknown。

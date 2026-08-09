@@ -23,11 +23,13 @@
 | `/markets?venue=...&asset=...` | 同页 venue 抽屉 | v2 asset venues，按需 | 打开时 |
 | `/markets/:marketId` | 现有 venue K 线详情 | v1 market + klines | 随周期 |
 | `/trade/BTC-USDT` | 虚拟现货交易终端 | 可信 BTC 参考 + venue K 线 + trading REST/WebSocket | 5s / WS |
-| `/insights` | 宽度、跨 venue、历史动量 | v1 insights + Doris momentum | 模块独立 |
+| `/insights` | 宽度、跨 venue、历史动量、BTC 只读研究信号 | v1 insights + Doris momentum + researchsignals/v1 | 模块独立；研究 60s |
 | `/system?tab=audit` | provider 目录审计 | v2 catalog audit | 手动/分页 |
 | `/system` | 进程、依赖、provider 状态 | v1 system overview | 15s |
 
 Insights 的 Provider Selection Coverage 必须分别请求 All `provider_union` 与七家 provider 的 `provider_top50` 稳定选择。七家 `provider_top50` 均要求正好 50 个 canonical asset；AMM 的 50 指 listed assets，不能理解为 50 个实时可询价路线。页面中的 `24h Market Breadth · Full Catalog` 是更宽的活跃市场目录，明确独立于首页 selection 并集，避免把动态 All 行数和完整目录资产数误认为同一指标。
+
+Insights 的 BTC Research Feed 使用独立 GET `/api/v1/research/signals/{summary,events}`。卡片始终显示“研究信息、不可执行”、xiuqiu-site 来源、事件/发布/接收/观察时间、研究优先级（非交易建议）、继续观察与失效条件；Vue 只用文本插值，禁止 `v-html`。`fresh/empty/legacy/degraded/stale/partial/unconfigured` 是互不混淆的页面状态：只有 `empty` 能显示“已验证窗口为空”，degraded/error 不得复用空态；旧事件的缺失字段显示中性提示，不从方向、评分、reaction 或 system judgment 推导内容。该模块不导入 trading API，浏览器 golden 还断言没有 order/cancel/fund 写请求。
 
 v2 接口：
 

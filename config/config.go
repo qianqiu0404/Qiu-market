@@ -30,7 +30,12 @@ type Config struct {
 	PancakeV3SubgraphURL  string
 	DexPublicFallback     bool
 	PublicProxyHMACSecret string
+	ResearchSignals       ResearchSignalsConfig
 	Trading               TradingConfig
+}
+
+type ResearchSignalsConfig struct {
+	Enabled bool
 }
 
 // TradingConfig keeps the virtual spot bounded context on a separate
@@ -172,6 +177,9 @@ func NewConfig(ctx *cli.Context) Config {
 		PancakeV3SubgraphURL:  ctx.String(flags.PancakeV3SubgraphURLFlag.Name),
 		DexPublicFallback:     ctx.Bool(flags.DexPublicFallbackFlag.Name),
 		PublicProxyHMACSecret: ctx.String(flags.PublicProxyHMACSecretFlag.Name),
+		ResearchSignals: ResearchSignalsConfig{
+			Enabled: ctx.Bool(flags.ResearchSignalsEnabledFlag.Name),
+		},
 		Trading: TradingConfig{
 			GRPCAddress:        ctx.String(flags.TradingGRPCAddressFlag.Name),
 			AllowedOrigins:     splitCSV(ctx.String(flags.TradingAllowedOriginsFlag.Name)),

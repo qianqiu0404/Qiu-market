@@ -171,6 +171,12 @@ var (
 		Usage:   "shared secret required for REST requests forwarded by the Qiu Market public BFF",
 		EnvVars: prefixEnvVars("PUBLIC_PROXY_HMAC_SECRET"),
 	}
+	ResearchSignalsEnabledFlag = &cli.BoolFlag{
+		Name:    "research-signals-enabled",
+		Usage:   "enable the fixed-origin, read-only xiuqiu-site research signal adapter",
+		Value:   false,
+		EnvVars: prefixEnvVars("RESEARCH_SIGNALS_ENABLED"),
+	}
 	TradingGRPCAddressFlag = &cli.StringFlag{
 		Name:    "trading-grpc-address",
 		Usage:   "loopback address of the virtual spot TradingService",
@@ -324,6 +330,7 @@ var optionalFlags = []cli.Flag{
 	PancakeV3SubgraphURLFlag,
 	DexPublicFallbackFlag,
 	PublicProxyHMACSecretFlag,
+	ResearchSignalsEnabledFlag,
 	TradingGRPCAddressFlag,
 	TradingAllowedOriginsFlag,
 	TradingLocalAuthFlag,

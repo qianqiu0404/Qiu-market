@@ -10,7 +10,9 @@ import StatusBadge from '../components/StatusBadge.vue'
 import ErrorState from '../components/ErrorState.vue'
 import EmptyState from '../components/EmptyState.vue'
 import SkeletonRows from '../components/SkeletonRows.vue'
+import ResearchSignalFeed from '../features/insights/ResearchSignalFeed.vue'
 import { usePolling } from '../composables/usePolling'
+import { getResearchSignalEvents, getResearchSignalSummary } from '../api/research'
 import {
   getAssetMomentum,
   getMarketInsights,
@@ -169,6 +171,12 @@ const windowValue = ref<MomentumWindow>('7d')
 
 const realtime = usePolling(getMarketInsights, { interval: 30_000 })
 const venues = usePolling(getTop50VenueInsights, { interval: 30_000 })
+const researchEvents = usePolling(getResearchSignalEvents, { interval: 60_000 })
+const researchSummary = usePolling(getResearchSignalSummary, { interval: 60_000 })
+
+async function refreshResearch(): Promise<void> {
+  await Promise.all([researchEvents.refresh(), researchSummary.refresh()])
+}
 async function getAvailableMomentum() {
   const system = await getSystemOverview()
   if (!isHealthyStatus(system.dw_status)) {
@@ -356,6 +364,14 @@ function signedClass(value: number): string {
       :title="copy.title"
       :subtitle="copy.subtitle"
       :refreshed-at="realtime.lastUpdated.value"
+    />
+
+    <ResearchSignalFeed
+      :feed="researchEvents.data.value"
+      :summary="researchSummary.data.value"
+      :loading="researchEvents.loading.value || researchSummary.loading.value"
+      :error="researchEvents.error.value || researchSummary.error.value"
+      @retry="refreshResearch"
     />
 
     <section class="insight-section">
