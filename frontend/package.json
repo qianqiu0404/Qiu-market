@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:gate-lib": "node --test scripts/live-gate-lib.test.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:golden": "playwright test --config playwright.golden.config.ts",
     "gate:preview-oauth": "node scripts/run-preview-oauth-gate.mjs",
     "gate:production-auth": "node scripts/run-production-auth-gate.mjs",
     "typecheck:functions": "tsc --noEmit -p tsconfig.functions.json"

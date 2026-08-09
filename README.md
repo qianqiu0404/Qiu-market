@@ -378,6 +378,20 @@ npm run build    # vue-tsc 类型检查 + Vite 构建
 npm run test:e2e # Playwright，默认使用隔离端口 4175
 ```
 
+单笔 BTC 限价买单的隔离 golden path 可从仓库根目录一条命令复现：
+
+```bash
+make verify-trading-golden
+```
+
+该命令只启动 loopback 内存 harness 和本地 Vue/Vite，不读取项目 `.env`、不连接共享
+PostgreSQL、真实交易所或真实资金。浏览器通过现有认证、CSRF 和
+`/api/v1/trading/**` 接口提交 `60000 USDT × 0.01 BTC` 买单，再由隔离控制端触发
+确定性对手单；测试核对 open → filled、冻结/释放、费用、余额、成交、账本和同一
+`client_order_id` 重放。需要 Node.js 24、Go 1.24 和本机 Chrome；如 Go 不在
+`PATH`，可用 `QIU_GOLDEN_HARNESS_COMMAND` 指向等价的 `go run
+./trading/cmd/golden --bind 127.0.0.1:19092` 命令。
+
 ## 文档索引
 
 每个工程专题都按“功能是什么 → 设计决策 → 数据流 → 关键代码位置 → 验证步骤 → 边界 → 大白话术语 → Owner 60 秒口述 → 闭卷自检”组织。推荐阅读顺序：

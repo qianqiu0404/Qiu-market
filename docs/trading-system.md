@@ -601,6 +601,29 @@ outbox 找到；源行清理开始后自动拒绝 legacy rollback。新 release 
 
 ## 验证与证据等级
 
+### 单笔限价买单 golden path
+
+`make verify-trading-golden` 是不依赖 `.env` 或共享数据库的最小真实浏览器竖切。
+它启动 loopback-only 内存事件存储、真实 `MarketRunner`/撮合/账本、loopback gRPC、
+production trading HTTP handler 和 Vue/Vite。只有确定性市场读数据与成交触发属于
+测试控制面；买方登录、CSRF、下单及订单/成交/余额/账本查询均走现有
+`/api/v1/trading/**`。
+
+固定状态机与金额如下：
+
+| 阶段 | 订单与资金证据 |
+| --- | --- |
+| 初始 | buyer `1000 USDT available / 0 held`；seller `0.01 BTC` |
+| open | limit buy `60000 × 0.01 BTC`；buyer `400 USDT available / 600 held` |
+| replay | 相同 `client_order_id` 和 payload 返回相同结果；sequence、事实、成交和 ledger 数量不变 |
+| filled | buyer maker fee `0.00001 BTC`，最终 `0.00999 BTC + 400 USDT`；seller taker fee `1.2 USDT`，最终 `598.8 USDT`；held 全部归零 |
+
+BTC scale 固定 `1e8`、USDT scale 固定 `1e6`；API 只接收精确十进制字符串。成交额与
+手续费使用整数 floor，买单 quote hold 使用整数 ceil，禁止用浮点数表示资金。最终
+immutable journal 必须逐资产和为零，订单、成交和 ledger 引用必须一致。该门禁只证明
+单笔完全成交的隔离 golden path，不覆盖 PostgreSQL 恢复、部分成交、撤单、并发或真实
+行情保护。
+
 专项命令：
 
 ```bash
