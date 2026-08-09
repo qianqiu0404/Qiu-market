@@ -94,6 +94,8 @@ Q-M3 新增只读的 `marketdata/providercontract` 边界，为后续行情、�
 
 Q-M4A 在该边界下新增默认关闭的 `marketdata/providercontract/binancepublic` 只读 adapter，只允许 Binance 官方 market-data-only 域的 `BTCUSDT` Spot ticker 与 1m OHLCV。离线 fixture、受限 HTTP client、bounded cache 和 opt-in online smoke 都不注册到现有 crawler/UI，不写 `SnapshotWriter`，也不进入交易、撮合或账本。字段映射、限流、安全和许可门见 [Binance public spot provider](docs/binance-public-provider.md)；在 owner 完成地域与再分发许可确认前不得开启公开展示。
 
+Q-M4B 在同一只读边界下增加默认关闭的 CoinGlass 衍生品 adapter：只对官方明确单位的 Binance `BTCUSD_PERP` 4h OI 与清算历史建模；funding 相关端点未明确 ratio/percent 单位，因此在发网前返回 typed `unsupported`，不猜值。凭据只允许由服务端 secret provider 注入，adapter 不读 `.env`、不注册到 UI/写链/交易链，也不持久化原始响应。端点、套餐、许可、字段和 Q-M4C 激活门见 [CoinGlass derivatives provider](docs/coinglass-derivatives-provider.md)。
+
 ### 可信行情底座与多交易所实施状态
 
 - `implemented`：七家独立版本化 50 资产选择、All canonical 去重并集、本地预览与正式 rollout 隔离、四家 WebSocket/REST feed、四家版本化 50 market K 线、V2+V3 最多两跳 AMM、权威 DEX snapshot、最后成功值与 Fresh/Stale/Unavailable、手动 rollout 门和统一 venue 快照已落地。
@@ -438,6 +440,8 @@ README 全局架构
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、Mac mini 不可变 DW 运行与故障隔离 |
 | [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、DEX 60 秒 route 边界、All canonical 并集、CEX-only 综合现货价与 rollout |
 | [docs/market-data-quality.md](docs/market-data-quality.md) | provider 隔离、综合价排除/降级、身份异常与修复 |
+| [docs/binance-public-provider.md](docs/binance-public-provider.md) | Q-M4A 默认关闭的 Binance BTC/USDT Spot ticker/OHLCV adapter、HTTP 边界与许可门 |
+| [docs/coinglass-derivatives-provider.md](docs/coinglass-derivatives-provider.md) | Q-M4B 默认关闭的 CoinGlass BTCUSD_PERP OI/清算 adapter、secret/套餐/单位与许可门 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |
 | [docs/project-go-interview-bagua.md](docs/project-go-interview-bagua.md) | Go 工程知识与当前项目代码映射 |
 

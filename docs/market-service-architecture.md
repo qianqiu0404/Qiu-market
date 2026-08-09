@@ -181,7 +181,7 @@ Provider 先通过 capability discovery 声明能力；缺失能力返回 typed 
 | CoinMarketCap 类资产/市场信息 | external asset ID → canonical Asset；provider timestamp、价格/市值或获许可的 signal | 先确认具体 endpoint、缓存与再分发许可；key 仅服务端注入 | 每 endpoint 建独立 token bucket 与成本记录；不能假设免费额度或抓网页 |
 | xiuqiu-site 内容/消息 | stream、稳定 event ID、event/publish time、asset refs、source URLs、review/license 状态 | server-to-server；保留 attribution 与内容许可，reviewed snapshot 和 shadow event 不静默合并 | 条件请求、last-good 与明确 stale；degraded+empty 不能解释为“没有事件” |
 
-M4 adapter 必须提交官方契约 fixture、许可/费率记录、字段映射表、超时/429/坏 payload 测试和明确成本预算后才可注册；真实密钥、收费订阅或私有接口缺失时只完成 adapter/config seam，不能用 fake provider 冒充外部集成。Q-M4A 的 Binance 选择、精确字段、HTTP/SSRF 边界、429 预算和许可门记录在 [`docs/binance-public-provider.md`](binance-public-provider.md)；即使 online smoke 通过，未完成 owner 法务确认也不能自动启用或向用户展示。
+M4 adapter 必须提交官方契约 fixture、许可/费率记录、字段映射表、超时/429/坏 payload 测试和明确成本预算后才可注册；真实密钥、收费订阅或私有接口缺失时只完成 adapter/config seam，不能用 fake provider 冒充外部集成。Q-M4A 的 Binance 选择、精确字段、HTTP/SSRF 边界、429 预算和许可门记录在 [`docs/binance-public-provider.md`](binance-public-provider.md)；Q-M4B 的 CoinGlass `BTCUSD_PERP` OI/清算字段、secret/套餐/许可边界和 funding typed-unsupported 决策记录在 [`docs/coinglass-derivatives-provider.md`](coinglass-derivatives-provider.md)。即使后续 online smoke 通过，未完成 owner 法务确认也不能自动启用或向用户展示。
 
 ## 设计决策、代价和边界
 
