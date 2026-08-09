@@ -90,6 +90,8 @@ Crawler 启动时载入 CoinGecko Top 200 候选池、provider 代码评审清�
 
 K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 selection version 固定到一个具体 USD-family Spot market，只采 provider 原生 1m，再在分钟严格连续时确定性汇总 15m/1h/1d。worker 只产缺口任务，crawler 必须回原 provider 修复；不能用另一家交易所填洞，也不能用 ticker 目录顺序静默换 K 线来源。
 
+Q-M3 新增只读的 `marketdata/providercontract` 边界，为后续行情、衍生品和事件来源统一定义 spot ticker、OHLCV、derivatives 与 signals 四种 capability。契约把 canonical asset、venue、Spot/Perp market、十进制单位、schema version、source、`event_time`、`observed_at`、`received_at`、TTL、quality flags 和 fallback trace 绑定在同一个事实里；unsupported、auth、rate limit、timeout、upstream 5xx、bad payload 与 stale 都是 typed error。路由只在明确可重试错误或 capability 不支持时按稳定顺序切换，auth / bad payload / identity 或单位冲突会 fail closed。本阶段只注册确定性 fake provider 和 fake clock，不接真实 API、不读取密钥、不写行情快照，也不进入交易、撮合或账本；现有 crawler 与 `SnapshotWriter` 行为保持不变。
+
 ### 可信行情底座与多交易所实施状态
 
 - `implemented`：七家独立版本化 50 资产选择、All canonical 去重并集、本地预览与正式 rollout 隔离、四家 WebSocket/REST feed、四家版本化 50 market K 线、V2+V3 最多两跳 AMM、权威 DEX snapshot、最后成功值与 Fresh/Stale/Unavailable、手动 rollout 门和统一 venue 快照已落地。

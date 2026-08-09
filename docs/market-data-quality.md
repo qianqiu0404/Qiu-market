@@ -102,7 +102,7 @@ K 线使用 `(market_id, interval, open_time)` 业务唯一键。四家 CEX 各�
 
 ## Owner 60 秒解释
 
-> 四家交易所都用 WebSocket 收实时 ticker、REST 对账漏项，5 秒合并后统一走 SnapshotWriter 写 PG，Redis 只是后派生。Binance 的 `o` 开盘价和 `O` 窗口时间必须分别解析。综合价只用 30 秒内的新鲜 Spot，稳定币率过期或偏离中位数 3% 就排除；只剩一家降成 low，全部失败就是 Unknown。四家 K 线各固定自己的 market selection，缺口由 worker 开工单、crawler 回原 provider 修复；Doris 挂了不影响首页。
+> 四家交易所都用 WebSocket 收实时 ticker、REST 对账漏项，5 秒合并后统一走 SnapshotWriter 写 PG，Redis 只是后派生。Binance 的 `o` 开盘价和 `O` 窗口时间必须分别解析。综合价只用 30 秒内的新鲜 Spot，稳定币率过期或偏离中位数 3% 就排除；只剩一家降成 low，全部失败就是 Unknown。四家 K 线各固定自己的 market selection，缺口由 worker 开工单、crawler 回原 provider 修复；Doris 挂了不影响首页。Q-M3 另建只读 provider contract：显式 identity、source、三种时间、十进制 unit/scale、TTL 与 quality，只有 retryable/unsupported 能 fallback；它现在只有 fake provider，不写 SnapshotWriter、更不接交易账本。
 
 ## 闭卷自检
 
@@ -115,3 +115,6 @@ K 线使用 `(market_id, interval, open_time)` 业务唯一键。四家 CEX 各�
 7. 为什么 Binance ticker 结构体必须同时声明 `json:"o"` 和 `json:"O"`？
 8. 为什么四家 WebSocket 事件要 5 秒合并，而不是逐条写 PG？
 9. 为什么 Coinbase 的 K 线缺口不能拿 Binance BTC/USDT 补？
+10. 为什么 BTC、某 venue 的 BTC/USDT Spot 和 BTC/USDT Perp 不能只靠 symbol 合并？
+11. 为什么 auth、bad payload 或 stale 不能由下一 provider 的成功静默掩盖？
+12. Q-M3 fake provider 通过为什么不等于 CoinGlass、CMC 或交易所 adapter 已经集成？
