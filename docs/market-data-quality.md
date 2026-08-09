@@ -17,6 +17,79 @@
 | confidence | 合格 Spot venue 数 | low / medium / high |
 | kline gap | 业务 `open_time` 是否连续 | worker + repair task |
 
+## Q-M6A 统一质量门：计划、指标字典与 SLO
+
+Q-M6A 只增加只读质量判断，不改变任何行情事实、研究事件或交易状态。实施顺序固定为：先把 provider/research 的已验证响应转换为不可变 evidence；再按数据类别独立评分；随后由 quarantine 状态机决定只读 read model 是否可消费；最后由独立 API/UI 展示状态与原因。质量层不保存或修改上游原始事实，也没有进入 `trading/reference`、matcher、orders、balances 或 ledger 的依赖方向。
+
+三个类别不能合成一个平均分：
+
+1. `binance_spot`：BTC/USDT ticker 与 1m OHLCV，各 capability 保留自己的样本和 freshness。
+2. `coinglass_derivatives`：BTCUSD_PERP OI 与 liquidation；funding 仍是 typed unsupported，不放进成功率分母，但必须显示 capability gap。
+3. `xiuqiu_research`：动态 Market Radar 事件；priority 只表示研究编辑优先级，固定不可执行。
+
+### 指标字典
+
+所有窗口都是 UTC 半开区间 `[start, end)`；计数是整数，比例以 basis points 表达，延迟用整数毫秒。每个维度同时返回 numerator、denominator 和 value，不能只返回一个失去分母的百分比。`denominator=0` 或样本少于 `min_samples` 时该窗口为 `insufficient`，不得用 100% 填充。
+
+| 维度 | 精确定义 | 失败/空数据语义 |
+|---|---|---|
+| availability | 成功 fetch 数 / 总 fetch attempt 数 | 无 attempt 为 insufficient；429、timeout、5xx 均进入错误分布和失败分母 |
+| freshness | 在 capability freshness budget 内的有效样本 / 有效样本 | 无有效样本为 insufficient；future、stale serve 是 hard fault |
+| fetch latency | 成功 fetch 的 total/max latency 与 SLO 内样本数 | cache hit 单列，不能冒充一次上游成功 |
+| completeness | 真实存在的必需字段 / 按 capability 定义的必需字段 | 0 条事件没有字段分母，不能得到 100% |
+| schema validity | schema、时间、decimal、单位与精度均有效的样本 / 收到样本 | bad payload、单位或精度冲突 fail closed |
+| consistency | 去除 duplicate 后且无 conflict/out-of-order/future 的样本 / 收到样本 | duplicate 可审计；conflict/future 是 hard fault |
+| coverage | observed capability/exchange / policy expected set | unsupported 不伪装成功；CoinGlass funding 作为显式 gap |
+| source/provenance | provider、source、market identity 与时间语义完整的样本 / 收到样本 | venue/provider/spot/perp 不能靠 symbol 猜测 |
+| research context | source、watchFor、invalidation、priority、content hash 的逐字段计数 | legacy 分开计数；同 ID 不同 content hash 为 conflict |
+| license eligibility | `approved|unknown|restricted|prohibited` | 独立硬门，不进入加权平均；unknown 不得标成可公开展示 |
+
+read model 还必须保留 `last_attempt_at`、`last_success_at`、age、attempt/success 数、duplicate/conflict/out-of-order/future/stale 数、429/timeout/5xx 分布、cache hit/stale serve、research legacy 与 P0/P1/P2 分布，以及每个 reason 对应的原始计数。质量 evidence 可以保留，quarantine 只阻止进入可消费 read model，不删除事实。
+
+### SLO 与权重矩阵
+
+默认权重总和严格为 100；所有阈值由经过校验的 policy 提供，零值使用下表安全默认。分数只描述技术质量，license 仍可在高分时禁止公开展示。
+
+| 类别 | evidence window / 最小样本 | freshness / latency 预算 | 权重（fresh / availability / completeness / schema / consistency / coverage） | 公开展示门 |
+|---|---|---|---|---|
+| Binance Spot | 5 分钟；ticker 5 + OHLCV 2 = source 7 | ticker 5s、闭合 1m candle 65s；fetch 2s | 25 / 20 / 20 / 15 / 10 / 10 | 分数有效、无 hard fault、license=approved |
+| CoinGlass derivatives | 5 小时；OI 1 + liquidation 1 = source 2 | source row 5h；fetch 5s | 20 / 20 / 20 / 15 / 15 / 10 | 仅 fixture 时 `not_live`；license=approved 前不可公开 |
+| xiuqiu research | 168 小时；summary 1 + events 1 = source 2 | 事件不超过 7d；fetch 5s | 15 / 15 / 20 / 15 / 10 / 25（coverage 含 provenance/watch/invalidation） | verified empty 仍是 no_data；license=approved 且事件合格才可展示 |
+
+grade 阈值为 A=90–100、B=80–89、C=70–79、D=50–69、F<50；样本不足时 grade 为 `insufficient` 而不是 F 或 A。状态固定为 `insufficient|healthy|degraded|quarantined|recovering`。future timestamp、schema/identity/unit/precision 冲突、content hash conflict、stale serve 与 policy 定义的超龄是 hard fault，分数不能覆盖它们。所有类别的 `trade_eligible` 永远为 false。
+
+### Quarantine 状态机
+
+```text
+insufficient --enough healthy evidence--> healthy
+healthy --soft SLO miss---------------> degraded
+healthy/degraded/recovering --hard fault--> quarantined
+quarantined --one healthy window------> recovering (1/3)
+recovering --next healthy window------> recovering (2/3)
+recovering --third healthy window-----> healthy
+recovering --fault or empty window----> quarantined
+```
+
+默认恢复门是连续 3 个健康 evidence window；空窗口不会增加健康 streak，任一 hard fault 清零。窗口状态和 evidence 继续保留，来源关闭只停止新消费，不删除审计事实。告警必须携带 source、capability、窗口、分母、last success、age 与 reasons，不能只写“质量差”。
+
+### 最小运行手册
+
+1. **告警。** 先看 data class、source/capability、窗口和分母；再看 last success/age、429/timeout/5xx、schema/identity/unit 与 conflict 计数。不能拿进程心跳或 cache hit 代替上游成功。
+2. **降级。** soft SLO miss 标 `degraded`；hard fault 或许可门失败标 `quarantined`。页面继续显示原因和最后证据，但不把 quarantined item 放入可消费列表，也不以旧值伪装 fresh。
+3. **恢复。** 修复来源后从下一完整 evidence window 开始计数；连续 3 个健康窗口依次为 recovering 1/3、2/3、healthy。中途空窗或故障回到 quarantined。
+4. **关闭来源。** 关闭对应 provider/research enabled gate，不删除 evidence，不切换到身份或单位不同的来源；Binance BTC/USDT、CoinGlass BTC/USD Perp 与 xiuqiu research 永不互相 fallback。
+5. **保留证据。** 保存聚合计数、窗口、reason、hash 与 source reference；不要把受许可限制的原始 CoinGlass payload、provider key、header 或 xiuqiu 长文本写进质量日志。
+6. **只读边界。** 质量 API/UI 只解释来源可用性。即便 technical grade 为 A，`trade_eligible` 仍为 false；任何质量状态都不能直接改变 reference price、订单、撮合、余额或账本。
+
+### 实现与复现入口
+
+- `marketdata/quality` 保存策略、exact counters、独立评分、许可门、Monitor 和三窗口恢复；单来源窗口最多保留 4096 条 immutable evidence，窗口外 evidence 与已评估 ID 一起清理。
+- `marketdata/qualityadapters` 只把已规范化的 Binance/CoinGlass provider 结果和 xiuqiu research 结果转成 evidence。HTTP observation 与 dispatch trace 必须同 provider/capability/source；cache hit 使用独立路径，计入 cache 但不增加上游 attempt/success 或恢复 streak。
+- `GET /api/v1/data-quality/summary` 固定返回三个 source 与六个 capability。生产没有显式 collector 时返回 `unconfigured`，不会把 fixture 或“进程已启动”冒充真实质量。
+- Insights 客户端在渲染前复核 schema、canonical source、全部分子/分母、grade、license、eligibility 与 overall 最坏状态；任何低报 quarantine 或 nullable collection 漂移都 fail closed。
+- `make verify-quality-golden` 启动 loopback quality monitor 与真实 Vue/HTTP 链，验证三类状态、desktop/mobile 布局和零 provider/DB/trading 写入。普通 CI 不发网。
+- opt-in 只读采样需要同时满足 Go build tag 与显式 flag：`go test -tags=quality_online ./marketdata/qualityadapters -run '^TestOnlineReadOnlyQualitySmoke$' -args -quality-smoke`。它最多执行 Binance ticker/OHLCV 两个逻辑读与 xiuqiu summary/events 两个逻辑读；CoinGlass 只解析官方 fixture 并固定 `not_live`，不读取 key。
+
 ## 多 provider 失败隔离
 
 Binance、Coinbase、Bybit、OKX 都使用独立的 WebSocket supervisor：前三者分别订阅官方 ticker stream，Coinbase 订阅 `ticker_batch`。事件只更新每个 source symbol 的 latest map，约 5 秒合并写一次，避免把流式频率直接放大成 PostgreSQL 写放大。每家另有 REST reconcile：周期性对账安静、漏消息或断线资产，不能用 REST 成功冒充 WebSocket 已恢复。单 adapter panic 由本 supervisor 捕获并重启，不会终止 crawler；超时、429、畸形响应和断线都写独立 provider/source failure。

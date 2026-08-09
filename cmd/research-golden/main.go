@@ -20,6 +20,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/the-web3/s78-market-services/marketdata/researchsignal"
+	"github.com/the-web3/s78-market-services/services/http/dataquality"
 	"github.com/the-web3/s78-market-services/services/http/researchsignals"
 )
 
@@ -67,6 +68,10 @@ func run(ctx context.Context) error {
 	}
 	router := chi.NewRouter()
 	researchsignals.Mount(router, reader)
+	// Insights now always renders the read-only quality panel. This older
+	// research golden intentionally has no quality collector, so mount the real
+	// handler in its honest unconfigured/insufficient state.
+	dataquality.Mount(router, nil)
 	router.Get("/healthz", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"status": "ready", "schemaVersion": "research-golden/v1",

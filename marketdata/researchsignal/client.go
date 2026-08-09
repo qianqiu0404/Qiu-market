@@ -140,14 +140,15 @@ func (c *Client) Events(ctx context.Context, query EventQuery) (ListResult, erro
 	if input.NextCursor != nil && (len(input.Items) == 0 || *input.NextCursor == query.Cursor) {
 		return ListResult{}, typed(ErrorBadPayload, errors.New("invalid cursor progression"))
 	}
-	items, partial, err := normalizeEvents(input.Items, response.receivedAt, c.now().UTC())
+	items, qualityStats, err := normalizeEvents(input.Items, response.receivedAt, c.now().UTC())
 	if err != nil {
 		return ListResult{}, typed(ErrorBadPayload, err)
 	}
+	partial := qualityStats.DuplicateCount > 0 || qualityStats.ConflictCount > 0
 	status = listStatus(status, items, partial)
 	result := ListResult{
 		Status: status, GeneratedAt: response.receivedAt.UTC(), Message: input.Message,
-		Data: EventList{Items: items, NextCursor: input.NextCursor},
+		Data: EventList{Items: items, NextCursor: input.NextCursor}, Quality: qualityStats,
 	}
 	if partial && result.Message == nil {
 		message := "duplicate or conflicting event versions were suppressed"

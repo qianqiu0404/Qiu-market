@@ -152,6 +152,17 @@ type ListResult struct {
 	GeneratedAt time.Time
 	Data        EventList
 	Message     *string
+	// Quality is internal fetch evidence and is intentionally omitted from the
+	// public research HTTP DTO. DuplicateCount counts redundant versions after
+	// the first; ConflictCount counts distinct IDs whose versions disagreed.
+	Quality QualityStats
+}
+
+type QualityStats struct {
+	InputCount     uint64
+	OutputCount    uint64
+	DuplicateCount uint64
+	ConflictCount  uint64
 }
 
 type DetailResult struct {

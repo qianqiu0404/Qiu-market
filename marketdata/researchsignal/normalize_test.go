@@ -50,15 +50,15 @@ func TestNormalizeEventsDeduplicatesAndSuppressesConflict(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 10, 8, 0, 0, 0, time.UTC)
 	duplicate := fixtureEvent(now)
-	items, partial, err := normalizeEvents([]upstreamEvent{duplicate, duplicate}, now, now)
-	if err != nil || !partial || len(items) != 1 || !strings.Contains(strings.Join(items[0].QualityFlags, ","), "duplicate") {
-		t.Fatalf("duplicate result items=%+v partial=%v err=%v", items, partial, err)
+	items, stats, err := normalizeEvents([]upstreamEvent{duplicate, duplicate}, now, now)
+	if err != nil || stats != (QualityStats{InputCount: 2, OutputCount: 1, DuplicateCount: 1}) || len(items) != 1 || !strings.Contains(strings.Join(items[0].QualityFlags, ","), "duplicate") {
+		t.Fatalf("duplicate result items=%+v stats=%+v err=%v", items, stats, err)
 	}
 	conflict := fixtureEvent(now)
 	conflict.TitleZH = "Conflicting version"
-	items, partial, err = normalizeEvents([]upstreamEvent{duplicate, conflict}, now, now)
-	if err != nil || !partial || len(items) != 0 {
-		t.Fatalf("conflict must suppress every version: items=%+v partial=%v err=%v", items, partial, err)
+	items, stats, err = normalizeEvents([]upstreamEvent{duplicate, conflict}, now, now)
+	if err != nil || stats != (QualityStats{InputCount: 2, ConflictCount: 1}) || len(items) != 0 {
+		t.Fatalf("conflict must suppress every version: items=%+v stats=%+v err=%v", items, stats, err)
 	}
 }
 

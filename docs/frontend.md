@@ -31,6 +31,8 @@ Insights 的 Provider Selection Coverage 必须分别请求 All `provider_union`
 
 Insights 的 BTC Research Feed 使用独立 GET `/api/v1/research/signals/{summary,events}`。卡片始终显示“研究信息、不可执行”、xiuqiu-site 来源、事件/发布/接收/观察时间、研究优先级（非交易建议）、继续观察与失效条件；Vue 只用文本插值，禁止 `v-html`。`fresh/empty/legacy/degraded/stale/partial/unconfigured` 是互不混淆的页面状态：只有 `empty` 能显示“已验证窗口为空”，degraded/error 不得复用空态；旧事件的缺失字段显示中性提示，不从方向、评分、reaction 或 system judgment 推导内容。该模块不导入 trading API，浏览器 golden 还断言没有 order/cancel/fund 写请求。
 
+Insights 的 Data Quality Gate 使用独立 GET `/api/v1/data-quality/summary`。页面固定按 Binance Spot、CoinGlass derivatives 与 xiuqiu research 三张来源卡展示，不能把它们合成一个平均分；每张卡常显 evidence window、成功/尝试、最近成功、age、六项分子/分母、两个 capability 的有效样本/最低要求、错误与 cache/stale 计数、许可、公开展示资格和 quarantine/recovery 原因。CoinGlass fixture 必须标 `not_live`，许可 unknown/restricted 时公开展示为 No；所有卡固定 `Trade eligible: No`，research priority 只显示 P0/P1/P2 计数并持续标注“不是交易建议”。浏览器响应解析会重算 overall 最坏状态和比例，拒绝服务端低报 quarantine 或把 0 分母伪装成 100%。
+
 v2 接口：
 
 | 接口 | 语义 |

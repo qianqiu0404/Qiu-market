@@ -98,6 +98,8 @@ Q-M4B 在同一只读边界下增加默认关闭的 CoinGlass 衍生品 adapter�
 
 Q-M5A 增加默认关闭的 xiuqiu-site 动态 Market Radar 只读研究流。后端只允许官方 HTTPS origin 的 `summary`、`events` 与 `events/:id` 三个 GET，固定查询 `market=crypto&asset=BTC&window=168`，将事件转换为 `researchsignal/v1`，并在 `/insights` 独立显示来源、事件/发布/接收时间、观察与失效条件。研究优先级不是交易建议，所有事件固定 `executable=false`；该包没有数据库、Redis、行情快照、订单、撮合、余额或账本依赖。默认 `MARKET_RESEARCH_SIGNALS_ENABLED=false`，一键隔离验收为 `make verify-research-golden`。
 
+Q-M6A 在这些只读事实之上增加独立的数据质量门：Binance Spot、CoinGlass derivatives fixture 与 xiuqiu research 各自拥有 evidence window、capability 最小样本、SLO、技术分、许可 eligibility 和 quarantine/recovery 状态，绝不跨类别求平均。比例始终携带整数分子/分母；空数据和样本不足不会得到 100%，cache hit 也不会冒充上游成功。许可未知或受限的数据即使技术分为 A 仍不可公开消费，所有来源的 `trade_eligible`、reference、matcher、orders、balances 和 ledger eligibility 固定为 false。只读状态由 `/api/v1/data-quality/summary` 和 Insights 的 Data Quality 面板解释；阈值、告警、恢复与证据保留规则见 [Market data quality](docs/market-data-quality.md)。
+
 ### 可信行情底座与多交易所实施状态
 
 - `implemented`：七家独立版本化 50 资产选择、All canonical 去重并集、本地预览与正式 rollout 隔离、四家 WebSocket/REST feed、四家版本化 50 market K 线、V2+V3 最多两跳 AMM、权威 DEX snapshot、最后成功值与 Fresh/Stale/Unavailable、手动 rollout 门和统一 venue 快照已落地。
@@ -411,6 +413,18 @@ make verify-trading-partial-golden
 最后由真实 Vue 取消余量并重放相同 cancel request。它同样不读取根 `.env`，不连接
 共享数据库、外部行情或真实资金。
 
+质量 read model 与 Insights 面板的隔离浏览器竖切使用：
+
+```bash
+make verify-quality-golden
+```
+
+该命令只启动 loopback `quality-golden`、真实 data-quality HTTP handler 和本地 Vue，
+用确定性 evidence 同时展示 Binance healthy、CoinGlass restricted/not-live 与 xiuqiu
+license-unknown quarantine。它不读取 `.env`、不访问 provider 网络或数据库，且浏览器
+验收会核对三来源、六 capability、精确分母、许可/恢复原因、移动端布局以及零 trading
+mutation。真实 online sampling 另有显式 build tag/flag 双门，普通 CI 不发网。
+
 ## 文档索引
 
 每个工程专题都按“功能是什么 → 设计决策 → 数据流 → 关键代码位置 → 验证步骤 → 边界 → 大白话术语 → Owner 60 秒口述 → 闭卷自检”组织。推荐阅读顺序：
@@ -441,7 +455,7 @@ README 全局架构
 | [docs/grpc-service.md](docs/grpc-service.md) | gRPC MarketService、与 HTTP 共用业务层、proto 重新生成 |
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、Mac mini 不可变 DW 运行与故障隔离 |
 | [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、DEX 60 秒 route 边界、All canonical 并集、CEX-only 综合现货价与 rollout |
-| [docs/market-data-quality.md](docs/market-data-quality.md) | provider 隔离、综合价排除/降级、身份异常与修复 |
+| [docs/market-data-quality.md](docs/market-data-quality.md) | provider/research 独立评分、许可门、quarantine/recovery、综合价排除与运行手册 |
 | [docs/binance-public-provider.md](docs/binance-public-provider.md) | Q-M4A 默认关闭的 Binance BTC/USDT Spot ticker/OHLCV adapter、HTTP 边界与许可门 |
 | [docs/coinglass-derivatives-provider.md](docs/coinglass-derivatives-provider.md) | Q-M4B 默认关闭的 CoinGlass BTCUSD_PERP OI/清算 adapter、secret/套餐/单位与许可门 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |

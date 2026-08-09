@@ -250,19 +250,19 @@ func contentHash(signal Signal) (string, error) {
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
-func normalizeEvents(inputs []upstreamEvent, receivedAt, now time.Time) ([]Signal, bool, error) {
+func normalizeEvents(inputs []upstreamEvent, receivedAt, now time.Time) ([]Signal, QualityStats, error) {
 	items := make([]Signal, 0, len(inputs))
+	stats := QualityStats{InputCount: uint64(len(inputs))}
 	byID := make(map[string]string, len(inputs))
 	conflicted := make(map[string]struct{})
-	partial := false
 	for _, input := range inputs {
 		item, err := normalizeEvent(input, receivedAt, now)
 		if err != nil {
-			return nil, false, err
+			return nil, QualityStats{}, err
 		}
 		if hash, ok := byID[item.ID]; ok {
-			partial = true
 			if hash == item.ContentHash && len(items) > 0 {
+				stats.DuplicateCount++
 				for index := range items {
 					if items[index].ID == item.ID {
 						items[index].QualityFlags = append(items[index].QualityFlags, "duplicate")
@@ -278,6 +278,7 @@ func normalizeEvents(inputs []upstreamEvent, receivedAt, now time.Time) ([]Signa
 		items = append(items, item)
 	}
 	if len(conflicted) > 0 {
+		stats.ConflictCount = uint64(len(conflicted))
 		filtered := items[:0]
 		for _, item := range items {
 			if _, conflict := conflicted[item.ID]; !conflict {
@@ -286,7 +287,8 @@ func normalizeEvents(inputs []upstreamEvent, receivedAt, now time.Time) ([]Signa
 		}
 		items = filtered
 	}
-	return items, partial, nil
+	stats.OutputCount = uint64(len(items))
+	return items, stats, nil
 }
 
 func validateReaction(value upstreamReaction) error {
