@@ -65,6 +65,18 @@ withDefaults(
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.page-header-side :deep(.segmented) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.page-header-side :deep(.segmented button) {
+  flex: 0 0 auto;
+  min-width: 44px;
 }
 
 .page-clock {
