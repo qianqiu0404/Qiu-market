@@ -68,8 +68,35 @@ dev-restart:
 verify-local:
 	bash script/verify-local.sh
 
+verify-trading-golden:
+	cd frontend && npm ci && npm run test:e2e:golden
+
+verify-trading-partial-golden:
+	cd frontend && npm ci && npm run test:e2e:partial-golden
+
+verify-research-golden:
+	cd frontend && npm ci && npm run test:e2e:research-golden
+
+verify-quality-golden:
+	cd frontend && npm ci && npm run test:e2e:quality-golden
+
+verify-full-stack-golden:
+	bash trading/scripts/full-stack-golden.sh
+
 repo-audit:
 	bash script/repo-audit.sh
+
+security-paths:
+	bash script/check-sensitive-paths.sh
+
+security-paths-test:
+	bash script/check-sensitive-paths_test.sh
+
+security-env-templates:
+	bash script/check-env-templates.sh
+
+security-env-templates-test:
+	bash script/check-env-templates_test.sh
 
 mac-production-build:
 	bash ops/macos/manage-release-candidate.sh prepare "$(RELEASE_REV)"
@@ -119,7 +146,16 @@ proto:
 	dev-logs \
 	dev-restart \
 	verify-local \
+	verify-trading-golden \
+	verify-trading-partial-golden \
+	verify-research-golden \
+	verify-quality-golden \
+	verify-full-stack-golden \
 	repo-audit \
+	security-paths \
+	security-paths-test \
+	security-env-templates \
+	security-env-templates-test \
 	mac-production-build \
 	mac-production-verify \
 	mac-production-preflight \

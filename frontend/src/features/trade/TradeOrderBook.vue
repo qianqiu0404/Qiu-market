@@ -68,9 +68,9 @@ header h2 { margin-top: 3px; font-size: 16px; }
 .panel-warning { padding: 8px 16px; color: #805700; background: #fff8df; font-size: 11px; }
 .book-heading,.book-side button { display: grid; grid-template-columns: 1.2fr 1fr .45fr; gap: 8px; padding: 7px 16px; text-align: right; font: 11px var(--font-mono); }
 .book-heading { color: var(--text-3); }.book-heading span:first-child,.book-side button span:first-child { text-align: left; }
-.book-side { min-height: 136px; }.book-side button { width: 100%; border: 0; color: var(--text-1); background: transparent; cursor: pointer; }.book-side button:hover { background: var(--bg-panel-2); }
+.book-side { min-height: 136px; }.book-side button { width: 100%; min-height: 44px; border: 0; color: var(--text-1); background: transparent; cursor: pointer; }.book-side button:hover { background: var(--bg-panel-2); }
 .asks button span:first-child { color: var(--down); }.bids button span:first-child { color: var(--up); }
 .spread { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; padding: 9px 16px; border-block: 1px solid var(--border); background: var(--bg-panel-2); }
-.spread button { border: 0; color: var(--text-3); background: transparent; font-size: 10px; }.spread button:last-child { text-align: right; }.spread strong { color: var(--accent); font-size: 11px; }
+.spread button { min-height: 44px; border: 0; color: var(--text-3); background: transparent; font-size: 10px; }.spread button:last-child { text-align: right; }.spread strong { color: var(--accent); font-size: 11px; }
 .empty { padding: 18px; color: var(--text-3); font-size: 12px; text-align: center; }
 </style>

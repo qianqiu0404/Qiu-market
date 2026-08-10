@@ -19,7 +19,10 @@ import (
 	"github.com/the-web3/s78-market-services/common/httputil"
 	"github.com/the-web3/s78-market-services/config"
 	"github.com/the-web3/s78-market-services/database"
+	"github.com/the-web3/s78-market-services/marketdata/researchsignal"
 	"github.com/the-web3/s78-market-services/redis"
+	"github.com/the-web3/s78-market-services/services/http/dataquality"
+	"github.com/the-web3/s78-market-services/services/http/researchsignals"
 	"github.com/the-web3/s78-market-services/services/http/routes"
 	"github.com/the-web3/s78-market-services/services/http/service"
 	"github.com/the-web3/s78-market-services/services/http/systemstatus"
@@ -196,6 +199,16 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 	apiRouter.Use(middleware.Recoverer)
 	apiRouter.Use(middleware.Heartbeat(HealthPath))
 	apiRouter.Use(publicProxyHMACMiddleware(cfg.PublicProxyHMACSecret))
+	researchReader, err := researchsignal.New(researchsignal.Config{Enabled: cfg.ResearchSignals.Enabled})
+	if err != nil {
+		log.Warn("research signal adapter unavailable", "err", err)
+		researchReader = nil
+	}
+	researchsignals.Mount(apiRouter, researchReader)
+	// Evidence collection is opt-in and read-only. Production starts with no
+	// collector wired, so the endpoint reports unconfigured/insufficient rather
+	// than treating fixtures or provider availability as proven quality.
+	dataquality.Mount(apiRouter, nil)
 
 	// Unary market-data routes retain their bounded timeout. Trading WebSocket
 	// upgrades are mounted outside this group so a long-lived event stream is

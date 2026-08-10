@@ -6,6 +6,9 @@ const reuseExistingServer = process.env.S78_E2E_REUSE_SERVER === '1'
 
 export default defineConfig({
   testDir: './e2e',
+  // The stateful full-stack golden path owns a second backend webServer and
+  // is run through playwright.golden.config.ts.
+  testIgnore: '**/*.golden.spec.ts',
   timeout: 30_000,
   // All suites exercise the same stateful Qiu Market SPA. Serial workers keep
   // the shared Vite/browser lifecycle deterministic during the combined gate.

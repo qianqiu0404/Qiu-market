@@ -151,6 +151,46 @@ CoinGecko reference <= 15m -------------------------> display_price
 
 这里的“综合价”是可审计读模型，不是可执行成交价。参与市场、权重和排除原因写入 JSONB，市场抽屉按需读取；`provider_union` 响应不嵌套全部 venue 明细。
 
+## Provider contract 与确定性路由（Q-M3）
+
+`marketdata/providercontract` 是现有 crawler adapter 与未来信息源之间的只读契约层，不替代 `SnapshotWriter`，也不拥有数据库、Redis、订单、撮合或账本。Q-M3 的 provider-neutral contract/router 继续用 deterministic fake provider 做门禁；Q-M4A 在独立 `binancepublic` 子包增加一个默认关闭的真实 HTTP adapter。它只读 Binance 官方 market-data-only 域的 BTC/USDT Spot ticker 与 1m OHLCV，仍未注册到 crawler、公开 API/UI 或交易参考价，因此其离线证据是 `contract-verified`，opt-in smoke 成功时才是该时刻的 `external-read-verified`，不是 production rollout。
+
+四种 capability 使用同一信封：`spot_ticker`、`ohlcv`、`derivatives`、`signals`。每条事实都必须携带 schema version、实际 provider、可审计 source ID 或 URL、canonical identity、显式单位/精度、`observed_at`、本地 `received_at`、TTL 与 quality flags；事件类另有 `event_time` 和稳定 event ID。所有价格、数量、比率、费用或置信度均为规范十进制字符串，不能穿过该边界变成 `float64`。当前 TTL 是 Go 进程内 `time.Duration`（JSON 数值单位为纳秒），不是对外 wire 格式；M4 的 HTTP adapter 必须把持续时间映射为字段名或 schema 明示单位的值。
+
+身份不能由裸 symbol 猜测。Asset 同时包含稳定 ID 与规范 symbol；Market 同时包含稳定 market ID、venue、base/quote asset 和 `spot|perp`，canonical code 固定为 `<venue>:<BASE>/<QUOTE>:<type>`。因此 BTC、Binance BTC/USDT Spot 与同 venue BTC/USDT Perp 是三个不同层级的身份，不能静默互换。
+
+时间与质量规则是确定性的：
+
+| 输入 | 结果 |
+|---|---|
+| `observed_at` 在允许 future skew 之外 | typed future/bad-payload，fail closed |
+| 当前时间超过 `observed_at + TTL` | 标记 stale；不能作为 fresh success 或缓存命中 |
+| source、schema、TTL、身份或字段单位缺失/冲突 | typed bad-payload/identity/unit，fail closed |
+| 同 source 的相同 event ID、K 线 open time 且内容完全相同 | 去重一次并加 duplicate quality flag |
+| 相同键但内容冲突 | typed conflict，fail closed |
+| 可安全排序的乱序 K 线 | 按 open time 稳定排序并加 out-of-order quality flag；不能改变事实内容 |
+
+Provider 先通过 capability discovery 声明能力；缺失能力返回 typed `unsupported`，不能返回空数组冒充成功。Router 保留每次 attempt 的 provider、capability、cache hit、error kind 与 retry-after，并把最终实际 source 原样返回。只有 `unsupported` 或显式 retryable 的 rate-limit、timeout、network、upstream 5xx/unavailable 才能尝试下一 provider；auth、permission、配置、bad request、bad payload、stale、future、identity、单位或冲突错误立即停止。429 的 `retry_after` 只阻断该 provider 到 fake clock 指定时刻，不改变其他 provider；调用方 context 取消也不会被 fallback 掩盖。缓存有界且只保存验证通过的 fresh success，过期值不会 stale-on-error 回放。
+
+### M4 真实 adapter 接入门
+
+| 候选来源 | 最小字段映射 | 密钥与许可边界 | 速率预算门 |
+|---|---|---|---|
+| CEX Spot / OHLCV | provider instrument → 已审核 Market；成交价、bid/ask、source time；interval/open/close/OHLCV | 优先官方 API；公开展示和再分发条款必须逐 provider 审核；凭据只在服务端 secret store | 按 capability 分开预算；stream、REST reconcile 与 repair 不共享隐式全局桶 |
+| CoinGlass 类 derivatives | Perp Market、mark/index、funding interval/rate、OI，以及带明确统计窗口的可选 liquidation | 先确认套餐、展示/再分发授权；key 不进入浏览器、日志、fixture 或仓库 | 以已购买套餐为硬上限；429 尊重 Retry-After；未确认额度前 adapter 保持 disabled |
+| CoinMarketCap 类资产/市场信息 | external asset ID → canonical Asset；provider timestamp、价格/市值或获许可的 signal | 先确认具体 endpoint、缓存与再分发许可；key 仅服务端注入 | 每 endpoint 建独立 token bucket 与成本记录；不能假设免费额度或抓网页 |
+| xiuqiu-site 内容/消息 | stream、稳定 event ID、event/publish time、asset refs、source URLs、review/license 状态 | server-to-server；保留 attribution 与内容许可，reviewed snapshot 和 shadow event 不静默合并 | 条件请求、last-good 与明确 stale；degraded+empty 不能解释为“没有事件” |
+
+M4 adapter 必须提交官方契约 fixture、许可/费率记录、字段映射表、超时/429/坏 payload 测试和明确成本预算后才可注册；真实密钥、收费订阅或私有接口缺失时只完成 adapter/config seam，不能用 fake provider 冒充外部集成。Q-M4A 的 Binance 选择、精确字段、HTTP/SSRF 边界、429 预算和许可门记录在 [`docs/binance-public-provider.md`](binance-public-provider.md)；Q-M4B 的 CoinGlass `BTCUSD_PERP` OI/清算字段、secret/套餐/许可边界和 funding typed-unsupported 决策记录在 [`docs/coinglass-derivatives-provider.md`](coinglass-derivatives-provider.md)。即使后续 online smoke 通过，未完成 owner 法务确认也不能自动启用或向用户展示。
+
+### xiuqiu-site 动态研究流（Q-M5A）
+
+`marketdata/researchsignal` 是与行情事实、交易参考价完全分开的只读边界。它只向固定 `https://xiuqiu-site.vercel.app` 发起 `GET /api/market-radar/summary`、`GET /api/market-radar/events` 与 `GET /api/market-radar/events/:id`；生产代码不能覆盖 origin，测试只能注入显式 loopback。列表固定为 crypto/BTC/168 小时，limit 不超过 50，cursor 原样转发且永不解析或自行构造。HTTP 总预算 5 秒、响应上限 1 MiB，要求 JSON 单值、严格 schema、HTTPS 公开来源 URL，并使用 ETag/Last-Modified 与 30 秒有界缓存；只有完整验证后的 fresh/empty/legacy 结果可缓存，错误、degraded、stale、partial 不做 stale-on-error 回放。
+
+对外 DTO 固定 `researchsignals/v1`，单项为 `researchsignal/v1`。`eventTime` 与 `publishedAt` 来自上游，`receivedAt` 是本服务实际收包时间；上游没有 item-level observation time，所以 `observedAt=null` 并标 `observed_time_missing`，不得拿接收时间伪造观察时间。旧生产缺少 `watchFor/invalidation` 时保留 null、标 `legacy_fields_missing`；同页同 ID 同 hash 只保留一次并标 duplicate，同 ID 不同 hash 全部抑制并标 partial。研究来源状态统一由 HTTP 200 的 typed `status/error` 表达并 `no-store`，因此 degraded 绝不能被前端解释为 verified empty。
+
+依赖方向是单向的：`services/http/researchsignals` 只把只读 Reader 暴露为 `/api/v1/research/signals/**`；Vue Insights 只消费该 DTO。静态依赖门禁止 `trading/**` 导入 research 包，也禁止 research 包导入 database、Redis、SnapshotWriter、reference、exchange 或 ledger。每项固定 `sourceKind=xiuqiu_automated_dynamic`、`provider=xiuqiu-site`、`executable=false`，不会触发价格、风控、订单、撮合或资金写入。当前仅有 30 秒进程内响应缓存，不归档上游原始响应；正式开启和公开展示仍须 xiuqiu 内容 owner 确认许可，并等待目标 production SHA 完成受保护发布审批。
+
 ## 设计决策、代价和边界
 
 1. **CoinGecko 只管资产主数据。** 被拒绝的是用 CoinGecko 当前价填补交易所失败；那会把来源不同的价格伪装成一个口径。代价是全部 venue 失败时首页必须显示 Unknown。
@@ -170,6 +210,7 @@ CoinGecko reference <= 15m -------------------------> display_price
 3. `crawler/catalog_supervisor.go` + `crawler/spot_ticker_supervisor.go` + `crawler/spot_ticker_streams.go`：刷新目录、确保选择，并隔离四家 WS primary / REST reconcile。
 4. `marketdata/snapshot_writer.go` + `marketdata/composite.go`：PG-first 快照、30 秒 Fresh 参与者、异常值和 water-filling 限权。
 5. `database/market_aggregation.go` + `services/http/service/market_index.go`：查询三类来源列并组装 `MarketPriceFact`；HTTP dashboard/tick 共享同一事实契约。
+6. `marketdata/providercontract/`：Q-M3 的 provider-neutral 类型、canonical identity、规范化、typed error、确定性 router/cache/fake provider 和纯读 consumer seam；`binancepublic/` 是 Q-M4A 默认关闭的 BTC/USDT Spot ticker/OHLCV read adapter，不接写链或交易链。
 
 K 线与 DEX 的后续入口是：
 

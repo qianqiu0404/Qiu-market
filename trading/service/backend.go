@@ -44,6 +44,10 @@ type Config struct {
 	MinWriteBytes      int64
 	CursorHMACCurrent  string
 	CursorHMACPrevious string
+	// SnapshotEvery optionally selects the standard runner snapshot cadence.
+	// Zero preserves the production default. Isolated recovery verification may
+	// use a smaller positive cadence to prove snapshot-plus-event-tail replay.
+	SnapshotEvery      uint64
 	RecoveryGate       bool
 	RecoveryProvenance recovery.Provenance
 }
@@ -164,7 +168,7 @@ func New(
 	if err != nil {
 		return nil, fmt.Errorf("configure Trade V1 cursors: %w", err)
 	}
-	runnerConfig := tradingruntime.DefaultConfig()
+	runnerConfig := runnerConfigFor(config)
 	if recoveryCoordinator != nil {
 		runnerConfig.WriteGate = recoveryCoordinator
 	}
@@ -339,6 +343,14 @@ func New(
 		recoveryProof: recoveryProof,
 		recoveryHead:  recoveryHead,
 	}, nil
+}
+
+func runnerConfigFor(config Config) tradingruntime.Config {
+	result := tradingruntime.DefaultConfig()
+	if config.SnapshotEvery > 0 {
+		result.SnapshotEvery = config.SnapshotEvery
+	}
+	return result
 }
 
 func validateConfig(config Config) error {

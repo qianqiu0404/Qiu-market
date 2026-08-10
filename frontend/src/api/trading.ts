@@ -313,6 +313,19 @@ export class TradingRequestError extends Error {
   }
 }
 
+function recoveryGateEnabled(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || typeof (value as Record<string, unknown>).recovery_gate_enabled !== 'boolean') {
+    throw new TradingRequestError(
+      'Recovery capability is missing or malformed',
+      'invalid_recovery_capability',
+      0,
+      false,
+    )
+  }
+  return (value as Record<string, unknown>).recovery_gate_enabled as boolean
+}
+
 const base = '/api/v1/trading'
 export const TRADING_WRITE_TIMEOUT_MS = 10_000
 
@@ -427,22 +440,9 @@ export const tradingAPI = {
   publicTrades: () => request<{ trades: Trade[] }>('/markets/BTC-USDT/trades?limit=40'),
   status: () => request<TradingStatus>('/markets/BTC-USDT/status'),
   recoveryStatus: async (): Promise<TradingRecoveryStatus> => {
-    try {
-      return normalizeRecoveryStatus(await request<unknown>('/recovery/status'))
-    } catch (error) {
-      if (error instanceof TradingRequestError && error.status === 404) {
-        try {
-          const capabilities = await request<AuthCapabilities>('/auth/capabilities')
-          if (capabilities.recovery_gate_enabled === false) {
-            return recoveryNotEnabled()
-          }
-        } catch {
-          // Preserve the recovery 404 below. A missing/unreachable capability
-          // contract is not trusted legacy evidence.
-        }
-      }
-      throw error
-    }
+    const enabled = recoveryGateEnabled(await request<unknown>('/auth/capabilities'))
+    if (!enabled) return recoveryNotEnabled()
+    return normalizeRecoveryStatus(await request<unknown>('/recovery/status'))
   },
   balances: () => request<{ balances: Balance[] }>('/balances'),
   orders: (openOnly = false) => request<{ orders: Order[] }>(

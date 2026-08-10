@@ -1,0 +1,16 @@
+{
+  "code": "0",
+  "msg": "success",
+  "data": [
+    {
+      "time": 1786276800000,
+      "long_liquidation_usd": "2369935.19562",
+      "short_liquidation_usd": "6947459.43674"
+    },
+    {
+      "time": 1786291200000,
+      "long_liquidation_usd": "5118407.85124",
+      "short_liquidation_usd": "8517330.44192"
+    }
+  ]
+}

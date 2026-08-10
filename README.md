@@ -11,6 +11,7 @@ Qiu Market 是一个行情与虚拟交易学习产品：从外部交易所与行
 - `release-*` 用于固定验证快照，`trade-v1-*` 用于产品纵切片，`research-*` 及 contract/publication/accounting 类目录用于研究与契约切片，`trading-lab-*` 用于实验；分类名不代表已经合入、部署或验收。
 - 新改动从已核对的干净 `origin/main` 建独立 worktree。脏工作区只作调查线索；完成的 worktree 在确认无独有改动并由 Owner 审阅清理报告后移除。
 - 开始跨模块改动或整理工作区前运行 `make repo-audit`。输出中的 `ancestor` 只证明提交可达，不证明脏文件、squash patch、PR、部署或清理安全。
+- 本地 `.env`、私钥、wallet/TSS material 和数据库状态不得进入 Git。提交前运行 `make security-paths-test security-paths security-env-templates-test security-env-templates`；规则、模板语法、轮换与事故响应见 [Sensitive local files](docs/sensitive-files.md)。
 
 ## 架构
 
@@ -89,6 +90,18 @@ Crawler 启动时载入 CoinGecko Top 200 候选池、provider 代码评审清�
 四家 CEX 实时 feed 都是 **WebSocket primary + REST reconcile**：Binance/Bybit/OKX 订阅 ticker stream，Coinbase 订阅 `ticker_batch`；高频事件只更新内存 latest map，每约 5 秒合并提交一次。REST 每 30 秒对账安静、漏消息或断线资产。每家由独立 supervisor 隔离失败。正式环境中，CEX 在 shadow/paused 时只探测审核资产，不发布快照；canary/enabled 才进入正式 writer。本地 `make dev` 默认开启 Local Preview，但使用 preview source，不改变正式 mode、Canary 清单或 readiness。所有行情经 `marketdata.SnapshotWriter` 先提交 PostgreSQL，再派生 Redis。writer 保留最后成功值：30 秒内 Fresh，30 秒到 5 分钟 Stale（可展示但不参与综合价和涨跌排名），超过 5 分钟 Unavailable。规范 ticker 分开保存 `open_24h` 与可空 `change_24h_pct`；Binance 协议同时声明小写 `o` 开盘价和大写 `O` 窗口开始时间，防止 Go JSON 大小写不敏感把时间戳覆盖价格。综合价每 5 秒只使用 30 秒内的新鲜 CEX Spot，要求 10 分钟内 USD-family 汇率、剔除 3% 中位数离群报价，并在三个以上 contributor 时限制单 venue 权重不超过 40%。Perp/DEX 只扩展 All 成员，永不贡献综合现货价。
 
 K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 selection version 固定到一个具体 USD-family Spot market，只采 provider 原生 1m，再在分钟严格连续时确定性汇总 15m/1h/1d。worker 只产缺口任务，crawler 必须回原 provider 修复；不能用另一家交易所填洞，也不能用 ticker 目录顺序静默换 K 线来源。
+
+Q-M3 新增只读的 `marketdata/providercontract` 边界，为后续行情、衍生品和事件来源统一定义 spot ticker、OHLCV、derivatives 与 signals 四种 capability。契约把 canonical asset、venue、Spot/Perp market、十进制单位、schema version、source、`event_time`、`observed_at`、`received_at`、TTL、quality flags 和 fallback trace 绑定在同一个事实里；unsupported、auth、rate limit、timeout、upstream 5xx、bad payload 与 stale 都是 typed error。路由只在明确可重试错误或 capability 不支持时按稳定顺序切换，auth / bad payload / identity 或单位冲突会 fail closed。
+
+Q-M4A 在该边界下新增默认关闭的 `marketdata/providercontract/binancepublic` 只读 adapter，只允许 Binance 官方 market-data-only 域的 `BTCUSDT` Spot ticker 与 1m OHLCV。离线 fixture、受限 HTTP client、bounded cache 和 opt-in online smoke 都不注册到现有 crawler/UI，不写 `SnapshotWriter`，也不进入交易、撮合或账本。字段映射、限流、安全和许可门见 [Binance public spot provider](docs/binance-public-provider.md)；在 owner 完成地域与再分发许可确认前不得开启公开展示。
+
+Q-M4B 在同一只读边界下增加默认关闭的 CoinGlass 衍生品 adapter：只对官方明确单位的 Binance `BTCUSD_PERP` 4h OI 与清算历史建模；funding 相关端点未明确 ratio/percent 单位，因此在发网前返回 typed `unsupported`，不猜值。凭据只允许由服务端 secret provider 注入，adapter 不读 `.env`、不注册到 UI/写链/交易链，也不持久化原始响应。端点、套餐、许可、字段和 Q-M4C 激活门见 [CoinGlass derivatives provider](docs/coinglass-derivatives-provider.md)。
+
+Q-M5A 增加默认关闭的 xiuqiu-site 动态 Market Radar 只读研究流。后端只允许官方 HTTPS origin 的 `summary`、`events` 与 `events/:id` 三个 GET，固定查询 `market=crypto&asset=BTC&window=168`，将事件转换为 `researchsignal/v1`，并在 `/insights` 独立显示来源、事件/发布/接收时间、观察与失效条件。研究优先级不是交易建议，所有事件固定 `executable=false`；该包没有数据库、Redis、行情快照、订单、撮合、余额或账本依赖。默认 `MARKET_RESEARCH_SIGNALS_ENABLED=false`，一键隔离验收为 `make verify-research-golden`。
+
+Q-M6A 在这些只读事实之上增加独立的数据质量门：Binance Spot、CoinGlass derivatives fixture 与 xiuqiu research 各自拥有 evidence window、capability 最小样本、SLO、技术分、许可 eligibility 和 quarantine/recovery 状态，绝不跨类别求平均。比例始终携带整数分子/分母；空数据和样本不足不会得到 100%，cache hit 也不会冒充上游成功。许可未知或受限的数据即使技术分为 A 仍不可公开消费，所有来源的 `trade_eligible`、reference、matcher、orders、balances 和 ledger eligibility 固定为 false。只读状态由 `/api/v1/data-quality/summary` 和 Insights 的 Data Quality 面板解释；阈值、告警、恢复与证据保留规则见 [Market data quality](docs/market-data-quality.md)。
+
+Q-M7A 把此前分开的交易、研究和质量 golden path 合成一个 production-like 隔离门：一次性 PostgreSQL 16.14、独立 TLS fixture、稳定 HTTP coordinator、两个不同 PID 的真实 trading backend 和 production Vue build 在动态 loopback 端口运行。浏览器先完成一笔完全成交，再完成部分成交、强制终止 backend A、从 snapshot 4 + event tail 恢复到 backend B、撤单与同 request ID 重放；同一故事还验证研究状态、六类 provider fault、cache/no-data 不推进恢复和连续三窗恢复。完整边界、固定账本数字与清理证据见 [Full-stack PostgreSQL golden](docs/full-stack-golden.md)。
 
 ### 可信行情底座与多交易所实施状态
 
@@ -358,6 +371,10 @@ make verify-local
 
 ```bash
 make repo-audit
+make security-paths-test
+make security-paths
+make security-env-templates-test
+make security-env-templates
 ```
 
 后端：
@@ -378,6 +395,57 @@ npm run build    # vue-tsc 类型检查 + Vite 构建
 npm run test:e2e # Playwright，默认使用隔离端口 4175
 ```
 
+单笔 BTC 限价买单的隔离 golden path 可从仓库根目录一条命令复现：
+
+```bash
+make verify-trading-golden
+```
+
+该命令只启动 loopback 内存 harness 和本地 Vue/Vite，不读取项目 `.env`、不连接共享
+PostgreSQL、真实交易所或真实资金。浏览器通过现有认证、CSRF 和
+`/api/v1/trading/**` 接口提交 `60000 USDT × 0.01 BTC` 买单，再由隔离控制端触发
+确定性对手单；测试核对 open → filled、冻结/释放、费用、余额、成交、账本和同一
+`client_order_id` 重放。需要 Node.js 24、Go 1.24 和本机 Chrome；如 Go 不在
+`PATH`，可用 `QIU_GOLDEN_HARNESS_COMMAND` 指向等价的 `go run
+./trading/cmd/golden --bind 127.0.0.1:19092` 命令。
+
+部分成交、标准 store 恢复和撤销余量的独立竖切使用：
+
+```bash
+make verify-trading-partial-golden
+```
+
+该命令在独立端口启动 Q-M2 harness，提交 `60000 USDT × 0.02 BTC` 买单，先成交
+`0.01 BTC`，关闭旧 `MarketRunner` 并从同一 snapshot + event tail 创建新 runner，
+最后由真实 Vue 取消余量并重放相同 cancel request。它同样不读取根 `.env`，不连接
+共享数据库、外部行情或真实资金。
+
+质量 read model 与 Insights 面板的隔离浏览器竖切使用：
+
+```bash
+make verify-quality-golden
+```
+
+该命令只启动 loopback `quality-golden`、真实 data-quality HTTP handler 和本地 Vue，
+用确定性 evidence 同时展示 Binance healthy、CoinGlass restricted/not-live 与 xiuqiu
+license-unknown quarantine。它不读取 `.env`、不访问 provider 网络或数据库，且浏览器
+验收会核对三来源、六 capability、精确分母、许可/恢复原因、移动端布局以及零 trading
+mutation。真实 online sampling 另有显式 build tag/flag 双门，普通 CI 不发网。
+
+把上述交易、真实 PostgreSQL 恢复、研究与质量门合并成一个 production-like 浏览器故事：
+
+```bash
+make verify-full-stack-golden
+```
+
+命令不读取项目 `.env`，不连接共享数据库、真实 provider 或真实资金。它只接受 PostgreSQL
+16.14：先看显式 `QIU_TEST_POSTGRES_BIN_DIR`，再看 `PATH`，最后复用工作区中唯一已验证的
+本地缓存；找不到就 fail closed，不下载或安装系统软件。脚本动态分配端口和临时目录，构建
+race harness 与 production Vue，运行两个真实 Chrome Playwright 测试和独立 Go QA
+（普通 + race），随后用有界 TERM/KILL 清理所有子进程并验证 PID、端口和临时目录均已
+消失。固定数据流、许可假设、故障注入与 PASS 数字见
+[docs/full-stack-golden.md](docs/full-stack-golden.md)。
+
 ## 文档索引
 
 每个工程专题都按“功能是什么 → 设计决策 → 数据流 → 关键代码位置 → 验证步骤 → 边界 → 大白话术语 → Owner 60 秒口述 → 闭卷自检”组织。推荐阅读顺序：
@@ -396,6 +464,7 @@ README 全局架构
 | 文档 | 内容 |
 |---|---|
 | [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
+| [docs/sensitive-files.md](docs/sensitive-files.md) | dotenv、私钥、wallet/TSS 与数据库状态的本地边界、CI 路径门和事故响应 |
 | [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX 双栏、六类行情竞态回归和响应式验收 |
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、submitted/unknown、fill/cancel 竞态、cursor reconcile、崩溃恢复、鉴权和验收边界 |
 | [docs/prd-qm-trade-001.md](docs/prd-qm-trade-001.md) | Trade Product V1 用户主流程、页面范围、P0/P1、非目标、验收与并行所有权 |
@@ -408,7 +477,10 @@ README 全局架构
 | [docs/grpc-service.md](docs/grpc-service.md) | gRPC MarketService、与 HTTP 共用业务层、proto 重新生成 |
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、Mac mini 不可变 DW 运行与故障隔离 |
 | [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、DEX 60 秒 route 边界、All canonical 并集、CEX-only 综合现货价与 rollout |
-| [docs/market-data-quality.md](docs/market-data-quality.md) | provider 隔离、综合价排除/降级、身份异常与修复 |
+| [docs/market-data-quality.md](docs/market-data-quality.md) | provider/research 独立评分、许可门、quarantine/recovery、综合价排除与运行手册 |
+| [docs/full-stack-golden.md](docs/full-stack-golden.md) | Q-M7A 真实 PostgreSQL、双 backend 恢复、Vue/研究/质量完整故事、一键运行与清理证据 |
+| [docs/binance-public-provider.md](docs/binance-public-provider.md) | Q-M4A 默认关闭的 Binance BTC/USDT Spot ticker/OHLCV adapter、HTTP 边界与许可门 |
+| [docs/coinglass-derivatives-provider.md](docs/coinglass-derivatives-provider.md) | Q-M4B 默认关闭的 CoinGlass BTCUSD_PERP OI/清算 adapter、secret/套餐/单位与许可门 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |
 | [docs/project-go-interview-bagua.md](docs/project-go-interview-bagua.md) | Go 工程知识与当前项目代码映射 |
 

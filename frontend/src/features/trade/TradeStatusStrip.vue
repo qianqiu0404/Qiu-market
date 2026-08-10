@@ -66,7 +66,7 @@ const writeReasonLabel = computed(() => tr(tradeWriteReasonKey(props.writeGateRe
 .trade-status__facts { color: var(--text-3); }
 .trade-status__facts { justify-content: center; flex-wrap: wrap; font-family: var(--font-mono); }
 .trade-status__gate { justify-content: flex-end; color: var(--text-2); }
-.trade-status__gate a { color: var(--accent); white-space: nowrap; }
+.trade-status__gate a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; color: var(--accent); white-space: nowrap; }
 .trade-status__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
 .trade-status--live .trade-status__dot { background: var(--up); }
 .trade-status--offline .trade-status__dot { background: var(--down); }

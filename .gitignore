@@ -44,9 +44,66 @@ dist/
 # Logs
 *.log
 
-# Local env
+# Local secrets and machine state. Examples/templates remain reviewable.
 .env
+.env.*
+**/.env
+**/.env.*
+*.env
+*.env.*
+.envrc
+.envrc.*
+**/.envrc
+**/.envrc.*
 env.sh
+
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.seed
+*.mnemonic
+*.tss-share
+**/tss/**/*share*
+wallet.dat
+wallet.json
+wallet-state*
+wallet_state*
+keystore.json
+keystore/
+**/keystore/
+UTC--*
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+*.ldb
+*.rdb
+*.dump
+*.backup
+*.tfstate
+*.tfstate.*
+pgdata/
+postgres-data/
+secrets/
+**/secrets/
+.npmrc
+.pypirc
+.netrc
+credentials.json
+service-account.json
+service_account.json
+kubeconfig
+
+!**/.env*.example
+!**/.env*.template
+!**/*.env*.example
+!**/*.env*.template
+!**/*.example
+!**/*.example.*
+!**/*.template
+!**/*.template.*
 
 # Build binaries
 market-services-bin
