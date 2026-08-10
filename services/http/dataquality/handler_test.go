@@ -51,10 +51,34 @@ func TestUnconfiguredKeepsThreeSourcesAndAllSixCapabilitiesExplicit(t *testing.T
 			if capability.Status != quality.StatusInsufficient || capability.SampleCount != 0 || capability.SuccessCount != 0 || capability.MinSamples == 0 || capability.MaxAgeSeconds == 0 {
 				t.Fatalf("unsafe empty capability: %+v", capability)
 			}
+			if capability.Coverage.Numerator != 0 || capability.Coverage.Denominator != capability.MinSamples || capability.Coverage.BPS == nil || *capability.Coverage.BPS != 0 {
+				t.Fatalf("empty capability coverage does not preserve its configured minimum: %+v", capability)
+			}
 		}
 	}
 	if capabilityCount != 6 {
 		t.Fatalf("capability count=%d", capabilityCount)
+	}
+}
+
+func TestMissingSourceReportKeepsCapabilityCoverageDenominators(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 10, 6, 0, 0, 0, time.UTC)
+	handler := NewHandler(fixedReporter{reports: quality.ReportSet{}})
+	handler.clock = fixedClock(now)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", Path, nil))
+	var body Response
+	decodeResponse(t, response, &body)
+	if body.Status != "insufficient" || len(body.Items) != 3 {
+		t.Fatalf("body=%+v", body)
+	}
+	for _, item := range body.Items {
+		for _, capability := range item.Capabilities {
+			if capability.Coverage.Numerator != 0 || capability.Coverage.Denominator != capability.MinSamples || capability.Coverage.BPS == nil || *capability.Coverage.BPS != 0 {
+				t.Fatalf("missing report coverage=%+v", capability)
+			}
+		}
 	}
 }
 

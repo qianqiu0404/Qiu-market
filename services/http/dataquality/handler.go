@@ -189,9 +189,11 @@ func emptyItems() []Item {
 		item.Gate = Gate{Status: quality.StatusInsufficient, RecoveryRequired: defaults.RecoveryHealthyWindows, Reasons: []string{"quality_monitor_unconfigured"}}
 		for _, capability := range policy.capabilities {
 			rule := defaults.CapabilityRules[capability]
+			coverage := quality.Counters{Denominator: rule.MinSamples}
 			item.Capabilities = append(item.Capabilities, CapabilityItem{
 				Capability: capability, MinSamples: rule.MinSamples, MaxAgeSeconds: int64(rule.MaxAge / time.Second), Status: quality.StatusInsufficient,
-				Reasons: []string{"quality_monitor_unconfigured"},
+				Coverage: Counter{Numerator: coverage.Numerator, Denominator: coverage.Denominator, BPS: coverage.BPS()},
+				Reasons:  []string{"quality_monitor_unconfigured"},
 			})
 		}
 		items = append(items, item)
@@ -224,9 +226,11 @@ func emptyItemsForPolicy(policy itemPolicy, reason string) Item {
 	item.Gate = Gate{Status: quality.StatusInsufficient, RecoveryRequired: defaults.RecoveryHealthyWindows, Reasons: []string{reason}}
 	for _, capability := range policy.capabilities {
 		rule := defaults.CapabilityRules[capability]
+		coverage := quality.Counters{Denominator: rule.MinSamples}
 		item.Capabilities = append(item.Capabilities, CapabilityItem{
 			Capability: capability, MinSamples: rule.MinSamples, MaxAgeSeconds: int64(rule.MaxAge / time.Second),
-			Status: quality.StatusInsufficient, Reasons: []string{reason},
+			Coverage: Counter{Numerator: coverage.Numerator, Denominator: coverage.Denominator, BPS: coverage.BPS()},
+			Status:   quality.StatusInsufficient, Reasons: []string{reason},
 		})
 	}
 	return item

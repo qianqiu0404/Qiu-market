@@ -83,6 +83,32 @@ describe('data quality API', () => {
     expect(result.items[0]).toMatchObject({ cacheHitCount: 0, staleServeCount: 0 })
   })
 
+  it('accepts the production unconfigured payload with explicit zero-over-minimum capability coverage', async () => {
+    const value = payload()
+    value.status = 'unconfigured'
+    value.items = (Object.keys(RULES) as Array<keyof typeof RULES>).map((name) => {
+      const rule = RULES[name]
+      return source(name, {
+        windowStart: null, windowEnd: null, windowSeconds: null, sampleCount: 0, minSamples: 2,
+        attemptCount: 0, successCount: 0, lastAttemptAt: null, lastSuccessAt: null, ageSeconds: null,
+        coverage: counter(0, 0), technicalScoreBps: null, grade: null, status: 'insufficient',
+        reasons: ['quality_monitor_unconfigured'], license: 'unknown', publicEligible: false,
+        dimensions: [], errorCounts: {}, priorityCounts: { p0: 0, p1: 0, p2: 0 },
+        gate: { status: 'insufficient', healthyWindowStreak: 0, recoveryRequired: 3, reasons: ['quality_monitor_unconfigured'] },
+        capabilities: rule.caps.map((cap) => capability(cap, {
+          sampleCount: 0, validSampleCount: 0, minSamples: 1, successCount: 0,
+          lastAttemptAt: null, lastSuccessAt: null, ageSeconds: null,
+          coverage: counter(0, 1), status: 'insufficient', reasons: ['quality_monitor_unconfigured'],
+        })),
+      })
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(value)))
+    const result = await getDataQualitySummary()
+    expect(result.status).toBe('unconfigured')
+    expect(result.items.flatMap((item) => item.capabilities)).toHaveLength(6)
+    expect(result.items.flatMap((item) => item.capabilities).every((cap) => cap.coverage.bps === 0)).toBe(true)
+  })
+
   it('accepts cache evidence outside the attempt denominator', async () => {
     const value = payload()
     value.items[0].sampleCount = 5
