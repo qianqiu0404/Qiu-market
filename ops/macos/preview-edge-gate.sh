@@ -100,13 +100,20 @@ validate_generation_shape() {
 
 validate_generation_processes() {
   local path="$1"
-  local name pid port started_epoch binary_sha owner listener executable live_started live_sha
+  local name pid port started_epoch binary_sha owner listener listener_count executable live_started live_sha
   while IFS='|' read -r name pid port started_epoch binary_sha; do
     kill -0 "$pid" 2>/dev/null || fail "$name process is not running"
     owner="$(lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN -Fp 2>/dev/null | awk '/^p/{sub(/^p/,"");print;exit}' || true)"
     [ "$owner" = "$pid" ] || fail "$name listener does not match committed generation"
-    listener="$(lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN -Fn 2>/dev/null | awk '/^n/{sub(/^n/,"");print;exit}' || true)"
-    [ "$listener" = "127.0.0.1:$port" ] || fail "$name listener is not exact IPv4 loopback"
+    listener_count=0
+    while IFS= read -r listener; do
+      case "$listener" in
+        "127.0.0.1:$port"|"[::1]:$port") ;;
+        *) fail "$name listener is outside exact loopback" ;;
+      esac
+      listener_count=$((listener_count + 1))
+    done < <(lsof -nP -a -p "$pid" -iTCP:"$port" -sTCP:LISTEN -Fn 2>/dev/null | awk '/^n/{sub(/^n/,"");print}' || true)
+    [ "$listener_count" -gt 0 ] || fail "$name has no exact loopback listener"
     executable="$(lsof -nP -a -p "$pid" -d txt -Fn 2>/dev/null | awk '/^n/{sub(/^n/,"");print;exit}' || true)"
     [ -n "$executable" ] && [ -f "$executable" ] && [ ! -L "$executable" ] || fail "$name executable identity is unavailable"
     live_sha="$(shasum -a 256 "$executable" | awk '{print $1}')"
