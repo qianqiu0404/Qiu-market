@@ -61,6 +61,11 @@ Vue Dashboard（Qiu Market，蓝白金融产品风）
 Mac mini 单机生产、极省空间 K 线保留、备份恢复、Guardian 与 Vercel 验收见
 [`docs/qiu-market-vercel-mac.md`](docs/qiu-market-vercel-mac.md)。滚动生产证据使用：
 
+公网 BFF 的 HMAC 信封除时间戳、方法、精确 RequestURI 和 body digest 外，还绑定
+一次性 128-bit nonce；Mac mini 在有界时窗内原子拒绝 nonce 重放。Vercel 的只读
+重试每次都重新签发 nonce，运维健康探针遵守同一契约。完整边界与故障恢复见上述
+上线手册的“BFF HMAC 与重放边界”。
+
 ```bash
 bash ops/macos/manage-observer.sh status
 bash ops/macos/summarize-production-slo.sh

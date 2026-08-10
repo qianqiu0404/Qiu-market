@@ -1,3 +1,6 @@
+import { createHash, createHmac } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const vercelFunctions = vi.hoisted(() => {
@@ -30,8 +33,22 @@ vi.mock('@vercel/functions', () => ({
 
 import handler, {
   isRetryableUpstreamRequest,
+  publicProxyCanonical,
   releaseProvenance,
 } from '../api/proxy'
+
+interface CanonicalFixture {
+  name: string
+  absoluteURL: string
+  method: string
+  requestURI: string
+  body: string
+}
+
+const canonicalFixtures = JSON.parse(readFileSync(
+  resolve(process.cwd(), '../services/http/testdata/public_proxy_canonical.json'),
+  'utf8',
+)) as CanonicalFixture[]
 
 function proxyRequest(pageSize = 37) {
   return {
@@ -47,6 +64,18 @@ function proxyRequest(pageSize = 37) {
       page: 1,
       page_size: pageSize,
       currency: 'USD',
+    },
+  }
+}
+
+function proxyGETRequest(path: string) {
+  return {
+    method: 'GET',
+    url: `/api/proxy?path=${encodeURIComponent(path)}`,
+    query: { path },
+    headers: {
+      host: 'qiu-market-preview.vercel.app',
+      accept: 'application/json',
     },
   }
 }
@@ -140,6 +169,36 @@ describe('releaseProvenance', () => {
       'https://qiu-market-preview.vercel.app',
     )
   })
+
+  it('rejects repeated and encoded traversal proxy paths before fetch', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    for (const path of [
+      ['v2/get_asset_dashboard', 'v1/get_symbols'],
+      '%2e%2e/healthz',
+      'v1/trading/orders%3Fadmin=true',
+    ]) {
+      const rejected = proxyResponse()
+      await handler({
+        ...proxyRequest(),
+        query: { path },
+      } as never, rejected.response as never)
+      expect(rejected.result.statusCode).toBe(400)
+      expect(rejected.result.headers.get('cache-control')).toBe('no-store')
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects backend URLs that are not exact origins', async () => {
+    process.env.S78_BACKEND_ORIGIN = 'https://backend.example/private-prefix'
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const rejected = proxyResponse()
+    await handler(proxyRequest() as never, rejected.response as never)
+    expect(rejected.result.statusCode).toBe(502)
+    expect(rejected.result.headers.get('cache-control')).toBe('no-store')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('isRetryableUpstreamRequest', () => {
@@ -177,6 +236,97 @@ describe('isRetryableUpstreamRequest', () => {
     expect(isRetryableUpstreamRequest('GET', '/api/v1/future-write')).toBe(false)
     expect(isRetryableUpstreamRequest('HEAD', '/api/v1/future-write')).toBe(false)
     expect(isRetryableUpstreamRequest('POST', '/api/v1/trading/orders')).toBe(false)
+  })
+})
+
+describe('upstream HMAC replay protection', () => {
+  it('shares exact path and query canonicalization with the Go verifier', () => {
+    expect(canonicalFixtures).toHaveLength(3)
+    for (const [index, fixture] of canonicalFixtures.entries()) {
+      const timestamp = '1800000000'
+      const nonce = (index + 16).toString(16).padStart(32, '0')
+      const url = new URL(fixture.absoluteURL)
+      expect(url.pathname + url.search).toBe(fixture.requestURI)
+      const digest = createHash('sha256').update(fixture.body).digest('hex')
+      expect(publicProxyCanonical(
+        timestamp,
+        nonce,
+        fixture.method,
+        url,
+        digest,
+      )).toBe([
+        timestamp,
+        nonce,
+        fixture.method,
+        fixture.requestURI,
+        digest,
+      ].join('\n'))
+    }
+  })
+
+  it('uses a separately signed canonical nonce for every safe-read retry', async () => {
+    const payload = JSON.stringify({ principal: { account_id: 'demo' } })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('temporary', { status: 503 }))
+      .mockResolvedValueOnce(new Response(payload, {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const proxied = proxyResponse()
+    await handler(
+      proxyGETRequest('v1/trading/session') as never,
+      proxied.response as never,
+    )
+
+    expect(proxied.result.statusCode).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const nonces: string[] = []
+    for (const [rawURL, options] of fetchMock.mock.calls) {
+      const url = rawURL as URL
+      const request = options as RequestInit
+      const headers = new Headers(request.headers)
+      const timestamp = headers.get('X-Qiu-Market-Timestamp')
+      const nonce = headers.get('X-Qiu-Market-Nonce')
+      const digest = headers.get('X-Qiu-Market-Content-SHA256')
+      expect(timestamp).toMatch(/^\d{10}$/)
+      expect(nonce).toMatch(/^[0-9a-f]{32}$/)
+      expect(digest).toBe(
+        'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      )
+      const canonical = [
+        timestamp,
+        nonce,
+        'GET',
+        url.pathname + url.search,
+        digest,
+      ].join('\n')
+      expect(headers.get('X-Qiu-Market-Signature')).toBe(
+        createHmac('sha256', 'unit-test-secret').update(canonical).digest('hex'),
+      )
+      nonces.push(nonce ?? '')
+    }
+    expect(new Set(nonces).size).toBe(2)
+  })
+
+  it('keeps upstream failures non-cacheable', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ code: 'backend_failed' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+    const proxied = proxyResponse()
+    await handler({
+      ...proxyGETRequest('v1/trading/auth/github/start'),
+      headers: {
+        ...proxyGETRequest('v1/trading/auth/github/start').headers,
+        accept: 'application/json',
+      },
+    } as never, proxied.response as never)
+    expect(proxied.result.statusCode).toBe(500)
+    expect(proxied.result.headers.get('cache-control')).toBe('no-store')
   })
 })
 
