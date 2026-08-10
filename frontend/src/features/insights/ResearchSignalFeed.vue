@@ -295,6 +295,7 @@ function sourceStateLabel(value: 'healthy' | 'degraded' | 'unconfigured'): strin
 .research-provenance > div,.research-conditions > div { min-width: 0; padding: 9px 10px; border-radius: 10px; background: var(--bg-panel-2); }
 .research-provenance dt,.research-conditions span { color: var(--text-3); font-size: 9px; text-transform: uppercase; }
 .research-provenance dd { margin: 3px 0 0; font: 10px var(--font-mono); overflow-wrap: anywhere; }
+.research-provenance a { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; }
 .research-conditions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .research-conditions > div { display: grid; gap: 4px; }
 .research-conditions strong { color: var(--text-2); font-size: 12px; font-weight: 500; white-space: pre-wrap; overflow-wrap: anywhere; }

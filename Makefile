@@ -80,6 +80,9 @@ verify-research-golden:
 verify-quality-golden:
 	cd frontend && npm ci && npm run test:e2e:quality-golden
 
+verify-full-stack-golden:
+	bash trading/scripts/full-stack-golden.sh
+
 repo-audit:
 	bash script/repo-audit.sh
 
@@ -135,6 +138,7 @@ proto:
 	verify-trading-partial-golden \
 	verify-research-golden \
 	verify-quality-golden \
+	verify-full-stack-golden \
 	repo-audit \
 	mac-production-build \
 	mac-production-verify \

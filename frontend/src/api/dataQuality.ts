@@ -123,6 +123,10 @@ const OUTCOMES = new Set<DataQualityOutcome>([
   'success', 'rate_limit', 'upstream_5xx', 'timeout', 'bad_payload', 'unsupported', 'auth',
   'permission', 'network', 'unconfigured', 'stale',
 ])
+const CAPABILITY_HARD_FAULT_REASONS = new Set([
+  'hard_fault', 'future', 'schema', 'identity', 'unit', 'precision', 'conflict',
+  'stale_serve', 'content_hash_conflict', 'stale',
+])
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
 const MAX_BODY = 256 * 1024
 const TIMEOUT_MS = 8_000
@@ -193,16 +197,23 @@ function parseCapability(value: unknown, source: DataQualitySource, index: numbe
   const lastAttemptAt = nullableTimestamp(raw.lastAttemptAt, `${field}.lastAttemptAt`)
   const lastSuccessAt = nullableTimestamp(raw.lastSuccessAt, `${field}.lastSuccessAt`)
   const ageSeconds = nullableInteger(raw.ageSeconds, `${field}.ageSeconds`)
+  const capabilityReasons = reasons(raw.reasons, `${field}.reasons`)
   if (minSamples === 0 || successCount > sampleCount || validSampleCount > successCount) throw invalid(`${field} sample counters are inconsistent`)
   if ((sampleCount === 0) !== (lastAttemptAt === null)) throw invalid(`${field}.lastAttemptAt conflicts with samples`)
   if ((successCount === 0) !== (lastSuccessAt === null && ageSeconds === null)) throw invalid(`${field} success time is inconsistent`)
-  if (validSampleCount < minSamples && status !== 'insufficient') throw invalid(`${field} must remain insufficient below minimum samples`)
+  if (validSampleCount < minSamples) {
+    const hardFaultQuarantine = status === 'quarantined'
+      && capabilityReasons.some((reason) => CAPABILITY_HARD_FAULT_REASONS.has(reason))
+    if (status !== 'insufficient' && !hardFaultQuarantine) {
+      throw invalid(`${field} below-minimum status lacks a hard-fault quarantine reason`)
+    }
+  }
   const coverage = parseCounter(raw.coverage, `${field}.coverage`)
   if (coverage.numerator !== Math.min(validSampleCount, minSamples) || coverage.denominator !== minSamples) throw invalid(`${field}.coverage conflicts with valid samples`)
   return {
     capability, maxAgeSeconds: integer(raw.maxAgeSeconds, `${field}.maxAgeSeconds`), sampleCount, validSampleCount,
     minSamples, successCount, lastAttemptAt, lastSuccessAt, ageSeconds,
-    coverage, status, reasons: reasons(raw.reasons, `${field}.reasons`),
+    coverage, status, reasons: capabilityReasons,
   }
 }
 

@@ -15,6 +15,30 @@ const recoveryProvenance = {
   source_digest: 'e'.repeat(64),
 }
 
+function recoveryPayload() {
+  return {
+    schema_version: 2,
+    provenance: recoveryProvenance,
+    market_id: 'BTC-USDT',
+    epoch_id: 'epoch-capability-gated',
+    phase: 'read_only',
+    runtime_sequence: '7',
+    state_hash: 'a'.repeat(64),
+    ledger_balanced: true,
+    event_continuous: true,
+    projection_caught_up: true,
+    outbox_caught_up: true,
+    transport_healthy: false,
+    writes_enabled: false,
+    continuity_uncertain: false,
+    continuity_error: '',
+    version: '1',
+    last_error: '',
+    started_at: '2026-08-10T00:00:00Z',
+    updated_at: '2026-08-10T00:00:01Z',
+  }
+}
+
 describe('trading API', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -246,16 +270,8 @@ describe('trading API', () => {
     })).toThrow('version is not a safe decimal value')
   })
 
-  it('allows recovery 404 compatibility only after a trusted disabled capability', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        code: 'not_found',
-        message: 'not found',
-      }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
+  it('returns typed not-enabled recovery without probing the disabled endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
         github_oauth_enabled: true,
         local_login_enabled: false,
         recovery_gate_enabled: false,
@@ -269,24 +285,43 @@ describe('trading API', () => {
       phase: 'not_enabled',
       writes_enabled: false,
     })
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('/api/v1/trading/auth/capabilities')
   })
 
-  it('fails closed when recovery 404 has no explicit disabled capability', async () => {
+  it('requests and strictly normalizes recovery only after an explicit enabled capability', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response('{}', {
-        status: 404,
+      .mockResolvedValueOnce(new Response(JSON.stringify({ recovery_gate_enabled: true }), {
+        status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        github_oauth_enabled: true,
-        local_login_enabled: false,
-      }), {
+      .mockResolvedValueOnce(new Response(JSON.stringify(recoveryPayload()), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       }))
     vi.stubGlobal('fetch', fetchMock)
-    await expect(tradingAPI.recoveryStatus()).rejects.toMatchObject({ status: 404 })
+    await expect(tradingAPI.recoveryStatus()).resolves.toMatchObject({ supported: true, phase: 'read_only', version: '1' })
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+      '/api/v1/trading/auth/capabilities', '/api/v1/trading/recovery/status',
+    ])
+  })
+
+  it('fails closed without an explicit recovery capability and never probes status', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      github_oauth_enabled: true, local_login_enabled: false,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(tradingAPI.recoveryStatus()).rejects.toMatchObject({ code: 'invalid_recovery_capability' })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('fails closed when recovery capability transport fails and never probes status', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      code: 'backend_unavailable', message: 'capability unavailable',
+    }), { status: 503, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(tradingAPI.recoveryStatus()).rejects.toMatchObject({ code: 'backend_unavailable', status: 503 })
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it('treats recovery_in_progress as a definite server rejection, not unknown', async () => {

@@ -100,6 +100,8 @@ Q-M5A 增加默认关闭的 xiuqiu-site 动态 Market Radar 只读研究流。�
 
 Q-M6A 在这些只读事实之上增加独立的数据质量门：Binance Spot、CoinGlass derivatives fixture 与 xiuqiu research 各自拥有 evidence window、capability 最小样本、SLO、技术分、许可 eligibility 和 quarantine/recovery 状态，绝不跨类别求平均。比例始终携带整数分子/分母；空数据和样本不足不会得到 100%，cache hit 也不会冒充上游成功。许可未知或受限的数据即使技术分为 A 仍不可公开消费，所有来源的 `trade_eligible`、reference、matcher、orders、balances 和 ledger eligibility 固定为 false。只读状态由 `/api/v1/data-quality/summary` 和 Insights 的 Data Quality 面板解释；阈值、告警、恢复与证据保留规则见 [Market data quality](docs/market-data-quality.md)。
 
+Q-M7A 把此前分开的交易、研究和质量 golden path 合成一个 production-like 隔离门：一次性 PostgreSQL 16.14、独立 TLS fixture、稳定 HTTP coordinator、两个不同 PID 的真实 trading backend 和 production Vue build 在动态 loopback 端口运行。浏览器先完成一笔完全成交，再完成部分成交、强制终止 backend A、从 snapshot 4 + event tail 恢复到 backend B、撤单与同 request ID 重放；同一故事还验证研究状态、六类 provider fault、cache/no-data 不推进恢复和连续三窗恢复。完整边界、固定账本数字与清理证据见 [Full-stack PostgreSQL golden](docs/full-stack-golden.md)。
+
 ### 可信行情底座与多交易所实施状态
 
 - `implemented`：七家独立版本化 50 资产选择、All canonical 去重并集、本地预览与正式 rollout 隔离、四家 WebSocket/REST feed、四家版本化 50 market K 线、V2+V3 最多两跳 AMM、权威 DEX snapshot、最后成功值与 Fresh/Stale/Unavailable、手动 rollout 门和统一 venue 快照已落地。
@@ -425,6 +427,20 @@ license-unknown quarantine。它不读取 `.env`、不访问 provider 网络或�
 验收会核对三来源、六 capability、精确分母、许可/恢复原因、移动端布局以及零 trading
 mutation。真实 online sampling 另有显式 build tag/flag 双门，普通 CI 不发网。
 
+把上述交易、真实 PostgreSQL 恢复、研究与质量门合并成一个 production-like 浏览器故事：
+
+```bash
+make verify-full-stack-golden
+```
+
+命令不读取项目 `.env`，不连接共享数据库、真实 provider 或真实资金。它只接受 PostgreSQL
+16.14：先看显式 `QIU_TEST_POSTGRES_BIN_DIR`，再看 `PATH`，最后复用工作区中唯一已验证的
+本地缓存；找不到就 fail closed，不下载或安装系统软件。脚本动态分配端口和临时目录，构建
+race harness 与 production Vue，运行两个真实 Chrome Playwright 测试和独立 Go QA
+（普通 + race），随后用有界 TERM/KILL 清理所有子进程并验证 PID、端口和临时目录均已
+消失。固定数据流、许可假设、故障注入与 PASS 数字见
+[docs/full-stack-golden.md](docs/full-stack-golden.md)。
+
 ## 文档索引
 
 每个工程专题都按“功能是什么 → 设计决策 → 数据流 → 关键代码位置 → 验证步骤 → 边界 → 大白话术语 → Owner 60 秒口述 → 闭卷自检”组织。推荐阅读顺序：
@@ -456,6 +472,7 @@ README 全局架构
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、Mac mini 不可变 DW 运行与故障隔离 |
 | [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、DEX 60 秒 route 边界、All canonical 并集、CEX-only 综合现货价与 rollout |
 | [docs/market-data-quality.md](docs/market-data-quality.md) | provider/research 独立评分、许可门、quarantine/recovery、综合价排除与运行手册 |
+| [docs/full-stack-golden.md](docs/full-stack-golden.md) | Q-M7A 真实 PostgreSQL、双 backend 恢复、Vue/研究/质量完整故事、一键运行与清理证据 |
 | [docs/binance-public-provider.md](docs/binance-public-provider.md) | Q-M4A 默认关闭的 Binance BTC/USDT Spot ticker/OHLCV adapter、HTTP 边界与许可门 |
 | [docs/coinglass-derivatives-provider.md](docs/coinglass-derivatives-provider.md) | Q-M4B 默认关闭的 CoinGlass BTCUSD_PERP OI/清算 adapter、secret/套餐/单位与许可门 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |

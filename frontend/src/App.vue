@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
 import type { IconName } from './components/AppIcon.vue'
@@ -23,7 +23,42 @@ const NAV: NavItem[] = [
 
 const route = useRoute()
 const drawerOpen = ref(false)
+const navigationDrawer = ref<HTMLElement | null>(null)
+const navigationButton = ref<HTMLButtonElement | null>(null)
 const { locale, setLocale } = useI18n()
+
+function openNavigation(): void {
+  drawerOpen.value = true
+  void nextTick(() => navigationDrawer.value?.querySelector<HTMLElement>('.drawer-close')?.focus())
+}
+
+function closeNavigation(returnFocus = true): void {
+  drawerOpen.value = false
+  if (returnFocus) void nextTick(() => navigationButton.value?.focus())
+}
+
+function handleNavigationKeydown(event: KeyboardEvent): void {
+  if (!drawerOpen.value || !navigationDrawer.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeNavigation()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const focusable = [...navigationDrawer.value.querySelectorAll<HTMLElement>(
+    'button:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
+  )]
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
 
 const copy = computed(() => locale.value === 'zh-CN' ? {
   brandSub: '行情数据平台',
@@ -76,7 +111,7 @@ watch(
 watch(
   () => route.fullPath,
   () => {
-    drawerOpen.value = false
+    if (drawerOpen.value) closeNavigation()
   },
 )
 
@@ -104,15 +139,23 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
 <template>
   <div class="app-shell">
     <header class="topbar">
-      <button type="button" class="topbar-menu" :aria-label="copy.openNavigation" @click="drawerOpen = true">
+      <button ref="navigationButton" type="button" class="topbar-menu" :aria-label="copy.openNavigation" @click="openNavigation">
         <AppIcon name="menu" :size="20" />
       </button>
       <span class="topbar-brand">Qiu Market</span>
     </header>
 
-    <div v-if="drawerOpen" class="scrim" @click="drawerOpen = false"></div>
+    <div v-if="drawerOpen" class="scrim" @click="closeNavigation()"></div>
 
-    <aside class="sidebar" :class="{ open: drawerOpen }">
+    <aside
+      ref="navigationDrawer"
+      class="sidebar"
+      :class="{ open: drawerOpen }"
+      :role="drawerOpen ? 'dialog' : undefined"
+      :aria-modal="drawerOpen ? 'true' : undefined"
+      :aria-label="drawerOpen ? copy.openNavigation : undefined"
+      @keydown="handleNavigationKeydown"
+    >
       <div class="brand">
         <span class="brand-tile">Q</span>
         <span class="brand-text">
@@ -123,7 +166,7 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
           type="button"
           class="drawer-close"
           :aria-label="copy.closeNavigation"
-          @click="drawerOpen = false"
+          @click="closeNavigation()"
         >
           <AppIcon name="close" :size="18" />
         </button>
@@ -168,7 +211,7 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
       </div>
     </aside>
 
-    <main class="content">
+    <main class="content" :inert="drawerOpen || undefined" :aria-hidden="drawerOpen ? 'true' : undefined">
       <RouterView />
     </main>
   </div>
@@ -242,6 +285,8 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
   background: transparent;
   color: var(--text-2);
   cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
   padding: 4px;
 }
 
@@ -302,7 +347,7 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
 }
 
 .locale-switch button {
-  min-height: 32px;
+  min-height: 44px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -386,7 +431,7 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
   }
 
   .locale-switch button {
-    min-height: 26px;
+    min-height: 44px;
     padding: 0;
     font-size: 9px;
   }
@@ -433,6 +478,10 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
     padding: 6px 8px;
     cursor: pointer;
     display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
   }
 
   .topbar-brand {
@@ -443,11 +492,15 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
   .sidebar {
     width: var(--sidebar-w);
     transform: translateX(-100%);
+    visibility: hidden;
+    pointer-events: none;
     box-shadow: none;
   }
 
   .sidebar.open {
     transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
   }
 
   .sidebar .brand-text,
@@ -464,7 +517,7 @@ const health = computed<{ tone: 'ok' | 'degraded' | 'down'; label: string }>(() 
   }
 
   .sidebar .locale-switch button {
-    min-height: 32px;
+    min-height: 44px;
     font-size: 11px;
   }
 

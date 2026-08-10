@@ -106,6 +106,39 @@ describe('data quality API', () => {
     expect(result.items[0].capabilities[0]).toMatchObject({ sampleCount: 2, successCount: 2, validSampleCount: 0, status: 'insufficient' })
   })
 
+  it.each(['stale', 'future', 'conflict'])('accepts a below-minimum %s hard-fault quarantine', async (reason) => {
+    const value = payload()
+    value.status = 'quarantined'
+    value.items[0] = source('binance_spot', {
+      status: 'quarantined', publicEligible: false, reasons: [`hard_fault:${reason}`],
+      gate: { status: 'quarantined', healthyWindowStreak: 0, recoveryRequired: 3, reasons: [`hard_fault:${reason}`] },
+      capabilities: [capability('spot_ticker', {
+        validSampleCount: 1, coverage: counter(1, 2), status: 'quarantined', reasons: ['hard_fault', reason],
+      }), capability('ohlcv')],
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(value)))
+    const result = await getDataQualitySummary()
+    expect(result.items[0].capabilities[0]).toMatchObject({ validSampleCount: 1, status: 'quarantined' })
+  })
+
+  it.each(['healthy', 'degraded', 'recovering'])('rejects below-minimum %s even when a hard-fault reason is present', async (status) => {
+    const value = payload()
+    value.items[0].capabilities[0] = capability('spot_ticker', {
+      validSampleCount: 1, coverage: counter(1, 2), status, reasons: ['hard_fault', 'stale'],
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(value)))
+    await expect(getDataQualitySummary()).rejects.toMatchObject({ code: 'invalid_response' })
+  })
+
+  it('rejects a below-minimum quarantine without an allowlisted hard fault', async () => {
+    const value = payload()
+    value.items[0].capabilities[0] = capability('spot_ticker', {
+      validSampleCount: 1, coverage: counter(1, 2), status: 'quarantined', reasons: ['attempt_failures'],
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(value)))
+    await expect(getDataQualitySummary()).rejects.toMatchObject({ code: 'invalid_response' })
+  })
+
   it.each([
     ['trading eligibility', (value: ReturnType<typeof payload>) => { value.items[0].tradeEligible = true }],
     ['canonical publisher', (value: ReturnType<typeof payload>) => { (value.items[0] as { sourceName: string }).sourceName = 'lookalike' }],

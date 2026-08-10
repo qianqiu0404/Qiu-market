@@ -112,7 +112,7 @@ function observedAt(): string {
 .panel-state--last-good { color: var(--warn) !important; }
 .panel-state--unavailable { color: var(--down) !important; }
 .intervals { display: flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel-2); }
-.intervals button { border: 0; border-radius: 7px; padding: 6px 10px; color: var(--text-2); background: transparent; cursor: pointer; }
+.intervals button { min-width: 44px; min-height: 44px; border: 0; border-radius: 7px; padding: 6px 10px; color: var(--text-2); background: transparent; cursor: pointer; }
 .intervals button.active { color: var(--accent); background: var(--bg-panel); box-shadow: 0 1px 5px rgba(0,36,77,.12); }
 .trade-chart { width: 100%; height: 400px; }
 .truth-empty { min-height: 400px; display: grid; place-content: center; padding: 28px; text-align: center; background: linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px); background-size: 100% 60px,80px 100%; }

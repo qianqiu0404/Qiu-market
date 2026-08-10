@@ -31,6 +31,17 @@ func TestValidateConfigRequiresLoopback(t *testing.T) {
 	}
 }
 
+func TestRunnerConfigSnapshotCadenceZeroPreservesDefault(t *testing.T) {
+	t.Parallel()
+	defaultCadence := tradingruntime.DefaultConfig().SnapshotEvery
+	if got := runnerConfigFor(Config{}).SnapshotEvery; got != defaultCadence {
+		t.Fatalf("zero cadence = %d, want production default %d", got, defaultCadence)
+	}
+	if got := runnerConfigFor(Config{SnapshotEvery: 4}).SnapshotEvery; got != 4 {
+		t.Fatalf("isolated cadence = %d, want 4", got)
+	}
+}
+
 func TestValidateConfigRequiresPersistentCursorKey(t *testing.T) {
 	t.Parallel()
 	config := Config{
