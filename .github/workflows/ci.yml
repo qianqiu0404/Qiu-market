@@ -58,9 +58,19 @@ jobs:
       - name: Validate shell syntax
         run: |
           bash -n script/repo-audit.sh
+          bash -n script/check-sensitive-paths.sh
+          bash -n script/check-sensitive-paths_test.sh
+          bash -n script/check-env-templates.sh
+          bash -n script/check-env-templates_test.sh
           for script in ops/macos/*.sh; do
             bash -n "$script"
           done
+      - name: Reject tracked sensitive paths
+        run: |
+          make security-paths-test
+          make security-paths
+          make security-env-templates-test
+          make security-env-templates
       - name: Validate patch whitespace
         env:
           EVENT_NAME: ${{ github.event_name }}

@@ -11,6 +11,7 @@ Qiu Market 是一个行情与虚拟交易学习产品：从外部交易所与行
 - `release-*` 用于固定验证快照，`trade-v1-*` 用于产品纵切片，`research-*` 及 contract/publication/accounting 类目录用于研究与契约切片，`trading-lab-*` 用于实验；分类名不代表已经合入、部署或验收。
 - 新改动从已核对的干净 `origin/main` 建独立 worktree。脏工作区只作调查线索；完成的 worktree 在确认无独有改动并由 Owner 审阅清理报告后移除。
 - 开始跨模块改动或整理工作区前运行 `make repo-audit`。输出中的 `ancestor` 只证明提交可达，不证明脏文件、squash patch、PR、部署或清理安全。
+- 本地 `.env`、私钥、wallet/TSS material 和数据库状态不得进入 Git。提交前运行 `make security-paths-test security-paths security-env-templates-test security-env-templates`；规则、模板语法、轮换与事故响应见 [Sensitive local files](docs/sensitive-files.md)。
 
 ## 架构
 
@@ -370,6 +371,10 @@ make verify-local
 
 ```bash
 make repo-audit
+make security-paths-test
+make security-paths
+make security-env-templates-test
+make security-env-templates
 ```
 
 后端：
@@ -459,6 +464,7 @@ README 全局架构
 | 文档 | 内容 |
 |---|---|
 | [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
+| [docs/sensitive-files.md](docs/sensitive-files.md) | dotenv、私钥、wallet/TSS 与数据库状态的本地边界、CI 路径门和事故响应 |
 | [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX 双栏、六类行情竞态回归和响应式验收 |
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、submitted/unknown、fill/cancel 竞态、cursor reconcile、崩溃恢复、鉴权和验收边界 |
 | [docs/prd-qm-trade-001.md](docs/prd-qm-trade-001.md) | Trade Product V1 用户主流程、页面范围、P0/P1、非目标、验收与并行所有权 |

@@ -3,7 +3,6 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixture_bin="$repo_root/ops/macos/fixtures/acceptance-epoch-bin"
-fixture_env="$repo_root/ops/macos/fixtures/acceptance-epoch.env"
 fixture_dir="$(mktemp -d /tmp/qiu-market-epoch-test.XXXXXX)"
 cleanup() {
   find "$fixture_dir" -depth -delete
@@ -14,7 +13,11 @@ export PATH="$fixture_bin:$PATH"
 export QIU_MARKET_OBSERVATION_DIR="$fixture_dir"
 export QIU_MARKET_ACCEPTANCE_EPOCH_FILE="$fixture_dir/acceptance-epoch.json"
 fixture_private_env="$fixture_dir/production.env"
-cp "$fixture_env" "$fixture_private_env"
+printf '%s\n' \
+  'MARKET_MASTER_DB_HOST=127.0.0.1' \
+  'MARKET_MASTER_DB_PORT=5432' \
+  'MARKET_MASTER_DB_USER=fixture' \
+  'MARKET_MASTER_DB_NAME=fixture' > "$fixture_private_env"
 chmod 600 "$fixture_private_env"
 export QIU_MARKET_DATABASE_ENV_FILE="$fixture_private_env"
 export QIU_MARKET_TRANSPORT_SMOKE_FILE="$fixture_dir/transport-smoke.json"
