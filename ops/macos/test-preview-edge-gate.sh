@@ -46,7 +46,13 @@ elif ! awk -F'|' -v pid="$pid" -v port="$port" '$1==pid && $2==port{found=1} END
 elif [ "$field" = -Fp ]; then
   printf 'p%s\n' "$pid"
 else
+  if [ "${QIU_FIXTURE_DUAL_LOOPBACK_PORT:-}" = "$port" ]; then
+    printf 'n[::1]:%s\n' "$port"
+  fi
   printf 'n127.0.0.1:%s\n' "$port"
+  if [ "${QIU_FIXTURE_WILDCARD_PORT:-}" = "$port" ]; then
+    printf 'n*:%s\n' "$port"
+  fi
 fi
 SH
 cat > "$fixture_bin/ps" <<'SH'
@@ -107,6 +113,8 @@ done
 chmod 600 "$process_map"
 export QIU_FIXTURE_PROCESS_MAP="$process_map"
 export QIU_FIXTURE_LISTENER_DRIFT=''
+export QIU_FIXTURE_DUAL_LOOPBACK_PORT=5432
+export QIU_FIXTURE_WILDCARD_PORT=''
 export QIU_FIXTURE_DRAIN=false
 export QIU_FIXTURE_CURL_ARGV_LOG="$fixture/curl-argv.log"
 export QIU_FIXTURE_DEPLOYMENT_ID=dpl_12345678901234567890
@@ -210,6 +218,18 @@ if "$gate" check >/dev/null 2>&1; then
 fi
 QIU_FIXTURE_LISTENER_DRIFT=''
 export QIU_FIXTURE_LISTENER_DRIFT
+
+# A dual IPv4/IPv6 loopback listener is private, but any wildcard mixed into
+# that set must make the entire committed generation fail closed.
+"$gate" check >/dev/null
+QIU_FIXTURE_WILDCARD_PORT=5432
+export QIU_FIXTURE_WILDCARD_PORT
+if "$gate" check >/dev/null 2>&1; then
+  echo 'dual loopback plus wildcard listener was accepted' >&2
+  exit 1
+fi
+QIU_FIXTURE_WILDCARD_PORT=''
+export QIU_FIXTURE_WILDCARD_PORT
 
 "$gate" probe > "$fixture/probe.out"
 grep -Fx 'protected_path=/api/v1/trading/auth/capabilities status=200 cache=no-store' "$fixture/probe.out" >/dev/null
