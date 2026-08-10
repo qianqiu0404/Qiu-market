@@ -210,6 +210,94 @@ upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请�
 `VERCEL_URL` 由 Vercel 自动提供，BFF 将两者与受管 release commit 作为不可变
 provenance 响应头。不要手工把 Production alias 当成 immutable deployment URL。
 
+### 受保护 Preview 的 edge generation 与 drain
+
+短期 D1 Preview 可以用 loopback front door 和 ephemeral Quick Tunnel 做非生产验收，
+但它不是 Tailscale Funnel 的生产替代品。Tunnel 只有在 PostgreSQL、隔离 Redis、
+trading、gRPC、API 和 front door 六个组件同时通过后才可启动。`preview-edge-gate.sh`
+把这一批 PID、端口、启动时间、binary SHA、source commit、预期 Quick Tunnel hostname
+和验证时间写成一个权限 `0600` 的 **committed generation**；只有整份 JSON 通过校验后
+才原子替换旧文件。Stack 每 5 秒用同一个 generation ID 续租，front door 在租约超过
+15 秒、文件缺失或 drain 存在时直接返回 typed 503、`Retry-After: 1` 和
+`Cache-Control: no-store`。
+
+Gate 不信任 manifest 的自报身份：每次 check 都从 `ps` 重算启动时间、从进程 text
+executable 重算 SHA，并要求六个互异 PID 分别持有固定角色端口且只监听
+`127.0.0.1`。Source commit 必须是预期的完整 40 位 commit。外侧 probe 还要求一个权限
+`0600` 的 deployment attestation；其 Qiu project ID、deployment ID、immutable URL、
+READY state、`target:null` 和 git/source/release commit 必须与 gate 配置逐字段相同。
+Production target、空 commit 或只靠响应自报的 deployment 都会 fail closed。
+
+这里的 **generation** 是“一次完整开机批次的盖章清单”：六个组件不是各自说“我好
+了”，而是等全部一致后一次盖章。**drain** 是“门口先挂暂停营业牌”：重启前先原子
+写 drain 并撤销 generation，外部流量继续到独立 front door，但只得到明确 503，不能
+落到正在退出的 API。Front door 与业务 stack 分属不同 launchd 生命周期；它只在
+generation/drain/transport-connect failure 时生成 503。已经到达 API 的合法 HTTP
+401、403、业务 4xx 和业务 5xx 保持原状态与 body，不会被门面改写为“暂不可用”。
+
+受控重启顺序固定：
+
+1. 原子写 drain、撤销 committed generation；
+2. 从 loopback 和受保护的 immutable Preview 各验证 503/no-store；
+3. 只重启 Redis/trading/gRPC/API stack，front door 与 tunnel 保持运行；
+4. 六组件重新通过后提交新 generation；
+5. 删除 drain，验证同一 Preview 的关键 BFF API 恢复 200/no-store。
+
+初次安装顺序是 front door → stack → tunnel → guardian。Tunnel 进程启动前必须消费
+同一份新鲜 generation；运行后固定检查受管 hostname。Quick Tunnel 即使使用同一份
+受限 credential 在实测中复用了 hostname，也仍标记 `ephemeral=true`；hostname 漂移
+必须 fail closed，禁止静默改向。正式 Production 仍应使用受管稳定域名与明确 SLA。
+
+外侧 guardian 不只请求 tunnel `/healthz`。它使用单独的权限 `0600` Vercel automation
+bypass file，请求精确 immutable deployment hostname 下固定的
+`/api/v1/trading/auth/capabilities` 与 `/api/v1/data-quality/summary`，并校验 HTTP 200、
+JSON schema、D1 安全 flags 和 no-store。Secret 通过 curl config file descriptor 注入，
+不进入 argv、日志或 evidence；Production alias、任意 path、宽泛 host 和权限错误都
+fail closed。该 secret 只属于 Qiu project，必须有独立 rotate/revoke 流程；不得复用
+其它站点或项目凭据。
+
+选择独立 front door 而不是“重启时直接停 tunnel”，是为了让计划内恢复呈现可解释的
+503，而不是 Cloudflare 502/530。成本是多一个常驻 loopback 进程和 generation 续租；
+收益是 tunnel 与业务进程不再同时消失。选择 committed single-file JSON 而不是六个
+松散 ready 文件，是为了避免 guardian 读到半套新旧 PID。若 front door 自身退出，
+tunnel supervisor 必须立即摘除 tunnel，避免继续把 connection refused 暴露成 502。
+
+失败与恢复矩阵：
+
+| 事件 | 外部行为 | 自动恢复边界 |
+|---|---|---|
+| generation 缺失、过期或 PID/listener 漂移 | typed 503 + no-store | stack 重新整体验真并提交新 generation |
+| planned restart | drain 期间持续 typed 503 | 新 generation 提交后显式 resume |
+| API transport connect failure | front door typed 503，不生成 502 | stack 恢复；不得改写合法上游响应 |
+| front door 退出 | tunnel supervisor 摘除 edge | launchd 恢复 front door 后重新满足启动门 |
+| Quick Tunnel hostname 漂移 | fail closed，标记 ephemeral | operator 重新绑定 Preview backend 后再验收 |
+| Preview BFF/HMAC/schema 异常 | 外侧 guardian 失败 | 不以 tunnel `/healthz` 绿替代 BFF 修复 |
+
+验证入口：
+
+```bash
+bash ops/macos/test-preview-edge-gate.sh
+```
+
+该 fixture 锁定 partial/stale generation、PID/listener drift、drain 503/no-store、精确
+Preview host/path/schema、bypass ACL 和 secret 不进入 argv/log。它是 build-verified；
+真实 stop → drain → restart → resume 必须由独立测试者在受保护 Preview 上执行后才能
+标记 integration-verified。
+
+Owner 60 秒说明：先让六个本机组件共同提交一个持续续租的 generation，初次通过后才
+启动 tunnel；front door 独立常驻，generation 不可信时返回 503/no-store。重启先 drain，
+所以 tunnel 不会把 API connection refused 暴露成 502；恢复后提交新 generation 再
+resume。Guardian 同时检查本机、Quick Tunnel hostname 和受保护 Preview 的两个真实
+BFF API。Quick Tunnel 始终是 ephemeral，hostname 变化会停门而不是静默漂移。
+
+闭卷检查：
+
+- 为什么六个松散的 ready 文件会允许半新半旧进程组合？
+- 为什么 transport connect failure 可改为 503，但合法上游 401/403 不能改？
+- 为什么业务 stack 重启时 front door 和 tunnel 必须保留？
+- 为什么 `/healthz` 200 不能替代受保护 Preview BFF schema 探针？
+- 同一 Quick Tunnel credential 曾复用 hostname，为什么仍必须标记 ephemeral？
+
 2026-07-28 的 protected Preview、deployment `dpl_7usLvktVPRCgt8PhoNDSUtd9Zo7e`
 与 commit `2aa8bda39d2298e1d57886e472f9a090d728f56e` 仅是历史归档证据，禁止直接
 复用或 promote；更早的 `dpl_C5k5...` 同样只保留为历史证据。每次发布都必须从当前
