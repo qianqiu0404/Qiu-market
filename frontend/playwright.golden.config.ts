@@ -1,6 +1,18 @@
 import { defineConfig } from '@playwright/test'
 
-const frontendPort = 4176
+function frontendPortFromEnvironment(raw: string | undefined): number {
+  if (raw === undefined) return 4176
+  if (!/^[1-9]\d{0,4}$/.test(raw)) {
+    throw new Error('QIU_GOLDEN_FRONTEND_PORT must be an integer in [1, 65535]')
+  }
+  const port = Number(raw)
+  if (!Number.isSafeInteger(port) || port > 65_535) {
+    throw new Error('QIU_GOLDEN_FRONTEND_PORT must be an integer in [1, 65535]')
+  }
+  return port
+}
+
+const frontendPort = frontendPortFromEnvironment(process.env.QIU_GOLDEN_FRONTEND_PORT)
 const harnessPort = Number(process.env.QIU_GOLDEN_HARNESS_PORT ?? 19092)
 const frontendURL = `http://127.0.0.1:${frontendPort}`
 const harnessURL = `http://127.0.0.1:${harnessPort}`
