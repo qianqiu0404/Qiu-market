@@ -404,15 +404,32 @@ test('adapts an old backend but leaves missing storage and outbox unavailable', 
   await expect(page.getByText(/1m Unavailable ·/)).toBeVisible()
 })
 
-test('keeps the System status page within 1180px and 768px viewports', async ({ page }) => {
+test('keeps the System status page and all section tabs accessible without viewport overflow', async ({ page }) => {
   await installNativeStatus(page, healthySnapshot(Date.now()))
   await page.setViewportSize({ width: 1180, height: 900 })
   await page.goto('/system')
 
-  for (const width of [1180, 768]) {
+  for (const width of [1180, 768, 390]) {
     await page.setViewportSize({ width, height: 900 })
-    const overflow = await page.evaluate(() =>
-      document.documentElement.scrollWidth - window.innerWidth)
-    expect(overflow).toBeLessThanOrEqual(0)
+    const overflow = await page.evaluate(() => ({
+      document: document.documentElement.scrollWidth - window.innerWidth,
+      body: document.body.scrollWidth - window.innerWidth,
+    }))
+    expect(overflow).toEqual({ document: 0, body: 0 })
   }
+
+  const tabs = page.locator('.page-header-side .segmented button')
+  await expect(tabs).toHaveCount(5)
+  for (const tab of await tabs.all()) {
+    const box = await tab.boundingBox()
+    expect(box?.width).toBeGreaterThanOrEqual(44)
+    expect(box?.height).toBeGreaterThanOrEqual(44)
+  }
+
+  const tabList = page.locator('.page-header-side .segmented')
+  await expect.poll(() => tabList.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
+  await tabs.last().scrollIntoViewIfNeeded()
+  await tabs.last().click()
+  await expect(page).toHaveURL(/\/system\?tab=symbols$/)
+  await expect(page.getByRole('heading', { name: 'Symbols' })).toBeVisible()
 })
