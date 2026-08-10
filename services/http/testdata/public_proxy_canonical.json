@@ -1,0 +1,23 @@
+[
+  {
+    "name": "encoded slash and repeated query",
+    "absoluteURL": "https://backend.example/api/v1/research/signals/events/event%2Fpart?cursor=a%2Fb&cursor=c%2Fd",
+    "method": "GET",
+    "requestURI": "/api/v1/research/signals/events/event%2Fpart?cursor=a%2Fb&cursor=c%2Fd",
+    "body": ""
+  },
+  {
+    "name": "unicode and form encoded space",
+    "absoluteURL": "https://backend.example/api/v1/research/signals/events/%E6%B5%8B%E8%AF%95?q=hello+world&label=%E5%B8%82%E5%9C%BA",
+    "method": "GET",
+    "requestURI": "/api/v1/research/signals/events/%E6%B5%8B%E8%AF%95?q=hello+world&label=%E5%B8%82%E5%9C%BA",
+    "body": ""
+  },
+  {
+    "name": "query order is stable",
+    "absoluteURL": "https://backend.example/api/v2/get_asset_dashboard?b=2&a=1&a=3",
+    "method": "POST",
+    "requestURI": "/api/v2/get_asset_dashboard?b=2&a=1&a=3",
+    "body": "{\"venue\":\"all\"}"
+  }
+]

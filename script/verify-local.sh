@@ -51,6 +51,7 @@ api_request() {
   local request_uri="$2"
   local request_body="${3:-}"
   local timestamp
+  local nonce
   local digest
   local canonical
   local signature
@@ -58,8 +59,9 @@ api_request() {
 
   if [ -n "${MARKET_PUBLIC_PROXY_HMAC_SECRET:-}" ]; then
     timestamp="$(date +%s)"
+    nonce="$(openssl rand -hex 16)"
     digest="$(printf '%s' "$request_body" | shasum -a 256 | awk '{print $1}')"
-    canonical="$(printf '%s\n%s\n%s\n%s' "$timestamp" "$method" "$request_uri" "$digest")"
+    canonical="$(printf '%s\n%s\n%s\n%s\n%s' "$timestamp" "$nonce" "$method" "$request_uri" "$digest")"
     signature="$(
       printf '%s' "$canonical" |
         openssl dgst -sha256 -hmac "$MARKET_PUBLIC_PROXY_HMAC_SECRET" -hex |
@@ -67,6 +69,7 @@ api_request() {
     )"
     headers+=(
       -H "X-Qiu-Market-Timestamp: $timestamp"
+      -H "X-Qiu-Market-Nonce: $nonce"
       -H "X-Qiu-Market-Content-SHA256: $digest"
       -H "X-Qiu-Market-Signature: $signature"
     )

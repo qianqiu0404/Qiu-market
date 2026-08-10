@@ -11,6 +11,77 @@ HTTP 和 gRPC 都只监听本机；Tailscale Funnel 只把 HTTP `127.0.0.1:9092`
 做 HMAC；Mac mini 配置 `MARKET_PUBLIC_PROXY_HMAC_SECRET` 后，除 `/healthz` 和持有
 一次性 ticket 的交易 WebSocket 外，所有未签名 `/api/**` 请求均返回 401。
 
+### BFF HMAC 与重放边界
+
+每次 BFF → Mac mini 请求使用以下逐行 canonical 字符串；字段顺序是稳定契约：
+
+```text
+unix_timestamp_seconds
+32_lowercase_hex_nonce
+UPPERCASE_METHOD
+exact_path_and_query
+lowercase_body_sha256
+```
+
+nonce 是每次尝试重新生成的 16-byte 随机值。同一个只读请求如果因 502/503/504
+重试，第二次必须使用新 nonce、重新计算签名；交易写请求仍不重试。Mac mini 先验证
+时间窗、nonce 格式、1 MiB body、digest 和签名，最后才把 nonce 原子写入有界内存
+replay cache。记录保留到该签名时间戳越过 ±30 秒验收窗；同 nonce 的并发或顺序重放
+都返回 401。cache 上限为 16,384，满载时 fail closed，不逐出尚有效 nonce。认证失败、
+上游失败和 5xx 都保持 `Cache-Control: no-store`。
+
+路径也在签名前 fail closed：Vercel route capture 必须是单个、最多 1,024 bytes 的
+相对路径；控制字符、反斜线、内嵌 query/hash、原始或 percent-decoded `.` / `..`
+segment 都被拒绝。BFF 只在受管的精确 backend origin 下重建 `/api/**`，不接受请求
+提供 host。Go router 继续只挂载显式产品 route。BFF 不制造宽泛 CORS：浏览器使用
+同源 `/api`，写请求的 `Origin` 原样转发；Trading gateway 只接受
+`MARKET_TRADING_ALLOWED_ORIGINS` 中规范化后完全相等的 origin，并同时要求 session
+与 CSRF。没有 `*` 回退。
+
+控制流按以下顺序执行：
+
+1. `frontend/api/proxy.ts` 验证 exact origin/path，计算 body digest，并为每次 attempt
+   生成 nonce 和 HMAC；
+2. Tailscale Funnel 只转发 HTTPS/WSS 到 `127.0.0.1:9092`，不终止应用鉴权；
+3. `services/http/public_proxy_auth.go` 验证 canonical 内容并原子占用 nonce；
+4. `services/http/api.go` 的显式 route 才进入市场、研究、质量或模拟交易 handler；
+5. `ops/macos/production-lib.sh`、`guardian.sh` 与 `script/verify-local.sh` 用同一
+   canonical 契约做受管探针。
+
+这里的 **nonce** 是“一次性票号”：时间戳只说明票何时有效，nonce 让同一张票不能
+在有效期内用第二次。**replay cache** 是“已验票清单”，只存有界 nonce 与过期时间，
+不存请求 body、Cookie 或 secret。选择 bounded in-process cache，是因为当前 authority
+只有一个 API 进程且 Funnel 单入口；相比引入 Redis，它没有新的共享故障域。代价是 API
+重启会清空清单，所以 timestamp 窗仍必须很短；未来多 API replica 前必须改为共享的
+原子 nonce store，不能把当前实现横向复制后宣称仍防重放。
+
+失败与恢复：无效、重复或容量耗尽都统一返回无细节 401，避免形成签名 oracle；BFF
+生成新 nonce 后可重试明确安全的 GET。API 重启后 replay cache 为空，但超过 30 秒的
+旧签名仍因时间窗被拒绝。运维 signer 缺 nonce 会立即 401，Guardian 不得继续沿用旧
+四字段 canonical。
+
+这个五字段协议与旧四字段协议不兼容：新 BFF 请求旧 API，或旧 BFF 请求新 API，都会
+按预期返回 401。D1 Preview 必须让 BFF 与独立 local API stack 来自同一个精确 Git SHA；
+本轮禁止 promote，也禁止单边升级当前 Mac authority 或 Production BFF。未来生产切换
+必须先并行启动新版本 API endpoint，再构建并验收匹配 SHA 的 BFF，最后在同一受控窗口
+切换 endpoint 与 Vercel deployment；如果平台无法提供这个并行窗口，只能安排明确的
+原子维护切换。失败回滚必须同时恢复同版本的 API+BFF pair，不能把旧 BFF 指回新 API
+或把新 BFF 指回旧 API。当前旧 Production deployment 仅能作为前端壳回滚点，已知
+backend offline 时不能宣称业务恢复。
+
+Owner 60 秒说明：浏览器永远只访问 Vercel 同源 `/api`；BFF 把 exact RequestURI、body
+digest、时间戳和一次性 nonce 一起签名；Mac mini 在执行业务 handler 前验签并原子登记
+nonce；只读重试换 nonce，写请求不重试；Origin/CSRF 仍由 Trading gateway 独立校验；
+cache 满或验证不确定时拒绝，不降级放行。
+
+闭卷检查：
+
+- 为什么仅有 ±30 秒 timestamp 仍不能阻止窗口内重放？
+- 为什么一次只读 retry 必须换 nonce，而不能只换签名？
+- replay cache 满时为什么不能逐出一个仍有效的旧 nonce？
+- 哪个入口负责 exact CORS，哪个入口负责 HMAC，它们为何不能互相替代？
+- API 横向扩为两个 replica 前，nonce store 必须发生什么变化？
+
 ## 1. 私有生产配置
 
 ```bash

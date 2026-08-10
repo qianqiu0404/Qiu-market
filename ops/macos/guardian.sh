@@ -109,12 +109,14 @@ signed_trading_status() {
     return
   fi
   local timestamp
+  local nonce
   local digest
   local canonical
   local signature
   timestamp="$(date '+%s')"
+  nonce="$(/usr/bin/openssl rand -hex 16)"
   digest="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  canonical="$(printf '%s\nGET\n%s\n%s' "$timestamp" "$request_path" "$digest")"
+  canonical="$(printf '%s\n%s\nGET\n%s\n%s' "$timestamp" "$nonce" "$request_path" "$digest")"
   signature="$(
     printf '%s' "$canonical" |
       /usr/bin/openssl dgst -sha256 -hmac "$secret" -binary |
@@ -122,6 +124,7 @@ signed_trading_status() {
   )"
   curl --fail --silent --max-time 5 \
     --header "X-Qiu-Market-Timestamp: $timestamp" \
+    --header "X-Qiu-Market-Nonce: $nonce" \
     --header "X-Qiu-Market-Content-SHA256: $digest" \
     --header "X-Qiu-Market-Signature: $signature" \
     "http://127.0.0.1:9092$request_path"

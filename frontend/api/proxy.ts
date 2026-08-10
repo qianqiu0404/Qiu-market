@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { getCache, waitUntil } from '@vercel/functions'
 import {
@@ -12,6 +12,7 @@ import {
 } from '../server/public-read-cache.js'
 
 const MAX_BODY_BYTES = 1 << 20
+const MAX_PROXY_PATH_BYTES = 1_024
 const TOTAL_UPSTREAM_TIMEOUT_MS = 8_000
 const FIRST_READ_ATTEMPT_TIMEOUT_MS = 3_500
 const RUNTIME_CACHE_TIMEOUT_MS = 250
@@ -143,6 +144,31 @@ function firstHeader(
   return Array.isArray(value) ? value[0] : value
 }
 
+function safeProxyPath(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.replace(/^\/+/, '')
+  if (
+    normalized.length === 0 ||
+    Buffer.byteLength(normalized) > MAX_PROXY_PATH_BYTES ||
+    /[\u0000-\u001f\u007f\\?#]/.test(normalized)
+  ) {
+    return undefined
+  }
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(normalized)
+  } catch {
+    return undefined
+  }
+  if (
+    /[\u0000-\u001f\u007f\\?#]/.test(decoded) ||
+    decoded.split('/').some((part) => part === '.' || part === '..')
+  ) {
+    return undefined
+  }
+  return normalized
+}
+
 function copyResponseHeader(
   response: QiuProxyResponse,
   upstream: Response,
@@ -214,6 +240,22 @@ interface UpstreamFetchResult {
   body: Buffer
 }
 
+export function publicProxyCanonical(
+  timestamp: string,
+  nonce: string,
+  method: string,
+  url: URL,
+  digest: string,
+): string {
+  return [
+    timestamp,
+    nonce,
+    method.toUpperCase(),
+    url.pathname + url.search,
+    digest,
+  ].join('\n')
+}
+
 async function fetchUpstream({
   url,
   method,
@@ -233,15 +275,18 @@ async function fetchUpstream({
       ? Math.min(FIRST_READ_ATTEMPT_TIMEOUT_MS, remaining)
       : remaining
     const timestamp = Math.floor(Date.now() / 1000).toString()
-    const canonical = [
+    const nonce = randomBytes(16).toString('hex')
+    const canonical = publicProxyCanonical(
       timestamp,
+      nonce,
       method,
-      url.pathname + url.search,
+      url,
       digest,
-    ].join('\n')
+    )
     const signature = createHmac('sha256', secret).update(canonical).digest('hex')
     const headers = new Headers(forwardedHeaders)
     headers.set('X-Qiu-Market-Timestamp', timestamp)
+    headers.set('X-Qiu-Market-Nonce', nonce)
     headers.set('X-Qiu-Market-Content-SHA256', digest)
     headers.set('X-Qiu-Market-Signature', signature)
     const controller = new AbortController()
@@ -350,13 +395,20 @@ export default async function handler(
       process.env.S78_ALLOW_INSECURE_BACKEND === '1' &&
       backendOrigin.protocol === 'http:' &&
       (backendOrigin.hostname === '127.0.0.1' || backendOrigin.hostname === 'localhost')
-    if (backendOrigin.protocol !== 'https:' && !insecureLoopback) {
-      throw new Error('S78_BACKEND_ORIGIN must use HTTPS')
+    if (
+      (backendOrigin.protocol !== 'https:' && !insecureLoopback) ||
+      backendOrigin.username !== '' ||
+      backendOrigin.password !== '' ||
+      (backendOrigin.pathname !== '' && backendOrigin.pathname !== '/') ||
+      backendOrigin.search !== '' ||
+      backendOrigin.hash !== ''
+    ) {
+      throw new Error('S78_BACKEND_ORIGIN must be an exact HTTPS origin')
     }
     const secret = requiredEnvironment('S78_PROXY_HMAC_SECRET')
     const incomingURL = new URL(request.url ?? '/', 'https://qiu-market.invalid')
-    const capturedPath = firstHeader(request.query.path)
-    if (!capturedPath || capturedPath.split('/').some((part) => part === '.' || part === '..')) {
+    const capturedPath = safeProxyPath(request.query.path)
+    if (!capturedPath) {
       response.status(400).json({
         code: 'invalid_proxy_path',
         message: 'The Qiu Market proxy path is invalid.',
@@ -364,11 +416,21 @@ export default async function handler(
       return
     }
     incomingURL.searchParams.delete('path')
-    const originalPath = `/api/${capturedPath.replace(/^\/+/, '')}`
+    const originalPath = `/api/${capturedPath}`
     const upstreamURL = new URL(
       originalPath + (incomingURL.searchParams.size > 0 ? `?${incomingURL.searchParams}` : ''),
       backendOrigin,
     )
+    if (
+      upstreamURL.origin !== backendOrigin.origin ||
+      !upstreamURL.pathname.startsWith('/api/')
+    ) {
+      response.status(400).json({
+        code: 'invalid_proxy_path',
+        message: 'The Qiu Market proxy path is invalid.',
+      })
+      return
+    }
     cachedPathname = upstreamURL.pathname
     const body = requestBody(request)
     if (body.byteLength > MAX_BODY_BYTES) {
