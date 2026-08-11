@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -154,8 +155,31 @@ func (c *Client) TryLock(ctx context.Context, key string, value string, expirati
 	return c.rdb.SetNX(ctx, key, value, expiration).Result()
 }
 
+// UnlockIfValue releases a lease only while the caller still owns it. The
+// compare-and-delete must be one Redis operation: a GET followed by DEL could
+// delete a new owner's lock after the previous lease expired.
+func (c *Client) UnlockIfValue(ctx context.Context, key, value string) (bool, error) {
+	result, err := c.rdb.Eval(ctx, `
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+`, []string{key}, value).Int64()
+	return result == 1, err
+}
+
 func (c *Client) Unlock(ctx context.Context, key string) error {
 	return c.rdb.Del(ctx, key).Err()
+}
+
+// Eval exposes a bounded atomic primitive to packages that need to commit
+// related Redis keys without exposing the underlying client.
+func (c *Client) Eval(ctx context.Context, script string, keys []string, args ...any) (any, error) {
+	return c.rdb.Eval(ctx, script, keys, args...).Result()
+}
+
+func IsNotFound(err error) bool {
+	return errors.Is(err, redis.Nil)
 }
 
 func (c *Client) Pipeline() redis.Pipeliner {

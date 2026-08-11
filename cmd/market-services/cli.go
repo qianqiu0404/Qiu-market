@@ -76,7 +76,8 @@ func runMigrations(ctx *cli.Context) error {
 
 func runRestApi(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
 	cfg := config.NewConfig(ctx)
-	return rest.NewApi(context.Background(), &cfg)
+	releaseCommit, _ := ctx.App.Metadata["git_commit"].(string)
+	return rest.NewApi(context.Background(), &cfg, rest.NewMarketReadContract(releaseCommit))
 }
 
 func runTrading(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
@@ -204,11 +205,13 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 
 	return &cli.App{
 		Version:              "0.0.1",
+		Metadata:             map[string]interface{}{"git_commit": GitCommit},
 		Description:          "An  market services with rpc",
 		EnableBashCompletion: true,
 		Commands: []*cli.Command{
 			catalogCommand(),
 			tradingRecoveryCommand(),
+			contractProbeCommand(),
 			{
 				Name:        "migrate",
 				Flags:       flags,

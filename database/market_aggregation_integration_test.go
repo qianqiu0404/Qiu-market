@@ -429,7 +429,14 @@ func TestIntegrationTop50DashboardKeepsUnpricedAssetsAndStablePages(t *testing.T
 	summary, err := store.QueryAssetIndexSummary("all")
 	require.NoError(t, err)
 	require.EqualValues(t, 11, summary.AssetCount)
-	require.EqualValues(t, 3, summary.PricedAssetCount)
+	require.EqualValues(t, 4, summary.PricedAssetCount)
+	require.EqualValues(t, 4, summary.SingleVenuePricedAssetCount)
+	require.Zero(t, summary.MultiVenuePricedAssetCount)
+	snapshot, err := store.QueryMarketReadSnapshot("all")
+	require.NoError(t, err)
+	require.EqualValues(t, 3, snapshot.FreshAssetCount)
+	require.EqualValues(t, 1, snapshot.StaleAssetCount)
+	require.EqualValues(t, 7, snapshot.UnavailableAssetCount)
 }
 
 func TestIntegrationAssetIndexSummaryCountsNullSnapshotsAsUnavailable(t *testing.T) {
@@ -505,6 +512,16 @@ func TestIntegrationAssetIndexSummaryCountsNullSnapshotsAsUnavailable(t *testing
 	require.EqualValues(t, assetCount-pricedCount, summary.UnpricedAssetCount)
 	require.Equal(t, summary.AssetCount,
 		summary.DisplayedAssetCount+summary.UnpricedAssetCount)
+	frozen, err := store.QueryMarketReadSnapshot("all")
+	require.NoError(t, err)
+	require.EqualValues(t, assetCount, frozen.Total)
+	require.EqualValues(t, pricedCount, frozen.FreshAssetCount)
+	require.Zero(t, frozen.StaleAssetCount)
+	require.EqualValues(t, assetCount-pricedCount, frozen.UnavailableAssetCount)
+	require.EqualValues(t, frozen.Summary.PricedAssetCount,
+		frozen.FreshAssetCount+frozen.StaleAssetCount)
+	require.EqualValues(t, frozen.Summary.AssetCount,
+		frozen.FreshAssetCount+frozen.StaleAssetCount+frozen.UnavailableAssetCount)
 
 	dashboardRows := make([]AssetIndexDashboardRow, 0, assetCount)
 	for page := int64(1); page <= 2; page++ {

@@ -34,6 +34,7 @@ vi.mock('@vercel/functions', () => ({
 import handler, {
   isRetryableUpstreamRequest,
   publicProxyCanonical,
+	requiresBackendMarketContract,
   releaseProvenance,
 } from '../api/proxy'
 
@@ -50,7 +51,7 @@ const canonicalFixtures = JSON.parse(readFileSync(
   'utf8',
 )) as CanonicalFixture[]
 
-function proxyRequest(pageSize = 37) {
+function proxyRequest(pageSize = 37, snapshotID = '') {
   return {
     method: 'POST',
     url: '/api/proxy?path=v2/get_asset_dashboard',
@@ -64,6 +65,7 @@ function proxyRequest(pageSize = 37) {
       page: 1,
       page_size: pageSize,
       currency: 'USD',
+		snapshot_id: snapshotID,
     },
   }
 }
@@ -104,6 +106,33 @@ function proxyResponse() {
     },
   }
   return { response, result }
+}
+
+function contractedResponse(
+  body: string,
+  request: RequestInit,
+  overrides: Record<string, string> = {},
+	status = 200,
+): Response {
+  const requestHeaders = new Headers(request.headers)
+  return new Response(body, {
+		status,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Qiu-Market-Backend-Release-Commit':
+        process.env.QIU_MARKET_RELEASE_COMMIT ?? '',
+      'X-Qiu-Market-Data-Mode': 'live',
+      'X-Qiu-Market-Provider-Policy': 'restricted-no-bypass.v1',
+      'X-Qiu-Market-Contract-Schema': 'qiu.market-read-contract.v1',
+      'X-Qiu-Market-Snapshot-Schema': 'qiu.market-snapshot.v1',
+		'X-Qiu-Market-Edge-Release-Commit': process.env.QIU_MARKET_RELEASE_COMMIT ?? '',
+		'X-Qiu-Market-Edge-Data-Mode': 'live',
+		'X-Qiu-Market-Edge-Contract-Schema': 'qiu.market-edge-contract.v1',
+      'X-Qiu-Market-Backend-Request-Nonce':
+        requestHeaders.get('X-Qiu-Market-Nonce') ?? '',
+      ...overrides,
+    },
+  })
 }
 
 beforeEach(() => {
@@ -330,140 +359,136 @@ describe('upstream HMAC replay protection', () => {
   })
 })
 
-describe('public stale-while-revalidate', () => {
-  it('returns aged last-good immediately and deduplicates the background refresh', async () => {
+describe('public cache contract boundary', () => {
+  const payload = JSON.stringify({
+    code: 2000,
+    result: [],
+    total: 0,
+    snapshot_id: 'snp_00000000000000000000000000000001',
+		snapshot_as_of: 1785196800000,
+    snapshot_schema: 'qiu.market-snapshot.v1',
+  })
+
+	it('does not cache an explicit snapshot ID past Redis authority', async () => {
+		const snapshotID = 'snp_00000000000000000000000000000001'
+		const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
+			contractedResponse(payload, request))
+		vi.stubGlobal('fetch', fetchMock)
+		await handler(proxyRequest(95, snapshotID) as never, proxyResponse().response as never)
+		fetchMock.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+			contractedResponse(JSON.stringify({ code: 4000, message: 'market snapshot is unknown or expired' }), request, {}, 409))
+		const expired = proxyResponse()
+		await handler(proxyRequest(95, snapshotID) as never, expired.response as never)
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(expired.result.statusCode).toBe(409)
+	})
+
+  it('binds fresh cache responses to the verified backend contract', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-28T00:00:00Z'))
-    const cachedPayload = JSON.stringify({
-      code: 2000,
-      result: [{
-        asset_symbol: 'BTC',
-        price_usd: { value: '65000', available: true },
-        composite_price_usd: { value: '64950', available: true },
-        market_reference_price_usd: { value: '64900', available: true },
-        display_price_usd: { value: '65000', available: true },
-        display_price_kind: 'dex_route',
-        display_available: true,
-        dex_route_available: true,
-        dex_route_count: 3,
-        available: true,
-        freshness_status: 'stale',
-        freshness_age_seconds: 50,
-      }],
-    })
-    let completeRevalidation: ((response: Response) => void) | undefined
-    const pendingRevalidation = new Promise<Response>((resolve) => {
-      completeRevalidation = resolve
-    })
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(cachedPayload, {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockImplementationOnce(() => pendingRevalidation)
+    const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
+      contractedResponse(payload, request))
     vi.stubGlobal('fetch', fetchMock)
-
-    const first = proxyResponse()
-    await handler(
-      proxyRequest() as never,
-      first.response as never,
-    )
+    const primed = proxyResponse()
+    await handler(proxyRequest(91) as never, primed.response as never)
     await Promise.all([...vercelFunctions.waitTasks])
-    expect(first.result.headers.get('x-qiu-market-cache')).toBe('MISS')
-    expect(first.result.headers.get('x-qiu-market-provenance')).toBe('VERIFIED')
-    expect(first.result.headers.get('x-qiu-market-release-commit')).toBe(
-      '19928325f9a1104d1dd3505a004dffb9fe52a714',
+
+    vi.setSystemTime(new Date('2026-07-28T00:00:10Z'))
+    const cached = proxyResponse()
+    await handler(proxyRequest(91) as never, cached.response as never)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(cached.result.headers.get('x-qiu-market-cache')).toBe('FRESH')
+    expect(cached.result.headers.get('x-qiu-market-backend-release-commit')).toBe(
+      process.env.QIU_MARKET_RELEASE_COMMIT,
     )
-
-    vercelFunctions.waitTasks.length = 0
-    vi.setSystemTime(new Date('2026-07-28T00:00:16Z'))
-    const staleOne = proxyResponse()
-    const staleTwo = proxyResponse()
-    await handler(proxyRequest() as never, staleOne.response as never)
-    await handler(proxyRequest() as never, staleTwo.response as never)
-
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(vercelFunctions.waitTasks).toHaveLength(1)
-    expect(staleOne.result.statusCode).toBe(200)
-    expect(staleOne.result.headers.get('x-qiu-market-cache')).toBe('STALE')
-    expect(staleOne.result.headers.get('x-qiu-market-deployment-url')).toBe(
-      'https://qiu-market-preview.vercel.app',
+    expect(cached.result.headers.get('x-qiu-market-snapshot-schema')).toBe(
+      'qiu.market-snapshot.v1',
     )
-    expect(staleOne.result.headers.get('age')).toBe('16')
-    const agedRow = JSON.parse(staleOne.result.body.toString()).result[0]
-    expect(agedRow.freshness_age_seconds).toBe(66)
-    expect(agedRow.dex_route_available).toBe(false)
-    expect(agedRow.display_price_kind).toBe('composite_reference')
-
-    completeRevalidation?.(new Response(cachedPayload, {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
-    await Promise.all([...vercelFunctions.waitTasks])
-    const cached = Array.from(vercelFunctions.values.values())[0] as {
-      storedAt?: number
-    }
-    expect(cached.storedAt).toBe(Date.now())
   })
 
-  it('drops excess different-key refreshes instead of queueing past the function lifetime', async () => {
+  it('fails typed 502 instead of hiding a wrong backend behind stale cache', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-28T01:00:00Z'))
-    const payload = JSON.stringify({ code: 2000, result: [], total: 0 })
-    const pending: Array<() => void> = []
-    let active = 0
-    let maximumActive = 0
-    const fetchMock = vi.fn(async () => {
-      if (fetchMock.mock.calls.length <= 3) {
-        return new Response(payload, {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      active += 1
-      maximumActive = Math.max(maximumActive, active)
-      return new Promise<Response>((resolve) => {
-        pending.push(() => {
-          active -= 1
-          resolve(new Response(payload, {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }))
-        })
-      })
-    })
+    const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
+      contractedResponse(payload, request))
     vi.stubGlobal('fetch', fetchMock)
-
-    for (const pageSize of [31, 32, 33]) {
-      const primed = proxyResponse()
-      await handler(proxyRequest(pageSize) as never, primed.response as never)
-    }
+    await handler(proxyRequest(92) as never, proxyResponse().response as never)
     await Promise.all([...vercelFunctions.waitTasks])
-    vercelFunctions.waitTasks.length = 0
+
     vi.setSystemTime(new Date('2026-07-28T01:00:16Z'))
-
-    await Promise.all([31, 32, 33].map(async (pageSize) => {
-      const stale = proxyResponse()
-      await handler(proxyRequest(pageSize) as never, stale.response as never)
-      expect(stale.result.headers.get('x-qiu-market-cache')).toBe('STALE')
-    }))
-
-    expect(active).toBe(2)
-    expect(maximumActive).toBe(2)
-    expect(fetchMock).toHaveBeenCalledTimes(5)
-    expect(vercelFunctions.waitTasks).toHaveLength(2)
-
-    pending.shift()?.()
-    await vercelFunctions.waitTasks[0]
-    expect(active).toBe(1)
-    const retried = proxyResponse()
-    await handler(proxyRequest(33) as never, retried.response as never)
-    expect(retried.result.headers.get('x-qiu-market-cache')).toBe('STALE')
-    expect(fetchMock).toHaveBeenCalledTimes(6)
-    expect(vercelFunctions.waitTasks).toHaveLength(3)
-    expect(maximumActive).toBe(2)
-    while (pending.length > 0) pending.shift()?.()
-    await Promise.all([...vercelFunctions.waitTasks])
-    expect(active).toBe(0)
+    fetchMock.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+      contractedResponse(payload, request, {
+        'X-Qiu-Market-Backend-Release-Commit': '0000000000000000000000000000000000000000',
+      }))
+    const rejected = proxyResponse()
+    await handler(proxyRequest(92) as never, rejected.response as never)
+    expect(rejected.result.statusCode).toBe(502)
+    expect(rejected.result.headers.get('cache-control')).toBe('no-store')
+    expect(JSON.parse(rejected.result.body.toString())).toMatchObject({
+      code: 'backend_contract_mismatch',
+      result: { reason: 'releaseCommit_mismatch' },
+    })
   })
+
+  it('rejects a replayed response nonce even when every static field matches', async () => {
+    const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
+      contractedResponse(payload, request, {
+        'X-Qiu-Market-Backend-Request-Nonce': '00000000000000000000000000000000',
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const rejected = proxyResponse()
+    await handler(proxyRequest(93) as never, rejected.response as never)
+    expect(rejected.result.statusCode).toBe(502)
+    expect(JSON.parse(rejected.result.body.toString())).toMatchObject({
+      code: 'backend_contract_mismatch',
+      result: { reason: 'request_nonce_mismatch' },
+    })
+  })
+
+  it('uses contract-bound stale data only for transport failure', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-28T02:00:00Z'))
+    const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
+      contractedResponse(payload, request))
+    vi.stubGlobal('fetch', fetchMock)
+    await handler(proxyRequest(94) as never, proxyResponse().response as never)
+    await Promise.all([...vercelFunctions.waitTasks])
+    vi.setSystemTime(new Date('2026-07-28T02:00:16Z'))
+    fetchMock.mockRejectedValueOnce(new Error('transport down'))
+    const stale = proxyResponse()
+    await handler(proxyRequest(94) as never, stale.response as never)
+    expect(stale.result.statusCode).toBe(200)
+    expect(stale.result.headers.get('x-qiu-market-cache')).toBe('STALE')
+  })
+})
+
+describe('uncached ticks contract boundary', () => {
+	function ticksRequest() {
+		return {
+			...proxyRequest(),
+			url: '/api/proxy?path=v2/get_market_price_ticks',
+			query: { path: 'v2/get_market_price_ticks' },
+			body: { venue: 'all', asset_ids: ['asset-btc'] },
+		}
+	}
+
+	it('requires the backend and edge contract without making ticks cacheable', () => {
+		expect(requiresBackendMarketContract('POST', '/api/v2/get_market_price_ticks')).toBe(true)
+	})
+
+	it.each([
+		['wrong release', { 'X-Qiu-Market-Backend-Release-Commit': '0000000000000000000000000000000000000000' }, 'releaseCommit_mismatch'],
+		['replayed nonce', { 'X-Qiu-Market-Backend-Request-Nonce': '00000000000000000000000000000000' }, 'request_nonce_mismatch'],
+		['legacy replay mode', { 'X-Qiu-Data-Mode': 'd1_deterministic_replay' }, 'legacy_data_mode_mismatch'],
+		['direct backend without edge', { 'X-Qiu-Market-Edge-Release-Commit': '' }, 'edgeReleaseCommit_mismatch'],
+	])('rejects %s with typed 502', async (_name, overrides, reason) => {
+		vi.stubGlobal('fetch', vi.fn(async (_url: URL, request: RequestInit) =>
+			contractedResponse(JSON.stringify({ code: 2000, result: [] }), request, overrides)))
+		const rejected = proxyResponse()
+		await handler(ticksRequest() as never, rejected.response as never)
+		expect(rejected.result.statusCode).toBe(502)
+		expect(JSON.parse(rejected.result.body.toString())).toMatchObject({
+			code: 'backend_contract_mismatch', result: { reason },
+		})
+	})
 })

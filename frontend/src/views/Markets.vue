@@ -7,6 +7,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import ErrorState from '../components/ErrorState.vue'
 import AppIcon from '../components/AppIcon.vue'
 import { usePolling } from '../composables/usePolling'
+import { ApiError } from '../api/common'
 import {
   getAssetDashboardV2,
   getAssetVenuesV2,
@@ -114,7 +115,7 @@ const overview = usePolling(async () => {
     data: await getMarketOverviewV2(requestedVenue),
   }
 }, { interval: 30_000 })
-const currentOverview = computed<MarketOverviewV2 | null>(() => {
+const pollingOverview = computed<MarketOverviewV2 | null>(() => {
   const snapshot = overview.data.value
   return snapshot?.venue === venue.value ? snapshot.data : null
 })
@@ -133,6 +134,7 @@ interface DashboardQuery {
 interface DashboardSnapshot {
   queryKey: string
   data: Paged<AssetDashboardV2Item>
+	overview: MarketOverviewV2
 }
 
 interface DashboardFailure {
@@ -165,19 +167,30 @@ const dashboard = usePolling(
     const query = readDashboardQuery()
     const queryKey = dashboardQueryKey(query)
     try {
-      const data = await getAssetDashboardV2(query.page, query.pageSize, {
-        venue: query.venue,
-        search: query.search,
-        filter: query.filter,
-        sortBy: query.sortBy,
-        sortDirection: query.sortDirection,
-        includeUncovered: true,
-        universe: query.universe,
-      })
+		let boundOverview = await getMarketOverviewV2(query.venue)
+		const loadDashboard = (): Promise<Paged<AssetDashboardV2Item>> =>
+			getAssetDashboardV2(query.page, query.pageSize, {
+				venue: query.venue,
+				search: query.search,
+				filter: query.filter,
+				sortBy: query.sortBy,
+				sortDirection: query.sortDirection,
+				includeUncovered: true,
+				universe: query.universe,
+				snapshotID: boundOverview.snapshot_id,
+			})
+		let data: Paged<AssetDashboardV2Item>
+		try {
+			data = await loadDashboard()
+		} catch (error) {
+			if (!(error instanceof ApiError) || error.status !== 409) throw error
+			boundOverview = await getMarketOverviewV2(query.venue)
+			data = await loadDashboard()
+		}
       if (dashboardFailure.value?.queryKey === queryKey) {
         dashboardFailure.value = null
       }
-      return { queryKey, data }
+		return { queryKey, data, overview: boundOverview }
     } catch (error) {
       dashboardFailure.value = {
         queryKey,
@@ -189,9 +202,15 @@ const dashboard = usePolling(
   { interval: 15_000 },
 )
 
+const currentOverview = computed<MarketOverviewV2 | null>(() => {
+	const snapshot = dashboard.data.value
+	if (snapshot?.queryKey === currentDashboardQueryKey.value) return snapshot.overview
+	return pollingOverview.value
+})
 const currentDashboard = computed(() => {
   const snapshot = dashboard.data.value
   return snapshot?.queryKey === currentDashboardQueryKey.value
+	&& snapshot.data.snapshot_id === currentOverview.value?.snapshot_id
     ? snapshot.data
     : null
 })
@@ -426,8 +445,8 @@ const pageSubtitle = computed(() => {
   const current = currentOverview.value
   if (venue.value === 'all') {
     if (!current) return 'One asset per row · seven-provider union · globally ordered by market cap'
-    return `${current.priced_asset_count}/${current.asset_count} fresh composite prices · ` +
-      `${current.contributing_provider_count} contributing CEX venue${current.contributing_provider_count === 1 ? '' : 's'} · seven-provider asset union`
+		return `${current.fresh_asset_count} fresh · ${current.stale_asset_count} stale · ` +
+			`${current.unavailable_asset_count} unavailable · ${current.contributing_provider_count} current CEX contributor${current.contributing_provider_count === 1 ? '' : 's'}`
   }
   if (!current) return `${selectedVenueLabel.value} · loading reviewed asset selection`
   const preview = current.local_preview_enabled ? ' · Local preview' : ''
@@ -444,7 +463,8 @@ const pageSubtitle = computed(() => {
   const product = venue.value === 'hyperliquid'
     ? 'perpetual marks'
     : 'spot markets'
-  return `${current.priced_asset_count}/${current.asset_count} fresh ${product}${version}${preview}`
+	return `${current.fresh_asset_count} fresh · ${current.stale_asset_count} stale · ` +
+		`${current.unavailable_asset_count} unavailable ${product}${version}${preview}`
 })
 const pageTitle = computed(() =>
   venue.value === 'all'
@@ -799,9 +819,9 @@ function coverageReasonLabel(reason: string): string {
           Snapshot only · route freshness pending full-page verification
         </small>
         <small v-else-if="currentOverview">
-          {{ currentOverview.priced_asset_count }} priced ·
-          {{ currentOverview.change_available_count }} with 24h ·
-          {{ currentOverview.published_asset_count }} published
+					{{ currentOverview.fresh_asset_count }} fresh ·
+					{{ currentOverview.stale_asset_count }} stale ·
+					{{ currentOverview.unavailable_asset_count }} unavailable
         </small>
         <small v-else>Selected provider assets</small>
       </article>

@@ -207,6 +207,100 @@ copy-truncate，保持 launchd 已打开的 inode；配置和 secret 不进入 a
 - 为什么 `healthz=200` 仍不能替代 freshness 与 30 秒 reconcile 观察？
 - restart 失败时 exact selector、PID 和 tunnel 应如何回滚？
 
+### R2E 行情读取合同与原子切换
+
+R2E 开始前的 2026-08-12 只读基线如下。表内不含 secret、共享 token 或私有配置值；它用于解释为什么旧页面虽然可用，却不能证明前后端来自同一个行情发布环境。
+
+| 环境 | 前端 / source | backend 路径 | 数据模式与合同 | 只读结果 |
+| --- | --- | --- | --- | --- |
+| 旧 Production | `dpl_xUvW5eVJd7FLM4pr8D77e4jtR7na` / `65420c1c8be474ccc02ae4740c540cf9bc5e5cf6` | live tunnel 当时直连 `127.0.0.1:18080` | 旧 BFF，不要求 R2E backend/edge contract | `106` assets，`61` priced，`45` unavailable |
+| 当前 live runtime | `market-services.a7adc11b` / `a7adc11b142ec0c08d615616ec6d31204d699d83` | API `18080` | `qiu.d1.active-release.v1`，缺 `data_mode/provider_policy/snapshot_schema` | 真 provider，只读行情；不能被新 BFF 视为合格 R2E authority |
+| 旧 replay | source `4b2a278d77b0f6aaae5c5ea103db1e65ed1d2441` | 旧 `18084` body-rewrite proxy | `d1_deterministic_replay`，`live_providers=false` | 只可作旧恢复证据，禁止进入 Preview/Production 覆盖率 |
+| PR #15 旧 Preview | `dpl_FdC1A59j1dqNyqcBEMTNUhgMWNWJ` / `a7adc11b142ec0c08d615616ec6d31204d699d83` | 与当时 live API 相连 | R2I envelope，无共享 snapshot/edge contract | 同为 `106 / 61 / 45`，但 overview/dashboard 可跨查询时刻 |
+
+R2E 的公开 market read 需要两层身份同时成立：backend 返回 exact
+`X-Qiu-Market-Backend-Release-Commit`、`X-Qiu-Market-Data-Mode: live`、
+`X-Qiu-Market-Provider-Policy: restricted-no-bypass.v1`、contract/snapshot schema
+和本次 request nonce；pure frontdoor 再返回同 SHA 的 edge release、`live` mode 与
+`qiu.market-edge-contract.v1`。BFF 的期望 SHA 来自已验证的 immutable Vercel
+deployment provenance。任一字段缺失或漂移、旧 `X-Qiu-Data-Mode` replay、direct
+`18080`、nonce 不一致时统一 `502 backend_contract_mismatch`、`no-store`，且禁止读取
+last-good stale cache。ticks 也走这项校验，但不进入公共 body cache。
+
+overview 新建 snapshot 时，API 在一次 read-only `REPEATABLE READ` PostgreSQL
+事务中用同一 `CURRENT_TIMESTAMP` 读取 overview summary、CoinGecko global metric 和
+完整 dashboard 行。Redis 只保存一个完整 JSON 值：所有 API instance 对同一 15 秒
+bucket 推导相同 ID，以 Lua `SET NX` 竞争，输家丢弃自己的数据库读取并返回 winner；
+没有可与 payload 分离漂移的 current pointer。snapshot 绑定 release/data mode/provider
+policy/schema，TTL 为 5 分钟、namespace 最多 64 项、当前 All 上限 106 行。读取时重新
+核对唯一非空 asset ID、逐行 freshness 与总数，All 必须满足：
+
+```text
+106 = fresh + stale + unavailable
+priced = displayed = fresh + stale
+unpriced = unavailable
+single-venue priced + multi-venue priced = priced
+```
+
+overview 可以由 BFF fresh-cache 15 秒，并在回源普通故障时最多 stale 240 秒；该窗口
+小于 Redis 300 秒 authority TTL。带显式 `snapshot_id` 的 dashboard 不缓存，所有分页、
+搜索和排序都从同一冻结值读取；unknown/expired/wrong-venue 返回 409，Redis 缺失或损坏
+返回 503。snapshot body 不再按 transport `Age` 改写 freshness，`Age/Warning` 只描述
+传输缓存。Markets 只呈现与 dashboard 同 ID 的 overview；慢搜索显示 loading，成功的
+零行才显示 empty，`published_asset_count=0` 仍显示当前部署不可用。
+
+live selector 升级为 `qiu.d1.active-release.v2`，除 binary、attestation 与 gate digest
+外，还固定 exact commit、`live` data mode、restricted provider policy、contract/
+snapshot/edge schema、generation/Redis owner token，以及唯一 tunnel target
+`http://127.0.0.1:18084`。`live-api-tunnel.sh` 明确拒绝 direct `18080`；`18084` 只能运行
+repo-tracked pure passthrough frontdoor，禁止旧 replay body rewrite。
+
+受控切换入口是：
+
+```bash
+bash ops/macos/live-cutover.sh preflight /private/path/to/candidate-active-release.json
+bash ops/macos/live-cutover.sh cutover /private/path/to/candidate-active-release.json --execute
+```
+
+执行顺序固定为：暂停 tunnel；备份旧 selector/generation/wrappers；安装候选 selector；
+写 `ready=false` 保持 frontdoor drain；重启 stack 与 crawler/dex/worker；用 exact-SHA
+`market-services contract-probe --secret-file <0600 path>` 验证 direct backend 200 与 edge
+drain 503/no-store；claim 新 Redis generation owner；原子提交无 tunnel 的 PID set 与
+`ready=true`；验证 edge 200；恢复 tunnel；最后补写包含 tunnel 的完整 PID set。probe
+只把 secret 文件路径放入 argv，secret 本身由 Go 进程读取，不进入 argv、日志或工作树。
+
+旧 Redis generation 只有同时满足以下三项才删除自己的 owner/state/lock key：旧
+generation 中记录的全部 PID 已停止；6389 listener 不再是旧 Redis PID；Redis owner key
+仍精确等于旧 owner token。脚本不执行 `FLUSH*`，旧 cleanup 也不能删除新 PID file。
+任何阶段失败都会先暂停 tunnel，再尝试恢复旧 selector、committed generation、四个
+wrapper、只读 roles 与 tunnel；只有整条恢复链通过后才记录 `rolled-back`，并按 owner
+token 清掉失败候选的 generation key。如果恢复链自身失败，脚本保持 tunnel 暂停、记录
+`rollback-failed` 并保留候选 Redis owner/state 作为人工恢复证据，不会虚报已回滚。
+`pidfile-cleanup` 旁路只在 `/tmp/qiu-market-live-cutover.*` 隔离 test mode 可用。
+
+主要入口：
+
+- `services/http/market_read_contract.go`：backend release/data/provider/schema/nonce 合同；
+- `database/market_aggregation.go` 与 `services/http/service/market_snapshot.go`：PG 冻结读取、Redis authority 与分页；
+- `frontend/api/proxy.ts`：Vercel BFF backend+edge fail-closed、cache 与 snapshot envelope 验证；
+- `cmd/market-frontdoor/main.go`：固定 `18084 -> 18080` pure passthrough 与 drain；
+- `ops/macos/live-release-selector.sh`、`live-cutover.sh`：私有 selector、PID/Redis owner、原子切换与回滚。
+
+Owner 60 秒说明：浏览器先取 overview snapshot ID，再用它读取 dashboard；PostgreSQL
+一次事务冻结 106 行，Redis 只接受同 bucket 的一个完整 winner，BFF 同时验证 Vercel
+期望 SHA、backend 和 edge 合同。live tunnel 永远只到 pure frontdoor 18084；切换时先
+drain，再验候选 backend，提交 ready 后才恢复 tunnel。restricted provider 仍保持 451/
+403 unavailable，不加入覆盖率；失败时只允许完整恢复旧 release pair，不拼接新旧组件；
+恢复自身失败则保持 tunnel 暂停并留存 `rollback-failed` 证据。
+
+闭卷检查：
+
+- 为什么只验证 backend 自报 SHA，仍不能排除旧 replay 或 direct `18080`？
+- 为什么 snapshot 必须保存完整值，而不能分开写 payload 与 current pointer？
+- 为什么带显式 snapshot ID 的 dashboard 不进入 BFF stale cache？
+- Redis cleanup 的 PID、listener、owner token 三门分别防哪一种竞态？
+- cutover 为什么必须先看到 edge drain 503，再提交 `ready=true` 和恢复 tunnel？
+
 ## 3. Tailscale Funnel
 
 本机使用 Homebrew 的开源 Tailscale 1.52+，为 Qiu Market 建立独立的

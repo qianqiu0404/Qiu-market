@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/the-web3/s78-market-services/database"
 	"github.com/the-web3/s78-market-services/services/http/model"
+	"github.com/the-web3/s78-market-services/services/http/service"
 )
 
 func (h Routes) GetSupportAssets(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +78,14 @@ func (h Routes) GetMarketOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.srv.GetMarketOverview(&req)
 	if err != nil {
+		if errors.Is(err, service.ErrMarketSnapshotExpired) || errors.Is(err, service.ErrMarketSnapshotVenue) {
+			jsonErrorResponse(w, BadRequestCode, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, service.ErrMarketSnapshotUnavailable) || errors.Is(err, service.ErrMarketSnapshotInvalid) {
+			jsonErrorResponse(w, InternalErrorCode, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		if errors.Is(err, database.ErrInvalidDashboardVenue) {
 			jsonErrorResponse(w, BadRequestCode, err.Error(), http.StatusBadRequest)
 			return
@@ -95,6 +104,14 @@ func (h Routes) GetAssetDashboardV2(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.srv.GetAssetDashboardV2(&req)
 	if err != nil {
+		if errors.Is(err, service.ErrMarketSnapshotExpired) || errors.Is(err, service.ErrMarketSnapshotVenue) {
+			jsonErrorResponse(w, BadRequestCode, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, service.ErrMarketSnapshotUnavailable) || errors.Is(err, service.ErrMarketSnapshotInvalid) {
+			jsonErrorResponse(w, InternalErrorCode, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
 		if errors.Is(err, database.ErrInvalidDashboardVenue) {
 			jsonErrorResponse(w, BadRequestCode, err.Error(), http.StatusBadRequest)
 			return

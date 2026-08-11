@@ -66,11 +66,15 @@ type API struct {
 	dorisDB        *sql.DB
 	trading        *tradinggateway.Gateway
 	tradingHandler http.Handler
+	marketContract MarketReadContract
 	stopped        atomic.Bool
 }
 
-func NewApi(ctx context.Context, cfg *config.Config) (*API, error) {
-	out := &API{}
+func NewApi(ctx context.Context, cfg *config.Config, contracts ...MarketReadContract) (*API, error) {
+	out := &API{marketContract: NewMarketReadContract("")}
+	if len(contracts) > 0 {
+		out.marketContract = contracts[0]
+	}
 	if err := out.initFromConfig(ctx, cfg); err != nil {
 		return nil, errors.Join(err, out.Stop(ctx))
 	}
@@ -192,6 +196,11 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 		a.db.MarketAggregation,
 		a.redisCli,
 		a.dorisDB,
+		service.MarketSnapshotContract{
+			ReleaseCommit: a.marketContract.ReleaseCommit, DataMode: a.marketContract.DataMode,
+			ProviderPolicy: a.marketContract.ProviderPolicy, ContractSchema: a.marketContract.ContractSchema,
+			SnapshotSchema: a.marketContract.SnapshotSchema,
+		},
 	)
 	apiRouter := chi.NewRouter()
 	h := routes.NewRoutes(apiRouter, svc)
@@ -199,6 +208,7 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 	apiRouter.Use(middleware.Recoverer)
 	apiRouter.Use(middleware.Heartbeat(HealthPath))
 	apiRouter.Use(publicProxyHMACMiddleware(cfg.PublicProxyHMACSecret))
+	apiRouter.Use(marketReadContractMiddleware(a.marketContract))
 	researchReader, err := researchsignal.New(researchsignal.Config{Enabled: cfg.ResearchSignals.Enabled})
 	if err != nil {
 		log.Warn("research signal adapter unavailable", "err", err)

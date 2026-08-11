@@ -17,14 +17,12 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 	if err != nil {
 		return nil, err
 	}
-	summary, err := h.marketAggregationView.QueryAssetIndexSummary(venue)
+	snapshot, err := h.marketSnapshots.resolve(venue, request.SnapshotID)
 	if err != nil {
 		return nil, err
 	}
-	global, err := h.marketAggregationView.QueryGlobalMetric("coingecko")
-	if err != nil {
-		return nil, err
-	}
+	summary := &snapshot.Read.Summary
+	global := snapshot.Read.Global
 	result := model.MarketOverviewResult{
 		AssetCount: summary.AssetCount, Advancers: summary.Advancers,
 		Decliners: summary.Decliners, Flat: summary.Flat, Unknown: summary.Unknown,
@@ -38,6 +36,9 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 		RoutableAssetCount:          summary.RoutableAssetCount,
 		ReferenceOnlyAssetCount:     summary.ReferenceOnlyAssetCount,
 		UnpricedAssetCount:          summary.UnpricedAssetCount,
+		FreshAssetCount:             snapshot.Read.FreshAssetCount,
+		StaleAssetCount:             snapshot.Read.StaleAssetCount,
+		UnavailableAssetCount:       snapshot.Read.UnavailableAssetCount,
 		ChangeAvailableCount:        summary.ChangeAvailableCount,
 		ContributingProviderCount:   summary.ContributingProviderCount,
 		SingleVenuePricedAssetCount: summary.SingleVenuePricedAssetCount,
@@ -83,6 +84,8 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 	}
 	return &model.MarketOverviewResponse{
 		Code: 2000, Message: "get market overview success", Result: result,
+		SnapshotID: snapshot.ID, SnapshotAsOf: snapshot.Read.AsOf.UnixMilli(),
+		SnapshotSchema: MarketSnapshotSchema,
 	}, nil
 }
 
@@ -103,16 +106,17 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 	if request.IncludeUncovered != nil {
 		includeUncovered = *request.IncludeUncovered
 	}
-	rows, total, err := h.marketAggregationView.QueryAssetIndexDashboard(database.AssetIndexDashboardQuery{
+	snapshot, err := h.marketSnapshots.resolve(venue, request.SnapshotID)
+	if err != nil {
+		return nil, err
+	}
+	rows, total := snapshotDashboardPage(snapshot, database.AssetIndexDashboardQuery{
 		Page: request.Page, PageSize: request.PageSize, Venue: venue,
 		Universe:         request.Universe,
 		IncludeUncovered: includeUncovered, Search: request.Search,
 		Filter: request.Filter, SortBy: request.SortBy, SortDirection: request.SortDirection,
 	})
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().UTC()
+	now := snapshot.Read.AsOf
 	result := make([]model.AssetDashboardV2Item, 0, len(rows))
 	for _, row := range rows {
 		venuePrice, dexRoutePrice, displayPrice := dashboardPriceFacts(row, venue, now)
@@ -175,6 +179,8 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 	return &model.AssetDashboardV2Response{
 		Code: 2000, Message: "get asset dashboard v2 success", Result: result,
 		Total: total, Universe: expectedUniverse,
+		SnapshotID: snapshot.ID, SnapshotAsOf: snapshot.Read.AsOf.UnixMilli(),
+		SnapshotSchema: MarketSnapshotSchema,
 	}, nil
 }
 

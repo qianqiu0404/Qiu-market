@@ -3,6 +3,7 @@ import {
   getAssetDashboardV2,
   getAssetVenuesV2,
   getMarketDashboard,
+	getMarketOverviewV2,
   getMarketPriceTicks,
   getTop50VenueInsights,
   isMarketPriceFactMonotonic,
@@ -17,6 +18,11 @@ import {
 } from './market'
 
 const available = (value: string) => ({ value, available: true })
+const SNAPSHOT_META = {
+	snapshot_id: 'snp_00000000000000000000000000000001',
+	snapshot_as_of: 1785200000000,
+	snapshot_schema: 'qiu.market-snapshot.v1',
+}
 const priceFact = (
   value: string,
   kind: string,
@@ -62,6 +68,39 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+describe('getMarketOverviewV2 snapshot conservation', () => {
+	it('maps fresh stale and unavailable counts from one frozen snapshot', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+			...SNAPSHOT_META,
+			code: 2000,
+			result: {
+				venue: 'all', asset_count: 106, priced_asset_count: 61,
+				displayed_asset_count: 61, unpriced_asset_count: 45,
+				fresh_asset_count: 40, stale_asset_count: 21, unavailable_asset_count: 45,
+			},
+		}), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+		const overview = await getMarketOverviewV2('all')
+		expect(overview).toMatchObject({
+			snapshot_id: SNAPSHOT_META.snapshot_id,
+			asset_count: 106, priced_asset_count: 61,
+			fresh_asset_count: 40, stale_asset_count: 21, unavailable_asset_count: 45,
+		})
+	})
+
+	it('rejects a non-conserving snapshot instead of rendering mixed counts', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+			...SNAPSHOT_META,
+			code: 2000,
+			result: {
+				venue: 'all', asset_count: 106, priced_asset_count: 61,
+				displayed_asset_count: 61, fresh_asset_count: 40,
+				stale_asset_count: 20, unavailable_asset_count: 45,
+			},
+		}), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+		await expect(getMarketOverviewV2('all')).rejects.toThrow('do not conserve')
+	})
+})
+
 describe('getAssetVenuesV2', () => {
   it('passes the selected provider so the drawer does not mix venues', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -86,6 +125,7 @@ describe('getAssetDashboardV2', () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toMatchObject({ include_uncovered: false, venue: 'binance' })
       return new Response(JSON.stringify({
+			...SNAPSHOT_META,
       code: 2000,
       result: [{
         rank: 1,
@@ -129,6 +169,7 @@ describe('getAssetDashboardV2', () => {
   it('never falls back to five-minute raw route fields for a DEX display', async () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
       new Response(JSON.stringify({
+		...SNAPSHOT_META,
         code: 2000,
         result: [{
           asset_id: 'asset-old-route',
@@ -181,6 +222,7 @@ describe('getAssetDashboardV2', () => {
     const observedAt = Date.now() - 2_000
     vi.stubGlobal('fetch', vi.fn(async () =>
       new Response(JSON.stringify({
+		...SNAPSHOT_META,
         code: 2000,
         result: [{
           asset_id: 'asset-reference-only',
@@ -229,6 +271,7 @@ describe('getAssetDashboardV2', () => {
   it('maps venue, DEX route, and display reference facts without merging provenance', async () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
       new Response(JSON.stringify({
+		...SNAPSHOT_META,
         code: 2000,
         result: [{
           asset_id: 'asset-btc',
@@ -554,7 +597,7 @@ describe('getTop50VenueInsights', () => {
     const bodies: Array<Record<string, unknown>> = []
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
-      return new Response(JSON.stringify({ code: 2000, result: [], total: 0 }), {
+		return new Response(JSON.stringify({ ...SNAPSHOT_META, code: 2000, result: [], total: 0 }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -594,6 +637,7 @@ describe('getTop50VenueInsights', () => {
         })
       }
       return new Response(JSON.stringify({
+		...SNAPSHOT_META,
         code: 2000,
         result: [{
           asset_id: `asset-${body.venue}`,
@@ -686,6 +730,7 @@ describe('getTop50VenueInsights', () => {
             }]
           : []
       return new Response(JSON.stringify({
+		...SNAPSHOT_META,
         code: 2000,
         result,
         total: result.length,

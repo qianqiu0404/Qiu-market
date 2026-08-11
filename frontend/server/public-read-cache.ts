@@ -6,6 +6,18 @@ export interface PublicReadCacheEntry {
   contentType?: string
   vary?: string
   storedAt: number
+  contract: BackendMarketContract
+}
+
+export interface BackendMarketContract {
+  releaseCommit: string
+  dataMode: string
+  providerPolicy: string
+  contractSchema: string
+  snapshotSchema: string
+	edgeReleaseCommit: string
+	edgeDataMode: string
+	edgeContractSchema: string
 }
 
 export interface PublicReadCacheLookup {
@@ -20,7 +32,7 @@ export class PublicReadCache {
 
   constructor(
     private readonly freshForMs = 15_000,
-    private readonly staleForMs = 300_000,
+		private readonly staleForMs = 240_000,
     private readonly maximumEntries = 128,
     private readonly maximumBytes = 16 << 20,
     private readonly maximumEntryBytes = 1_400_000,
@@ -148,7 +160,21 @@ export function agePublicReadBody(
   try {
     const envelope = JSON.parse(body.toString()) as {
       result?: Array<Record<string, unknown>>
+		snapshot_id?: unknown
+		snapshot_as_of?: unknown
+		snapshot_schema?: unknown
     }
+	// Snapshot responses are immutable database classifications. Transport
+	// staleness is expressed by Age/Warning; rewriting only dashboard rows
+	// would break overview/dashboard conservation for the same snapshot ID.
+	if (
+		typeof envelope.snapshot_id === 'string' &&
+		/^snp_[0-9a-f]{32}$/.test(envelope.snapshot_id) &&
+		Number(envelope.snapshot_as_of) > 0 &&
+		envelope.snapshot_schema === 'qiu.market-snapshot.v1'
+	) {
+		return body
+	}
     if (!Array.isArray(envelope.result)) return body
     for (const candidate of envelope.result) {
       if (!candidate || typeof candidate !== 'object') continue
@@ -241,22 +267,39 @@ export function agePublicReadBody(
 }
 
 interface RuntimePublicReadValue {
-  schemaVersion: 1
+  schemaVersion: 2
   status: number
   bodyBase64: string
   contentType?: string
   vary?: string
   storedAt: number
+  contract: BackendMarketContract
+}
+
+function isBackendMarketContract(value: unknown): value is BackendMarketContract {
+  if (!value || typeof value !== 'object') return false
+  const contract = value as Partial<BackendMarketContract>
+  return (
+    typeof contract.releaseCommit === 'string' &&
+    typeof contract.dataMode === 'string' &&
+    typeof contract.providerPolicy === 'string' &&
+    typeof contract.contractSchema === 'string' &&
+		typeof contract.snapshotSchema === 'string' &&
+		typeof contract.edgeReleaseCommit === 'string' &&
+		typeof contract.edgeDataMode === 'string' &&
+		typeof contract.edgeContractSchema === 'string'
+  )
 }
 
 function isRuntimePublicReadValue(value: unknown): value is RuntimePublicReadValue {
   if (!value || typeof value !== 'object') return false
   const entry = value as Partial<RuntimePublicReadValue>
   return (
-    entry.schemaVersion === 1 &&
+    entry.schemaVersion === 2 &&
     Number.isInteger(entry.status) &&
     typeof entry.bodyBase64 === 'string' &&
-    Number.isFinite(entry.storedAt)
+    Number.isFinite(entry.storedAt) &&
+    isBackendMarketContract(entry.contract)
   )
 }
 
@@ -264,7 +307,7 @@ export class RuntimePublicReadCache {
   constructor(
     private readonly cache: RuntimeCache,
     private readonly freshForMs = 15_000,
-    private readonly staleForMs = 300_000,
+		private readonly staleForMs = 240_000,
     private readonly maximumEntryBytes = 1_400_000,
   ) {}
 
@@ -292,6 +335,7 @@ export class RuntimePublicReadCache {
         contentType: value.contentType,
         vary: value.vary,
         storedAt: value.storedAt,
+        contract: value.contract,
       },
       state: ageMs <= this.freshForMs ? 'fresh' : 'stale',
       ageSeconds: Math.floor(ageMs / 1000),
@@ -301,12 +345,13 @@ export class RuntimePublicReadCache {
   async put(key: string, entry: PublicReadCacheEntry): Promise<boolean> {
     if (entry.body.byteLength > this.maximumEntryBytes) return false
     const value: RuntimePublicReadValue = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: entry.status,
       bodyBase64: entry.body.toString('base64'),
       contentType: entry.contentType,
       vary: entry.vary,
       storedAt: entry.storedAt,
+      contract: entry.contract,
     }
     await this.cache.set(key, value, {
       ttl: Math.ceil((this.freshForMs + this.staleForMs) / 1_000),

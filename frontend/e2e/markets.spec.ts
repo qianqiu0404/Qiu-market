@@ -111,6 +111,21 @@ const providerAssets: Record<string, typeof assetUniverse> = {
   pancakeswap: [assetUniverse[0], ...assetUniverse.slice(31, 80)],
 }
 
+const snapshotForVenue = (venue: string) => {
+  const encodedVenue = Buffer.from(venue).toString('hex').slice(0, 32).padEnd(32, '0')
+  const venueOffset = [...venue].reduce((total, character) => total + character.charCodeAt(0), 0)
+  return {
+    snapshot_id: `snp_${encodedVenue}`,
+    snapshot_as_of: 1_784_880_000_000 + venueOffset,
+    snapshot_schema: 'qiu.market-snapshot.v1',
+  }
+}
+
+const dashboardSnapshot = (venue: string, requestedSnapshotID?: string) => ({
+  ...snapshotForVenue(venue),
+  snapshot_id: requestedSnapshotID ?? snapshotForVenue(venue).snapshot_id,
+})
+
 const liveBTCPrices: Record<string, string> = {
   all: '64203.13',
   binance: '64213.56',
@@ -191,6 +206,7 @@ test.beforeEach(async ({ page }) => {
     const path = new URL(route.request().url()).pathname
     const request = JSON.parse(route.request().postData() ?? '{}') as {
       venue?: string
+      snapshot_id?: string
       page?: number
       page_size?: number
       asset_ids?: string[]
@@ -251,6 +267,7 @@ test.beforeEach(async ({ page }) => {
     } else if (path.endsWith('/get_market_overview')) {
       body = {
         code: 2000,
+        ...snapshotForVenue(venue),
         result: {
           global_market_cap_usd: available('2240000000000'),
           covered_spot_volume_24h_usd: available('62310000000'),
@@ -261,6 +278,11 @@ test.beforeEach(async ({ page }) => {
           eligible_asset_count: 27,
           published_asset_count: 10,
           priced_asset_count: 1,
+          displayed_asset_count: 1,
+          unpriced_asset_count: universe.length - 1,
+          fresh_asset_count: 1,
+          stale_asset_count: 0,
+          unavailable_asset_count: universe.length - 1,
           change_available_count: 1,
           coverage_ratio_pct: available('2'),
           venue,
@@ -280,6 +302,7 @@ test.beforeEach(async ({ page }) => {
     } else {
       body = {
         code: 2000,
+        ...dashboardSnapshot(venue, request.snapshot_id),
         result: universe.slice(pageStart, pageStart + pageSize),
         total: universe.length,
         universe: venue === 'all' ? 'provider_union' : 'provider_top50',
@@ -358,17 +381,29 @@ test('a disabled provider is explicit instead of looking like an empty search', 
     const body = path.endsWith('/get_market_overview')
       ? {
           code: 2000,
+          ...snapshotForVenue('binance'),
           result: {
             venue: 'binance',
             universe: 'provider_top50',
-            asset_count: 0,
+            asset_count: 50,
             eligible_asset_count: 0,
             published_asset_count: 0,
             priced_asset_count: 0,
+            displayed_asset_count: 0,
+            unpriced_asset_count: 50,
+            fresh_asset_count: 0,
+            stale_asset_count: 0,
+            unavailable_asset_count: 50,
             local_preview_enabled: false,
           },
         }
-      : { code: 2000, result: [], total: 0, universe: 'provider_top50' }
+      : {
+          code: 2000,
+          ...dashboardSnapshot('binance', request.snapshot_id),
+          result: [],
+          total: 0,
+          universe: 'provider_top50',
+        }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -381,7 +416,8 @@ test('a disabled provider is explicit instead of looking like an empty search', 
   await expect(page.locator('.market-empty-state')).toContainText(
     'Binance is unavailable in this deployment',
   )
-  await expect(page.locator('.market-overview-strip')).toContainText('0 published')
+  await expect(page.locator('.market-overview-strip')).toContainText('0 fresh')
+  await expect(page.locator('.market-overview-strip')).toContainText('50 unavailable')
   await expect(page.getByText(/matched this search/)).toHaveCount(0)
 })
 
@@ -403,7 +439,10 @@ test('slow search distinguishes loading from a settled empty result', async ({ p
   }
 
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as { search?: string }
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      search?: string
+      snapshot_id?: string
+    }
     if (request.search === 'XMR') {
       signalSlowSearch?.()
       await slowSearchResponse
@@ -412,6 +451,7 @@ test('slow search distinguishes loading from a settled empty result', async ({ p
         contentType: 'application/json',
         body: JSON.stringify({
           code: 2000,
+          ...dashboardSnapshot('all', request.snapshot_id),
           result: [monero],
           total: 1,
           universe: 'provider_union',
@@ -425,6 +465,7 @@ test('slow search distinguishes loading from a settled empty result', async ({ p
         contentType: 'application/json',
         body: JSON.stringify({
           code: 2000,
+          ...dashboardSnapshot('all', request.snapshot_id),
           result: [],
           total: 0,
           universe: 'provider_union',
@@ -554,7 +595,10 @@ test('a failed live tick keeps the verified venue snapshot without falling back 
     })
   })
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as { venue?: string }
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      venue?: string
+      snapshot_id?: string
+    }
     if (request.venue !== 'binance') {
       await route.fallback()
       return
@@ -564,6 +608,7 @@ test('a failed live tick keeps the verified venue snapshot without falling back 
       contentType: 'application/json',
       body: JSON.stringify({
         code: 2000,
+        ...dashboardSnapshot('binance', request.snapshot_id),
         result: [{
           ...asset,
           price_usd: available('64111.25'),
@@ -690,6 +735,7 @@ test('one offline asset does not degrade the other assets in the same tick batch
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
     const request = JSON.parse(route.request().postData() ?? '{}') as {
       venue?: string
+      snapshot_id?: string
     }
     if (request.venue !== 'okx') {
       await route.fallback()
@@ -700,6 +746,7 @@ test('one offline asset does not degrade the other assets in the same tick batch
       contentType: 'application/json',
       body: JSON.stringify({
         code: 2000,
+        ...dashboardSnapshot('okx', request.snapshot_id),
         result: [{
           ...asset,
           price_usd: available('64200.00'),
@@ -843,6 +890,7 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
     const request = JSON.parse(route.request().postData() ?? '{}') as {
       venue?: string
+      snapshot_id?: string
     }
     if (request.venue !== 'uniswap') {
       await route.fallback()
@@ -853,6 +901,7 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
       contentType: 'application/json',
       body: JSON.stringify({
         code: 2000,
+        ...dashboardSnapshot('uniswap', request.snapshot_id),
         result: [
           {
             ...asset,
@@ -947,6 +996,7 @@ test('DEX coverage never reuses a previous search response as the canonical univ
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
     const request = JSON.parse(route.request().postData() ?? '{}') as {
       search?: string
+      snapshot_id?: string
     }
     if (request.search === 'BTC') {
       await route.fulfill({
@@ -954,6 +1004,7 @@ test('DEX coverage never reuses a previous search response as the canonical univ
         contentType: 'application/json',
         body: JSON.stringify({
           code: 2000,
+          ...dashboardSnapshot('uniswap', request.snapshot_id),
           result: [displayRow(asset)],
           total: 1,
         }),
@@ -968,6 +1019,7 @@ test('DEX coverage never reuses a previous search response as the canonical univ
       contentType: 'application/json',
       body: JSON.stringify({
         code: 2000,
+        ...dashboardSnapshot('uniswap', request.snapshot_id),
         result: rows,
         total: rows.length,
       }),
@@ -993,11 +1045,13 @@ test('DEX coverage never reuses a previous search response as the canonical univ
 
 test('unknown composite values are rendered as unavailable, never fake zero', async ({ page }) => {
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as { snapshot_id?: string }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         code: 2000,
+        ...dashboardSnapshot('all', request.snapshot_id),
         result: [{ ...asset, change_24h_pct: unavailable }],
         total: 1,
       }),
@@ -1010,11 +1064,13 @@ test('unknown composite values are rendered as unavailable, never fake zero', as
 
 test('asset name is not repeated when it equals the symbol', async ({ page }) => {
   await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as { snapshot_id?: string }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         code: 2000,
+        ...dashboardSnapshot('all', request.snapshot_id),
         result: [{ ...asset, asset_name: 'BTC', asset_symbol: 'BTC' }],
         total: 1,
       }),

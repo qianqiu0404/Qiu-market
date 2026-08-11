@@ -4,6 +4,7 @@ import { getCache, waitUntil } from '@vercel/functions'
 import {
   PublicReadCache,
   RuntimePublicReadCache,
+  type BackendMarketContract,
   type PublicReadCacheEntry,
   type PublicReadCacheLookup,
   agePublicReadBody,
@@ -16,10 +17,14 @@ const MAX_PROXY_PATH_BYTES = 1_024
 const TOTAL_UPSTREAM_TIMEOUT_MS = 8_000
 const FIRST_READ_ATTEMPT_TIMEOUT_MS = 3_500
 const RUNTIME_CACHE_TIMEOUT_MS = 250
-const PUBLIC_REVALIDATION_CONCURRENCY = 2
 const PUBLIC_CACHE_CONTROL =
-  'public, max-age=0, s-maxage=15, stale-while-revalidate=300, stale-if-error=300'
+	'public, max-age=0, s-maxage=15, stale-while-revalidate=240, stale-if-error=240'
 const RELEASE_COMMIT_PATTERN = /^[0-9a-f]{40}$/i
+const BACKEND_DATA_MODE = 'live'
+const BACKEND_PROVIDER_POLICY = 'restricted-no-bypass.v1'
+const BACKEND_CONTRACT_SCHEMA = 'qiu.market-read-contract.v1'
+const BACKEND_SNAPSHOT_SCHEMA = 'qiu.market-snapshot.v1'
+const EDGE_CONTRACT_SCHEMA = 'qiu.market-edge-contract.v1'
 const DEPLOYMENT_ID_PATTERN = /^dpl_[A-Za-z0-9]+$/
 const RETRYABLE_GET_PATHS = [
   /^\/api\/v1\/trading\/auth\/capabilities$/,
@@ -195,6 +200,7 @@ function sendCachedResponse(
     response.setHeader('Content-Type', lookup.entry.contentType)
   }
   if (lookup.entry.vary) response.setHeader('Vary', lookup.entry.vary)
+  setBackendContractHeaders(response, lookup.entry.contract)
   if (lookup.state === 'stale') {
     response.setHeader('Warning', '110 - "Response is stale"')
   }
@@ -238,6 +244,7 @@ interface UpstreamFetchOptions {
 interface UpstreamFetchResult {
   response: Response
   body: Buffer
+  requestNonce: string
 }
 
 export function publicProxyCanonical(
@@ -308,7 +315,7 @@ async function fetchUpstream({
         lastError = new Error(`retryable upstream HTTP ${response.status}`)
         continue
       }
-      return { response, body: responseBody }
+      return { response, body: responseBody, requestNonce: nonce }
     } catch (error) {
       lastError = error
     } finally {
@@ -329,6 +336,7 @@ function publicCacheEntry(
   response: Response,
   body: Buffer,
   cookies: string[],
+  contract: BackendMarketContract,
 ): PublicReadCacheEntry | undefined {
   if (
     response.status !== 200 ||
@@ -343,31 +351,131 @@ function publicCacheEntry(
     contentType: response.headers.get('content-type') ?? undefined,
     vary: response.headers.get('vary') ?? undefined,
     storedAt: Date.now(),
+    contract,
   }
 }
 
-const publicRevalidations = new Map<string, Promise<void>>()
-let activePublicRevalidations = 0
-
-function schedulePublicRevalidation(
-  cacheKey: string,
-  operation: () => Promise<void>,
-): void {
-  if (
-    publicRevalidations.has(cacheKey) ||
-    activePublicRevalidations >= PUBLIC_REVALIDATION_CONCURRENCY
-  ) {
-    return
+class BackendContractError extends Error {
+  constructor(readonly reason: string) {
+    super(`Qiu Market backend contract mismatch: ${reason}`)
+    this.name = 'BackendContractError'
   }
-  activePublicRevalidations += 1
-  const task = operation()
-    .catch(() => undefined)
-    .finally(() => {
-      activePublicRevalidations -= 1
-      publicRevalidations.delete(cacheKey)
-    })
-  publicRevalidations.set(cacheKey, task)
-  waitUntil(task)
+}
+
+function expectedBackendContract(): BackendMarketContract {
+  const provenance = releaseProvenance()
+  if (provenance.status !== 'VERIFIED' || !provenance.commit) {
+    throw new BackendContractError('expected_release_unconfigured')
+  }
+  return {
+    releaseCommit: provenance.commit,
+    dataMode: BACKEND_DATA_MODE,
+    providerPolicy: BACKEND_PROVIDER_POLICY,
+    contractSchema: BACKEND_CONTRACT_SCHEMA,
+    snapshotSchema: BACKEND_SNAPSHOT_SCHEMA,
+		edgeReleaseCommit: provenance.commit,
+		edgeDataMode: BACKEND_DATA_MODE,
+		edgeContractSchema: EDGE_CONTRACT_SCHEMA,
+  }
+}
+
+function contractFingerprint(contract: BackendMarketContract): string {
+  return [
+    contract.releaseCommit,
+    contract.dataMode,
+    contract.providerPolicy,
+    contract.contractSchema,
+    contract.snapshotSchema,
+		contract.edgeReleaseCommit,
+		contract.edgeDataMode,
+		contract.edgeContractSchema,
+  ].join('|')
+}
+
+function backendContract(
+  upstream: Response,
+  requestNonce: string,
+  expected: BackendMarketContract,
+): BackendMarketContract {
+  const received: BackendMarketContract = {
+    releaseCommit: upstream.headers.get('x-qiu-market-backend-release-commit')?.trim().toLowerCase() ?? '',
+    dataMode: upstream.headers.get('x-qiu-market-data-mode')?.trim() ?? '',
+    providerPolicy: upstream.headers.get('x-qiu-market-provider-policy')?.trim() ?? '',
+    contractSchema: upstream.headers.get('x-qiu-market-contract-schema')?.trim() ?? '',
+    snapshotSchema: upstream.headers.get('x-qiu-market-snapshot-schema')?.trim() ?? '',
+		edgeReleaseCommit: upstream.headers.get('x-qiu-market-edge-release-commit')?.trim().toLowerCase() ?? '',
+		edgeDataMode: upstream.headers.get('x-qiu-market-edge-data-mode')?.trim() ?? '',
+		edgeContractSchema: upstream.headers.get('x-qiu-market-edge-contract-schema')?.trim() ?? '',
+  }
+	const legacyDataMode = upstream.headers.get('x-qiu-data-mode')?.trim() ?? ''
+	if (legacyDataMode !== '' && legacyDataMode !== BACKEND_DATA_MODE) {
+		throw new BackendContractError('legacy_data_mode_mismatch')
+	}
+  const echoedNonce = upstream.headers.get('x-qiu-market-backend-request-nonce')?.trim() ?? ''
+  if (echoedNonce !== requestNonce) throw new BackendContractError('request_nonce_mismatch')
+  for (const key of Object.keys(expected) as Array<keyof BackendMarketContract>) {
+    if (received[key] !== expected[key]) {
+      throw new BackendContractError(`${key}_mismatch`)
+    }
+  }
+  return received
+}
+
+function setBackendContractHeaders(
+  response: QiuProxyResponse,
+  contract: BackendMarketContract,
+): void {
+  response.setHeader('X-Qiu-Market-Backend-Release-Commit', contract.releaseCommit)
+  response.setHeader('X-Qiu-Market-Data-Mode', contract.dataMode)
+  response.setHeader('X-Qiu-Market-Provider-Policy', contract.providerPolicy)
+  response.setHeader('X-Qiu-Market-Contract-Schema', contract.contractSchema)
+  response.setHeader('X-Qiu-Market-Snapshot-Schema', contract.snapshotSchema)
+	response.setHeader('X-Qiu-Market-Edge-Release-Commit', contract.edgeReleaseCommit)
+	response.setHeader('X-Qiu-Market-Edge-Data-Mode', contract.edgeDataMode)
+	response.setHeader('X-Qiu-Market-Edge-Contract-Schema', contract.edgeContractSchema)
+}
+
+export function requiresBackendMarketContract(method: string, pathname: string): boolean {
+	return isPublicMarketRead(method, pathname) ||
+		(method === 'POST' && pathname === '/api/v2/get_market_price_ticks')
+}
+
+function requestedSnapshotID(body: Buffer): string {
+	try {
+		const parsed = JSON.parse(body.toString()) as { snapshot_id?: unknown }
+		return typeof parsed.snapshot_id === 'string' ? parsed.snapshot_id.trim() : ''
+	} catch {
+		return ''
+	}
+}
+
+function validateSnapshotEnvelope(
+	pathname: string,
+	requestBodyValue: Buffer,
+	responseBody: Buffer,
+	expected: BackendMarketContract,
+): void {
+	if (pathname !== '/api/v2/get_market_overview' && pathname !== '/api/v2/get_asset_dashboard') return
+	let envelope: Record<string, unknown>
+	try {
+		envelope = JSON.parse(responseBody.toString()) as Record<string, unknown>
+	} catch {
+		throw new BackendContractError('snapshot_body_invalid')
+	}
+	const snapshotID = typeof envelope.snapshot_id === 'string' ? envelope.snapshot_id.trim() : ''
+	if (!/^snp_[0-9a-f]{32}$/.test(snapshotID)) {
+		throw new BackendContractError('snapshot_id_invalid')
+	}
+	if (Number(envelope.snapshot_as_of) <= 0) {
+		throw new BackendContractError('snapshot_as_of_invalid')
+	}
+	if (envelope.snapshot_schema !== expected.snapshotSchema) {
+		throw new BackendContractError('snapshot_schema_mismatch')
+	}
+	const requested = requestedSnapshotID(requestBodyValue)
+	if (requested !== '' && requested !== snapshotID) {
+		throw new BackendContractError('snapshot_id_mismatch')
+	}
 }
 
 export function isRetryableUpstreamRequest(
@@ -442,11 +550,17 @@ export default async function handler(
     }
     const digest = createHash('sha256').update(body).digest('hex')
     const method = (request.method ?? 'GET').toUpperCase()
-    const cacheablePublicRead = isPublicMarketRead(method, upstreamURL.pathname)
+		const contractRequired = requiresBackendMarketContract(method, upstreamURL.pathname)
+		const explicitSnapshotID = requestedSnapshotID(body)
+		const cacheablePublicRead = isPublicMarketRead(method, upstreamURL.pathname) &&
+			explicitSnapshotID === ''
+		const expectedContract = contractRequired
+      ? expectedBackendContract()
+      : undefined
     const cacheDigest = cacheablePublicRead
       ? createHash('sha256').update(publicReadCachePayload(body)).digest('hex')
       : digest
-    const cacheKey = `${method}\n${upstreamURL.pathname}${upstreamURL.search}\n${cacheDigest}`
+    const cacheKey = `${expectedContract ? `${contractFingerprint(expectedContract)}\n` : ''}${method}\n${upstreamURL.pathname}${upstreamURL.search}\n${cacheDigest}`
     const cacheLookup = cacheablePublicRead
       ? publicReadCache.lookup(cacheKey)
       : undefined
@@ -460,6 +574,21 @@ export default async function handler(
       publicReadCache.put(cacheKey, sharedCacheLookup.entry)
     }
     const effectiveCacheLookup = cacheLookup ?? sharedCacheLookup
+    if (
+      effectiveCacheLookup &&
+      expectedContract &&
+      contractFingerprint(effectiveCacheLookup.entry.contract) !== contractFingerprint(expectedContract)
+    ) {
+      throw new BackendContractError('cached_contract_mismatch')
+    }
+		if (effectiveCacheLookup && expectedContract) {
+			validateSnapshotEnvelope(
+				upstreamURL.pathname,
+				body,
+				effectiveCacheLookup.entry.body,
+				expectedContract,
+			)
+		}
     if (effectiveCacheLookup?.state === 'fresh') {
       sendCachedResponse(
         response,
@@ -499,40 +628,29 @@ export default async function handler(
       secret,
       retryable: retryableRead,
     }
-    if (staleLookup && cacheablePublicRead) {
-      schedulePublicRevalidation(cacheKey, async () => {
-        const refreshed = await fetchUpstream({
-          ...upstreamOptions,
-          deadline: startedAt + TOTAL_UPSTREAM_TIMEOUT_MS,
-        })
-        const cookies = responseCookies(refreshed.response)
-        const cacheEntry = publicCacheEntry(
-          refreshed.response,
-          refreshed.body,
-          cookies,
-        )
-        if (!cacheEntry) return
-        publicReadCache.put(cacheKey, cacheEntry)
-        await runtimePublicReadCache.put(cacheKey, cacheEntry)
-      })
-      sendCachedResponse(response, staleLookup, startedAt, cachedPathname)
-      return
-    }
     const {
       response: upstream,
       body: upstreamBody,
+      requestNonce: upstreamRequestNonce,
     } = await fetchUpstream({
       ...upstreamOptions,
       deadline: startedAt + TOTAL_UPSTREAM_TIMEOUT_MS,
     })
 
+    const verifiedContract = expectedContract
+      ? backendContract(upstream, upstreamRequestNonce, expectedContract)
+      : undefined
+		if (verifiedContract && upstream.status === 200) {
+			validateSnapshotEnvelope(upstreamURL.pathname, body, upstreamBody, verifiedContract)
+		}
+    if (verifiedContract) setBackendContractHeaders(response, verifiedContract)
     copyResponseHeader(response, upstream, 'content-type')
     copyResponseHeader(response, upstream, 'location')
     copyResponseHeader(response, upstream, 'vary')
     const cookies = responseCookies(upstream)
     if (cookies.length > 0) response.setHeader('Set-Cookie', cookies)
     const cacheEntry = cacheablePublicRead
-      ? publicCacheEntry(upstream, upstreamBody, cookies)
+      ? publicCacheEntry(upstream, upstreamBody, cookies, verifiedContract as BackendMarketContract)
       : undefined
     if (cacheEntry) {
       publicReadCache.put(cacheKey, cacheEntry)
@@ -551,8 +669,17 @@ export default async function handler(
     )
     response.status(upstream.status).send(upstreamBody)
   } catch (error) {
-    if (staleLookup) {
+    if (staleLookup && !(error instanceof BackendContractError)) {
       sendCachedResponse(response, staleLookup, startedAt, cachedPathname)
+      return
+    }
+    if (error instanceof BackendContractError) {
+      response.setHeader('Cache-Control', 'no-store')
+      response.status(502).json({
+        code: 'backend_contract_mismatch',
+        message: 'Qiu Market backend identity or data contract did not match this release.',
+        result: { reason: error.reason },
+      })
       return
     }
     const timeout = error instanceof Error && error.name === 'AbortError'

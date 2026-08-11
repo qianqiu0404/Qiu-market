@@ -8,6 +8,17 @@ import {
 } from './public-read-cache'
 import type { RuntimeCache } from '@vercel/functions'
 
+const contract = {
+  releaseCommit: 'a7adc11b142ec0c08d615616ec6d31204d699d83',
+  dataMode: 'live',
+  providerPolicy: 'restricted-no-bypass.v1',
+  contractSchema: 'qiu.market-read-contract.v1',
+  snapshotSchema: 'qiu.market-snapshot.v1',
+	edgeReleaseCommit: 'a7adc11b142ec0c08d615616ec6d31204d699d83',
+	edgeDataMode: 'live',
+	edgeContractSchema: 'qiu.market-edge-contract.v1',
+}
+
 describe('isPublicMarketRead', () => {
   it('allows only versioned public market read envelopes', () => {
     expect(isPublicMarketRead('POST', '/api/v1/get_system_overview')).toBe(true)
@@ -28,6 +39,7 @@ describe('PublicReadCache', () => {
       body: Buffer.from('{"code":2000}'),
       contentType: 'application/json',
       storedAt: 1_000,
+      contract,
     })
 
     expect(cache.lookup('market', 16_000)?.state).toBe('fresh')
@@ -43,6 +55,7 @@ describe('PublicReadCache', () => {
         status: 200,
         body: Buffer.from(key),
         storedAt: 1_000,
+        contract,
       })
     }
 
@@ -58,6 +71,7 @@ describe('PublicReadCache', () => {
         status: 200,
         body: Buffer.from('1111'),
         storedAt: 1_000,
+        contract,
       }),
     ).toBe(true)
     expect(
@@ -65,6 +79,7 @@ describe('PublicReadCache', () => {
         status: 200,
         body: Buffer.from('22'),
         storedAt: 1_000,
+        contract,
       }),
     ).toBe(true)
     expect(
@@ -72,6 +87,7 @@ describe('PublicReadCache', () => {
         status: 200,
         body: Buffer.from('333'),
         storedAt: 1_000,
+        contract,
       }),
     ).toBe(true)
 
@@ -83,12 +99,24 @@ describe('PublicReadCache', () => {
         status: 200,
         body: Buffer.from('12345'),
         storedAt: 1_000,
+        contract,
       }),
     ).toBe(false)
   })
 })
 
 describe('agePublicReadBody', () => {
+	it('keeps a validated frozen snapshot unchanged and reports transport age only in headers', () => {
+		const snapshot = Buffer.from(JSON.stringify({
+			code: 2000,
+			snapshot_id: 'snp_00000000000000000000000000000001',
+			snapshot_as_of: 1785200000000,
+			snapshot_schema: 'qiu.market-snapshot.v1',
+			result: [{ freshness_status: 'fresh', freshness_age_seconds: 10 }],
+		}))
+		expect(agePublicReadBody('/api/v2/get_asset_dashboard', snapshot, 240)).toBe(snapshot)
+	})
+
   it('expires a cached DEX route into an explicit composite reference', () => {
     const aged = agePublicReadBody(
       '/api/v2/get_asset_dashboard',
@@ -290,6 +318,7 @@ describe('RuntimePublicReadCache', () => {
         body: Buffer.from('{"code":2000}'),
         contentType: 'application/json',
         storedAt: 1_000,
+        contract,
       }),
     ).toBe(true)
 
@@ -307,6 +336,7 @@ describe('RuntimePublicReadCache', () => {
         status: 200,
         body: Buffer.from('12345'),
         storedAt: 1_000,
+        contract,
       }),
     ).toBe(false)
     expect(runtime.values.size).toBe(0)

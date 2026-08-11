@@ -40,6 +40,7 @@ type HandleSvc struct {
 	symbolKlineView       database.SymbolKlineView
 	providerStatusView    database.ProviderStatusDB
 	marketAggregationView database.MarketAggregationDB
+	marketSnapshots       *marketSnapshotStore
 	// redisCli 用于读取 ZSET 榜单；为 nil 时榜单接口自动回退 SQL 排序。
 	redisCli *redis.Client
 	// dorisDB 是 Doris 数仓的只读连接（MySQL 协议）；为 nil 时
@@ -47,7 +48,11 @@ type HandleSvc struct {
 	dorisDB *sql.DB
 }
 
-func NewHandleSvc(db *database.DB, assetView database.AssetView, symbolView database.SymbolView, symbolMarketView database.SymbolMarketView, exchangeView database.ExchangeView, exchangeSymbolView database.ExchangeSymbolView, symbolKlineView database.SymbolKlineView, providerStatusView database.ProviderStatusDB, marketAggregationView database.MarketAggregationDB, redisCli *redis.Client, dorisDB *sql.DB) RestService {
+func NewHandleSvc(db *database.DB, assetView database.AssetView, symbolView database.SymbolView, symbolMarketView database.SymbolMarketView, exchangeView database.ExchangeView, exchangeSymbolView database.ExchangeSymbolView, symbolKlineView database.SymbolKlineView, providerStatusView database.ProviderStatusDB, marketAggregationView database.MarketAggregationDB, redisCli *redis.Client, dorisDB *sql.DB, snapshotContracts ...MarketSnapshotContract) RestService {
+	var snapshotContract MarketSnapshotContract
+	if len(snapshotContracts) > 0 {
+		snapshotContract = snapshotContracts[0]
+	}
 	return &HandleSvc{
 		db:                    db,
 		assetView:             assetView,
@@ -58,6 +63,7 @@ func NewHandleSvc(db *database.DB, assetView database.AssetView, symbolView data
 		symbolKlineView:       symbolKlineView,
 		providerStatusView:    providerStatusView,
 		marketAggregationView: marketAggregationView,
+		marketSnapshots:       newMarketSnapshotStore(marketAggregationView, redisCli, snapshotContract),
 		redisCli:              redisCli,
 		dorisDB:               dorisDB,
 	}

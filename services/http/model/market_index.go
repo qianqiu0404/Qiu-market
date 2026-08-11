@@ -4,6 +4,7 @@ type MarketOverviewRequest struct {
 	ConsumerToken string `json:"consumer_token"`
 	Venue         string `json:"venue"`
 	Universe      string `json:"universe"`
+	SnapshotID    string `json:"snapshot_id"`
 }
 
 type AvailableDecimal struct {
@@ -54,6 +55,9 @@ type MarketOverviewResult struct {
 	RoutableAssetCount          int64            `json:"routable_asset_count"`
 	ReferenceOnlyAssetCount     int64            `json:"reference_only_asset_count"`
 	UnpricedAssetCount          int64            `json:"unpriced_asset_count"`
+	FreshAssetCount             int64            `json:"fresh_asset_count"`
+	StaleAssetCount             int64            `json:"stale_asset_count"`
+	UnavailableAssetCount       int64            `json:"unavailable_asset_count"`
 	ChangeAvailableCount        int64            `json:"change_available_count"`
 	ContributingProviderCount   int64            `json:"contributing_provider_count"`
 	SingleVenuePricedAssetCount int64            `json:"single_venue_priced_asset_count"`
@@ -68,9 +72,12 @@ type MarketOverviewResult struct {
 }
 
 type MarketOverviewResponse struct {
-	Code    uint64               `json:"code"`
-	Message string               `json:"message"`
-	Result  MarketOverviewResult `json:"result"`
+	Code           uint64               `json:"code"`
+	Message        string               `json:"message"`
+	Result         MarketOverviewResult `json:"result"`
+	SnapshotID     string               `json:"snapshot_id"`
+	SnapshotAsOf   int64                `json:"snapshot_as_of"`
+	SnapshotSchema string               `json:"snapshot_schema"`
 }
 
 type AssetDashboardV2Request struct {
@@ -84,6 +91,7 @@ type AssetDashboardV2Request struct {
 	SortBy           string `json:"sort_by"`
 	SortDirection    string `json:"sort_direction"`
 	IncludeUncovered *bool  `json:"include_uncovered"`
+	SnapshotID       string `json:"snapshot_id"`
 }
 
 type AssetDashboardV2Item struct {
@@ -136,11 +144,14 @@ type AssetDashboardV2Item struct {
 }
 
 type AssetDashboardV2Response struct {
-	Code     uint64                 `json:"code"`
-	Message  string                 `json:"message"`
-	Result   []AssetDashboardV2Item `json:"result"`
-	Total    int64                  `json:"total"`
-	Universe string                 `json:"universe"`
+	Code           uint64                 `json:"code"`
+	Message        string                 `json:"message"`
+	Result         []AssetDashboardV2Item `json:"result"`
+	Total          int64                  `json:"total"`
+	Universe       string                 `json:"universe"`
+	SnapshotID     string                 `json:"snapshot_id"`
+	SnapshotAsOf   int64                  `json:"snapshot_as_of"`
+	SnapshotSchema string                 `json:"snapshot_schema"`
 }
 
 type MarketPriceTicksRequest struct {
