@@ -309,6 +309,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | localStorage 不可用 | 当前标签页仍可切换语言，但不承诺刷新后保留 | 浏览器存储恢复后下次选择重新持久化 |
 | 后端返回未知状态原因 | 中文界面保留原始 reason/source，不猜测翻译 | 后端契约新增固定枚举后补充显式映射 |
 | provider 为 shadow/paused | 目录可见，正式 venue snapshot 为 unavailable | CLI 串行切入 canary/enabled |
+| provider 在当前部署未发布任何 selection | Markets 明示该 provider 在当前部署 unavailable，显示 `0 published`，不得伪装成搜索无结果或回退到综合价 | provider 恢复可达并通过安全 CLI 建立 selection 后重新发布 |
 | venue 参数未知 | HTTP 400 / gRPC InvalidArgument，不静默回退 All | 调用方改用八个受支持值之一 |
 
 System 的 provider 行显示 `Observing / Healthy / Stale / Unavailable / Unconfigured / Paused`、primary source、`WebSocket primary + REST reconcile` feed mode、shadow/正式 feed 的 received/matched/priced/24h 计数、四家各自 K 线 selection/匹配数、最早可晋级时间和 blockers。逐 source capability matrix 默认折叠，避免 K 线 source 淹没主要状态；某家 `klines` 失败不会把正常 `spot-tickers` 误报为不可用。System 只读，不提供 rollout 按钮。

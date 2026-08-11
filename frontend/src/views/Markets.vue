@@ -848,6 +848,18 @@ function coverageReasonLabel(reason: string): string {
         @retry="dashboard.refresh"
       />
 
+      <p
+        v-else-if="!dashboard.loading.value && assets.length === 0"
+        class="market-empty-state"
+        role="status"
+      >
+        {{ venue === 'all'
+          ? 'No assets in the provider union matched this search.'
+          : currentOverview?.published_asset_count === 0
+            ? `${selectedVenueLabel} is unavailable in this deployment — no provider assets are currently published.`
+            : `No ${selectedVenueLabel} selected assets matched this search.` }}
+      </p>
+
       <div v-else class="table-scroll">
         <table>
           <thead>
@@ -994,15 +1006,6 @@ function coverageReasonLabel(reason: string): string {
                   :variant="assetQualityVariant(asset)"
                   :label="assetQualityLabel(asset)"
                 />
-              </td>
-            </tr>
-          </tbody>
-          <tbody v-else>
-            <tr>
-              <td colspan="8" class="empty-row">
-                {{ venue === 'all'
-                  ? 'No assets in the provider union matched this search.'
-                  : `No ${selectedVenueLabel} selected assets matched this search.` }}
               </td>
             </tr>
           </tbody>
@@ -1327,7 +1330,14 @@ th {
   background: var(--accent-soft);
   border-color: #bad8f6;
 }
-.empty-row { padding: 44px; color: var(--text-3); text-align: center; }
+.market-empty-state {
+  margin: 0;
+  padding: 44px 20px;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
 .table-footer,
 .pager,
 .pager label { display: flex; align-items: center; gap: 8px; }

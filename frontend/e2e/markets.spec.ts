@@ -345,6 +345,46 @@ test('venue selection is URL-addressable without changing asset row grain', asyn
   await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' })).toHaveCount(1)
 })
 
+test('a disabled provider is explicit instead of looking like an empty search', async ({ page }) => {
+  await page.route('**/api/v2/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    const request = JSON.parse(route.request().postData() ?? '{}') as {
+      venue?: string
+    }
+    if (request.venue !== 'binance') {
+      await route.fallback()
+      return
+    }
+    const body = path.endsWith('/get_market_overview')
+      ? {
+          code: 2000,
+          result: {
+            venue: 'binance',
+            universe: 'provider_top50',
+            asset_count: 0,
+            eligible_asset_count: 0,
+            published_asset_count: 0,
+            priced_asset_count: 0,
+            local_preview_enabled: false,
+          },
+        }
+      : { code: 2000, result: [], total: 0, universe: 'provider_top50' }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    })
+  })
+
+  await page.goto('/markets?venue=binance')
+
+  await expect(page.locator('.market-empty-state')).toContainText(
+    'Binance is unavailable in this deployment',
+  )
+  await expect(page.locator('.market-overview-strip')).toContainText('0 published')
+  await expect(page.getByText(/matched this search/)).toHaveCount(0)
+})
+
 test('rapid CEX switching renders the selected venue tick instead of the previous venue response', async ({ page }) => {
   await page.goto('/markets?venue=coinbase')
   await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' }))
