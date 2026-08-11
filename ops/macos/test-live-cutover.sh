@@ -117,7 +117,10 @@ case "$action" in
   pause)
     find "$runtime/run/test-$label.pid" "$runtime/run/test-$label.sha" -maxdepth 0 -type f -delete 2>/dev/null || true
     [ "$label" != com.qiu-market.live.api-tunnel ] || printf 'paused\n' > "$runtime/run/tunnel-state"
-    [ "${QIU_MARKET_LIVE_FAIL_PAUSE_LABEL:-}" != "$label" ] || exit 75
+    if [ "${QIU_MARKET_LIVE_FAIL_PAUSE_LABEL:-}" = "$label" ] &&
+      [ -f "$runtime/run/fail-pause-armed" ]; then
+      exit 75
+    fi
     ;;
   start)
     if [ -n "${QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT:-}" ] &&
@@ -134,6 +137,7 @@ case "$action" in
         fake_pid=88006; sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")"
         QIU_MARKET_LIVE_CUTOVER_TEST_MODE=true "$runtime/ops/live-api-tunnel" >/dev/null
         printf 'resumed\n' > "$runtime/run/tunnel-state"
+        [ -z "${QIU_MARKET_LIVE_FAIL_PAUSE_LABEL:-}" ] || printf 'armed\n' > "$runtime/run/fail-pause-armed"
         ;;
       *) exit 64 ;;
     esac
@@ -280,10 +284,12 @@ unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT
 [ "$(<"$runtime/run/tunnel-state")" = paused ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:failed-redis:owner)" = "$failed_owner" ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:failed-redis:state)" = committed:failed-generation ]
+redis-cli -h 127.0.0.1 -p "$port" DEL qiu:runtime-generation:failed-redis:owner \
+  qiu:runtime-generation:failed-redis:state qiu:runtime-generation:failed-redis:lock >/dev/null
 
 pause_test_first_line="$(( $(wc -l < "$runtime/run/restart-events") + 1 ))"
 export QIU_MARKET_LIVE_CUTOVER_FAIL_AT=after_restart
-export QIU_MARKET_LIVE_FAIL_PAUSE_LABEL=com.qiu-market.live.crawler
+export QIU_MARKET_LIVE_FAIL_PAUSE_LABEL=com.qiu-market.live.api-tunnel
 if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'pause failure injection did not fail' >&2; exit 1; fi
 unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT QIU_MARKET_LIVE_FAIL_PAUSE_LABEL
 pause_failure_events="$(tail -n "+$pause_test_first_line" "$runtime/run/restart-events")"
@@ -291,9 +297,9 @@ for label in com.qiu-market.live.api-tunnel com.qiu-market.live.crawler com.qiu-
   com.qiu-market.live.worker "$stack_label" "$frontdoor_label"; do
   grep -F "pause $label" <<<"$pause_failure_events" >/dev/null
 done
-crawler_pause_line="$(grep -n -m1 'pause com.qiu-market.live.crawler' <<<"$pause_failure_events" | cut -d: -f1)"
+tunnel_pause_line="$(grep -n -m1 'pause com.qiu-market.live.api-tunnel' <<<"$pause_failure_events" | cut -d: -f1)"
 frontdoor_pause_line="$(grep -n -m1 "pause $frontdoor_label" <<<"$pause_failure_events" | cut -d: -f1)"
-[ "$frontdoor_pause_line" -gt "$crawler_pause_line" ]
+[ "$frontdoor_pause_line" -gt "$tunnel_pause_line" ]
 [ "$(jq -r '.phase' "$runtime/run/live-cutover/current.json")" = rollback-failed ]
 [ "$(<"$runtime/run/tunnel-state")" = paused ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:failed-redis:owner)" = "$failed_owner" ]
