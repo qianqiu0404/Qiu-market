@@ -11,6 +11,8 @@ state_dir="$runtime/run/live-cutover"
 state_file="$state_dir/current.json"
 lock_dir="$state_dir/lock"
 domain="gui/$(id -u)"
+frontdoor_label='com.qiu-market.d1r1.frontdoor'
+stack_label='com.qiu-market.d1r1.stack'
 owns_lock=false
 
 if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
@@ -42,6 +44,33 @@ selector_preflight() {
     QIU_MARKET_LIVE_CUTOVER_TEST_MODE="${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" \
     bash -c 'source "$1"; validate_release_selector "$2"' _ \
     "$repo_root/ops/macos/live-release-selector.sh" "$manifest"
+  verify_launch_contract
+}
+
+label_program_path() {
+  local label="$1"
+  if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
+    [ -f "$runtime/run/test-$label.program" ] || return 1
+    printf '%s\n' "$(<"$runtime/run/test-$label.program")"
+  else
+    launchctl print "$domain/$label" 2>/dev/null | awk -F' = ' '/^[[:space:]]*program = /{print $2;exit}'
+  fi
+}
+
+verify_launch_contract() {
+  local actual label expected
+  actual="$(label_program_path "$frontdoor_label")" || { echo 'live frontdoor LaunchAgent is missing' >&2; return 1; }
+  [ "$actual" = "$runtime/ops/r1/frontdoor" ] || { echo 'live frontdoor LaunchAgent Program path mismatch' >&2; return 1; }
+  actual="$(label_program_path "$stack_label")" || { echo 'live stack LaunchAgent is missing' >&2; return 1; }
+  [ "$actual" = "$runtime/ops/r1/stack" ] || { echo 'live stack LaunchAgent Program path mismatch' >&2; return 1; }
+  for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do
+    actual="$(label_program_path "$label")" || { echo "live role LaunchAgent is missing: $label" >&2; return 1; }
+    expected="$runtime/ops/live-role"
+    [ "$actual" = "$expected" ] || { echo "live role LaunchAgent Program path mismatch: $label" >&2; return 1; }
+  done
+  label='com.qiu-market.live.api-tunnel'
+  actual="$(label_program_path "$label")" || { echo 'live API tunnel LaunchAgent is missing' >&2; return 1; }
+  [ "$actual" = "$runtime/ops/live-api-tunnel" ] || { echo 'live API tunnel LaunchAgent Program path mismatch' >&2; return 1; }
 }
 
 listener_pid() {
@@ -61,11 +90,12 @@ owner_checked_remove_pidfile() {
   find "$pidfile" -maxdepth 0 -type f -delete
 }
 
-restart_label() {
+start_label() {
   local label="$1"
   if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
-    "${QIU_MARKET_LIVE_RESTART_HOOK:?}" restart "$label"
+    "${QIU_MARKET_LIVE_RESTART_HOOK:?}" start "$label"
   else
+    launchctl enable "$domain/$label" || return 1
     launchctl kickstart -k "$domain/$label"
   fi
 }
@@ -77,16 +107,6 @@ pause_label() {
   else
     launchctl disable "$domain/$label" || return 1
     launchctl kill SIGTERM "$domain/$label" >/dev/null 2>&1 || true
-  fi
-}
-
-resume_label() {
-  local label="$1"
-  if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
-    "${QIU_MARKET_LIVE_RESTART_HOOK:?}" resume "$label"
-  else
-    launchctl enable "$domain/$label"
-    launchctl kickstart -k "$domain/$label"
   fi
 }
 
@@ -127,17 +147,28 @@ install_runtime_consumers() {
   install -m 700 "$repo_root/ops/macos/live-release-selector.sh" "$runtime/ops/release-selector.next"
   install -m 700 "$repo_root/ops/macos/live-role.sh" "$runtime/ops/live-role.next"
   install -m 700 "$repo_root/ops/macos/live-api-tunnel.sh" "$runtime/ops/live-api-tunnel.next"
-  install -m 700 "$repo_root/ops/macos/live-stack.sh" "$runtime/ops/d1-launch-stack.next"
+  install -m 700 "$repo_root/ops/macos/live-frontdoor.sh" "$runtime/ops/r1/frontdoor.next"
+  install -m 700 "$repo_root/ops/macos/live-stack.sh" "$runtime/ops/r1/stack.next"
   mv "$runtime/ops/release-selector.next" "$runtime/ops/release-selector"
   mv "$runtime/ops/live-role.next" "$runtime/ops/live-role"
   mv "$runtime/ops/live-api-tunnel.next" "$runtime/ops/live-api-tunnel"
-  mv "$runtime/ops/d1-launch-stack.next" "$runtime/ops/d1-launch-stack"
+  mv "$runtime/ops/r1/frontdoor.next" "$runtime/ops/r1/frontdoor"
+  mv "$runtime/ops/r1/stack.next" "$runtime/ops/r1/stack"
+}
+
+install_candidate_release_manifest() {
+  local manifest="$1" release_root destination
+  release_root="$(dirname "$(jq -r '.config_path' "$manifest")")"
+  destination="$release_root/release.json"
+  [ "$release_root" = "$runtime/releases/$(jq -r '.commit' "$manifest")" ] || return 1
+  install -m 600 "$manifest" "$destination.next"
+  mv "$destination.next" "$destination"
 }
 
 backup_runtime() {
   local backup="$1"
   install -d -m 700 "$backup"
-  for relative in config/active-release.json run/committed-generation.json ops/release-selector ops/live-role ops/live-api-tunnel ops/d1-launch-stack; do
+  for relative in config/active-release.json run/committed-generation.json ops/release-selector ops/live-role ops/live-api-tunnel ops/r1/frontdoor ops/r1/stack; do
     [ -e "$runtime/$relative" ] || continue
     install -d -m 700 "$backup/$(dirname "$relative")"
     install -m "$( [ -x "$runtime/$relative" ] && echo 700 || echo 600 )" "$runtime/$relative" "$backup/$relative"
@@ -146,7 +177,7 @@ backup_runtime() {
 
 restore_runtime() {
   local backup="$1"
-  for relative in config/active-release.json run/committed-generation.json ops/release-selector ops/live-role ops/live-api-tunnel ops/d1-launch-stack; do
+  for relative in config/active-release.json run/committed-generation.json ops/release-selector ops/live-role ops/live-api-tunnel ops/r1/frontdoor ops/r1/stack; do
     [ -e "$backup/$relative" ] || continue
     install -m "$( [ -x "$backup/$relative" ] && echo 700 || echo 600 )" "$backup/$relative" "$runtime/$relative.next" || return 1
     mv "$runtime/$relative.next" "$runtime/$relative" || return 1
@@ -194,10 +225,24 @@ wait_label_running() {
   return 1
 }
 
+wait_label_stopped() {
+  local label="$1" pid
+  if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
+    [ ! -e "$runtime/run/test-$label.pid" ]
+    return
+  fi
+  for _ in $(jot 120); do
+    pid="$(label_pid "$label" 2>/dev/null || true)"
+    if ! [[ "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" 2>/dev/null; then return 0; fi
+    sleep 0.25
+  done
+  return 1
+}
+
 wait_frontdoor_binary() {
   local expected_sha="$1" pid executable actual
   if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
-    wait_label_binary 'com.qiu-market.d1.stack' "$expected_sha"
+    wait_label_binary "$frontdoor_label" "$expected_sha"
     return
   fi
   for _ in $(jot 120); do
@@ -215,29 +260,30 @@ wait_frontdoor_binary() {
 }
 
 capture_generation_processes() {
-  local include_tunnel="$1" stack crawler dex worker tunnel=0 processes
-  stack="$(label_pid 'com.qiu-market.d1.stack')"
+  local include_tunnel="$1" frontdoor stack crawler dex worker tunnel=0 processes
+  frontdoor="$(label_pid "$frontdoor_label")"
+  stack="$(label_pid "$stack_label")"
   crawler="$(label_pid 'com.qiu-market.live.crawler')"
   dex="$(label_pid 'com.qiu-market.live.dex')"
   worker="$(label_pid 'com.qiu-market.live.worker')"
   if [ "$include_tunnel" = true ]; then tunnel="$(label_pid 'com.qiu-market.live.api-tunnel')"; fi
-  for pid in "$stack" "$crawler" "$dex" "$worker"; do [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1; done
+  for pid in "$frontdoor" "$stack" "$crawler" "$dex" "$worker"; do [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1; done
   if [ "$include_tunnel" = true ]; then [[ "$tunnel" =~ ^[1-9][0-9]*$ ]] || return 1; fi
   if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
     if [ "$include_tunnel" = true ]; then
-      jq -n --argjson stack "$stack" --argjson crawler "$crawler" --argjson dex "$dex" --argjson worker "$worker" --argjson tunnel "$tunnel" '
-        {stack:$stack,redis:$stack,api:$stack,trading:$stack,rpc:$stack,frontdoor:$stack,
+      jq -n --argjson frontdoor "$frontdoor" --argjson stack "$stack" --argjson crawler "$crawler" --argjson dex "$dex" --argjson worker "$worker" --argjson tunnel "$tunnel" '
+        {stack:$stack,redis:$stack,api:$stack,trading:$stack,rpc:$stack,frontdoor:$frontdoor,
          crawler:$crawler,dex:$dex,worker:$worker,tunnel:$tunnel}'
     else
-      jq -n --argjson stack "$stack" --argjson crawler "$crawler" --argjson dex "$dex" --argjson worker "$worker" '
-        {stack:$stack,redis:$stack,api:$stack,trading:$stack,rpc:$stack,frontdoor:$stack,
+      jq -n --argjson frontdoor "$frontdoor" --argjson stack "$stack" --argjson crawler "$crawler" --argjson dex "$dex" --argjson worker "$worker" '
+        {stack:$stack,redis:$stack,api:$stack,trading:$stack,rpc:$stack,frontdoor:$frontdoor,
          crawler:$crawler,dex:$dex,worker:$worker}'
     fi
     return
   fi
   processes="$(jq -n --argjson stack "$stack" --argjson redis "$(<"$runtime/run/redis.pid")" \
     --argjson api "$(<"$runtime/run/api.pid")" --argjson trading "$(<"$runtime/run/trading.pid")" \
-    --argjson rpc "$(<"$runtime/run/rpc.pid")" --argjson frontdoor "$(<"$runtime/run/frontdoor.pid")" \
+    --argjson rpc "$(<"$runtime/run/rpc.pid")" --argjson frontdoor "$frontdoor" \
     --argjson crawler "$crawler" --argjson dex "$dex" --argjson worker "$worker" '
     {stack:$stack,redis:$redis,api:$api,trading:$trading,rpc:$rpc,frontdoor:$frontdoor,
      crawler:$crawler,dex:$dex,worker:$worker}')"
@@ -348,22 +394,24 @@ activate_generation() {
   if [ "$schema" = 'qiu.d1.active-release.v2' ]; then
     write_generation "$manifest" "$runtime/run/committed-generation.json" false '{}' || return 1
   fi
-  restart_label 'com.qiu-market.d1.stack' || return 1
-  wait_label_running 'com.qiu-market.d1.stack' || return 1
-  for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do restart_label "$label" || return 1; done
+  start_label "$frontdoor_label" || return 1
+  wait_label_running "$frontdoor_label" || return 1
+  if [ "$schema" = 'qiu.d1.active-release.v2' ]; then wait_frontdoor_binary "$frontdoor_sha" || return 1; fi
+  start_label "$stack_label" || return 1
+  wait_label_running "$stack_label" || return 1
+  for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do start_label "$label" || return 1; done
   if [ "$schema" = 'qiu.d1.active-release.v2' ]; then
     for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do
       wait_label_running "$label" || return 1
       wait_label_binary "$label" "$market_sha" || return 1
     done
-    wait_frontdoor_binary "$frontdoor_sha" || return 1
     probe_market_contract "$manifest" 18080 false 200 || return 1
     probe_market_contract "$manifest" 18084 true 503 || return 1
     processes="$(capture_generation_processes false)" || return 1
     claim_redis_generation "$manifest" || return 1
     write_generation "$manifest" "$runtime/run/committed-generation.json" true "$processes" || return 1
     probe_market_contract "$manifest" 18084 true 200 || return 1
-    resume_label 'com.qiu-market.live.api-tunnel' || return 1
+    start_label 'com.qiu-market.live.api-tunnel' || return 1
     wait_label_running 'com.qiu-market.live.api-tunnel' || return 1
     processes="$(capture_generation_processes true)" || return 1
     write_generation "$manifest" "$runtime/run/committed-generation.json" true "$processes" || return 1
@@ -373,8 +421,22 @@ activate_generation() {
   for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do
     wait_label_binary "$label" "$market_sha" || return 1
   done
-  resume_label 'com.qiu-market.live.api-tunnel' || return 1
+  start_label 'com.qiu-market.live.api-tunnel' || return 1
   wait_label_running 'com.qiu-market.live.api-tunnel'
+}
+
+stop_candidate_generation() {
+  local label
+  for label in com.qiu-market.live.api-tunnel com.qiu-market.live.crawler com.qiu-market.live.dex \
+    com.qiu-market.live.worker "$stack_label" "$frontdoor_label"; do
+    pause_label "$label" || return 1
+    wait_label_stopped "$label" || return 1
+  done
+  if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" != true ]; then
+    for port in 6389 18080 18081 18083 18084; do
+      [ -z "$(listener_pid "$port")" ] || return 1
+    done
+  fi
 }
 
 perform_cutover() {
@@ -398,7 +460,7 @@ perform_cutover() {
     trap - ERR
     if [ "$rollback_needed" = true ]; then
       rollback_ok=true
-      pause_label 'com.qiu-market.live.api-tunnel' >/dev/null 2>&1 || rollback_ok=false
+      stop_candidate_generation >/dev/null 2>&1 || rollback_ok=false
       if [ "$rollback_ok" = true ]; then restore_runtime "$backup" || rollback_ok=false; fi
       if [ "$rollback_ok" = true ]; then
         activate_generation "$old_manifest" >/dev/null 2>&1 || rollback_ok=false
@@ -421,6 +483,7 @@ perform_cutover() {
   pause_label 'com.qiu-market.live.api-tunnel'
   [ "${QIU_MARKET_LIVE_CUTOVER_FAIL_AT:-}" != after_tunnel_stop ]
   install_runtime_consumers
+  install_candidate_release_manifest "$manifest"
   install -m 600 "$manifest" "$runtime/config/active-release.next"; mv "$runtime/config/active-release.next" "$runtime/config/active-release.json"
   activate_generation "$manifest"
   [ "${QIU_MARKET_LIVE_CUTOVER_FAIL_AT:-}" != after_restart ]

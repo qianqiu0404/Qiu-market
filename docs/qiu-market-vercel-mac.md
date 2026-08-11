@@ -262,8 +262,13 @@ bash ops/macos/live-cutover.sh preflight /private/path/to/candidate-active-relea
 bash ops/macos/live-cutover.sh cutover /private/path/to/candidate-active-release.json --execute
 ```
 
-执行顺序固定为：暂停 tunnel；备份旧 selector/generation/wrappers；安装候选 selector；
-写 `ready=false` 保持 frontdoor drain；重启 stack 与 crawler/dex/worker；用 exact-SHA
+preflight 会先核对现役六个 LaunchAgent 的 Program 精确指向受管 runtime：独立
+`com.qiu-market.d1r1.frontdoor`、business `com.qiu-market.d1r1.stack`、三个只读 role
+和 API tunnel；任一 label 缺失或路径漂移都在修改 runtime 前失败。执行顺序固定为：
+暂停 tunnel；备份旧 selector/generation/wrappers；安装候选 selector 与
+`releases/<sha>/release.json`；写 `ready=false`；先把独立 frontdoor 重启为候选 pure
+passthrough 并保持 drain，再重启保留 `d1-launch-preflight` 的 business stack 与
+crawler/dex/worker；用 exact-SHA
 `market-services contract-probe --secret-file <0600 path>` 验证 direct backend 200 与 edge
 drain 503/no-store；claim 新 Redis generation owner；原子提交无 tunnel 的 PID set 与
 `ready=true`；验证 edge 200；恢复 tunnel；最后补写包含 tunnel 的完整 PID set。probe
@@ -272,8 +277,9 @@ drain 503/no-store；claim 新 Redis generation owner；原子提交无 tunnel �
 旧 Redis generation 只有同时满足以下三项才删除自己的 owner/state/lock key：旧
 generation 中记录的全部 PID 已停止；6389 listener 不再是旧 Redis PID；Redis owner key
 仍精确等于旧 owner token。脚本不执行 `FLUSH*`，旧 cleanup 也不能删除新 PID file。
-任何阶段失败都会先暂停 tunnel，再尝试恢复旧 selector、committed generation、四个
-wrapper、只读 roles 与 tunnel；只有整条恢复链通过后才记录 `rolled-back`，并按 owner
+任何阶段失败都会先暂停并停净候选 frontdoor、business stack、三个只读 role 与 tunnel，
+再尝试恢复旧 selector、committed generation、五个受管 wrapper、六个 LaunchAgent 与
+tunnel；只有整条恢复链通过后才记录 `rolled-back`，并按 owner
 token 清掉失败候选的 generation key。如果恢复链自身失败，脚本保持 tunnel 暂停、记录
 `rollback-failed` 并保留候选 Redis owner/state 作为人工恢复证据，不会虚报已回滚。
 `pidfile-cleanup` 旁路只在 `/tmp/qiu-market-live-cutover.*` 隔离 test mode 可用。
@@ -284,7 +290,7 @@ token 清掉失败候选的 generation key。如果恢复链自身失败，脚�
 - `database/market_aggregation.go` 与 `services/http/service/market_snapshot.go`：PG 冻结读取、Redis authority 与分页；
 - `frontend/api/proxy.ts`：Vercel BFF backend+edge fail-closed、cache 与 snapshot envelope 验证；
 - `cmd/market-frontdoor/main.go`：固定 `18084 -> 18080` pure passthrough 与 drain；
-- `ops/macos/live-release-selector.sh`、`live-cutover.sh`：私有 selector、PID/Redis owner、原子切换与回滚。
+- `ops/macos/live-frontdoor.sh`、`live-stack.sh`、`live-release-selector.sh`、`live-cutover.sh`：独立 frontdoor、business stack、私有 selector、PID/Redis owner、原子切换与回滚。
 
 Owner 60 秒说明：浏览器先取 overview snapshot ID，再用它读取 dashboard；PostgreSQL
 一次事务冻结 106 行，Redis 只接受同 bucket 的一个完整 winner，BFF 同时验证 Vercel

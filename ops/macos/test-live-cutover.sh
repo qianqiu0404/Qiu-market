@@ -81,6 +81,7 @@ make_release "$old_commit" "$old_owner" old-generation old-redis "$runtime/old.j
 make_release "$new_commit" "$new_owner" new-generation new-redis "$runtime/new.json"
 make_release "$failed_commit" "$failed_owner" failed-generation failed-redis "$runtime/failed.json"
 install -m 600 "$runtime/old.json" "$runtime/config/active-release.json"
+install -m 600 "$runtime/old.json" "$runtime/releases/$old_commit/release.json"
 jq -n --arg commit "$old_commit" --arg owner "$old_owner" '
   {schema_version:"qiu.d1.committed-generation.v2",generation_id:"old-generation",owner_token:$owner,
    commit:$commit,data_mode:"live",frontdoor_port:18084,upstream_port:18080,
@@ -91,9 +92,18 @@ jq -n --arg commit "$old_commit" --arg owner "$old_owner" '
 for old_pid in $(jq -r '.processes[]' "$runtime/run/committed-generation.json"); do
   ! kill -0 "$old_pid" 2>/dev/null
 done
-for pair in live-release-selector.sh:release-selector live-role.sh:live-role live-api-tunnel.sh:live-api-tunnel live-stack.sh:d1-launch-stack; do
+for pair in live-release-selector.sh:release-selector live-role.sh:live-role live-api-tunnel.sh:live-api-tunnel live-frontdoor.sh:r1/frontdoor live-stack.sh:r1/stack; do
   install -m 700 "$repo_root/ops/macos/${pair%%:*}" "$runtime/ops/${pair##*:}"
 done
+frontdoor_label='com.qiu-market.d1r1.frontdoor'
+stack_label='com.qiu-market.d1r1.stack'
+printf '%s\n' "$runtime/ops/r1/frontdoor" > "$runtime/run/test-$frontdoor_label.program"
+printf '%s\n' "$runtime/ops/r1/stack" > "$runtime/run/test-$stack_label.program"
+for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do
+  printf '%s\n' "$runtime/ops/live-role" > "$runtime/run/test-$label.program"
+done
+printf '%s\n' "$runtime/ops/live-api-tunnel" > "$runtime/run/test-com.qiu-market.live.api-tunnel.program"
+chmod 600 "$runtime/run"/test-*.program
 
 restart_hook="$runtime/restart-hook"
 cat > "$restart_hook" <<'HOOK'
@@ -102,27 +112,30 @@ set -euo pipefail
 action="$1"; label="$2"; runtime="${QIU_MARKET_LIVE_RUNTIME:?}"
 printf '%s %s\n' "$action" "$label" >> "$runtime/run/restart-events"
 case "$action" in
-  pause) printf 'paused\n' > "$runtime/run/tunnel-state" ;;
-  resume)
-    QIU_MARKET_LIVE_CUTOVER_TEST_MODE=true "$runtime/ops/live-api-tunnel" >/dev/null
-    sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")"
-    printf '%s\n' "$sha" > "$runtime/run/test-$label.sha"
-    printf '%s\n' "$$" > "$runtime/run/test-$label.pid"
-    chmod 600 "$runtime/run/test-$label.sha" "$runtime/run/test-$label.pid"
-    printf 'resumed\n' > "$runtime/run/tunnel-state"
+  pause)
+    find "$runtime/run/test-$label.pid" "$runtime/run/test-$label.sha" -maxdepth 0 -type f -delete 2>/dev/null || true
+    [ "$label" != com.qiu-market.live.api-tunnel ] || printf 'paused\n' > "$runtime/run/tunnel-state"
     ;;
-  restart)
+  start)
     if [ -n "${QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT:-}" ] &&
       [ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT" ]; then
       exit 75
     fi
-    if [ "$label" = com.qiu-market.d1.stack ]; then
-      sha="$(jq -r '.frontdoor_sha256 // .binary_sha256' "$runtime/config/active-release.json")"
-    else
-      sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")"
-    fi
+    case "$label" in
+      com.qiu-market.d1r1.frontdoor) fake_pid=88001; sha="$(jq -r '.frontdoor_sha256' "$runtime/config/active-release.json")" ;;
+      com.qiu-market.d1r1.stack) fake_pid=88002; sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")" ;;
+      com.qiu-market.live.crawler) fake_pid=88003; sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")" ;;
+      com.qiu-market.live.dex) fake_pid=88004; sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")" ;;
+      com.qiu-market.live.worker) fake_pid=88005; sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")" ;;
+      com.qiu-market.live.api-tunnel)
+        fake_pid=88006; sha="$(jq -r '.binary_sha256' "$runtime/config/active-release.json")"
+        QIU_MARKET_LIVE_CUTOVER_TEST_MODE=true "$runtime/ops/live-api-tunnel" >/dev/null
+        printf 'resumed\n' > "$runtime/run/tunnel-state"
+        ;;
+      *) exit 64 ;;
+    esac
     printf '%s\n' "$sha" > "$runtime/run/test-$label.sha"
-    printf '%s\n' "$$" > "$runtime/run/test-$label.pid"
+    printf '%s\n' "$fake_pid" > "$runtime/run/test-$label.pid"
     chmod 600 "$runtime/run/test-$label.sha" "$runtime/run/test-$label.pid"
     ;;
   *) exit 64 ;;
@@ -156,6 +169,16 @@ export QIU_MARKET_LIVE_REDIS_PORT="$port"
 cutover="$repo_root/ops/macos/live-cutover.sh"
 "$cutover" preflight "$runtime/new.json" | grep -Fx 'live_cutover_preflight=passed mutated=false' >/dev/null
 
+mv "$runtime/run/test-$frontdoor_label.program" "$runtime/run/test-$frontdoor_label.program.saved"
+if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'missing live frontdoor label was accepted' >&2; exit 1; fi
+mv "$runtime/run/test-$frontdoor_label.program.saved" "$runtime/run/test-$frontdoor_label.program"
+printf '%s\n' "$runtime/ops/r1/wrong-stack" > "$runtime/run/test-$stack_label.program"
+if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'wrong live stack Program path was accepted' >&2; exit 1; fi
+printf '%s\n' "$runtime/ops/r1/stack" > "$runtime/run/test-$stack_label.program"
+printf '%s\n' "$runtime/ops/wrong-live-role" > "$runtime/run/test-com.qiu-market.live.dex.program"
+if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'wrong live role Program path was accepted' >&2; exit 1; fi
+printf '%s\n' "$runtime/ops/live-role" > "$runtime/run/test-com.qiu-market.live.dex.program"
+
 jq '.tunnel_target="http://127.0.0.1:18080"' "$runtime/new.json" > "$runtime/direct.json"; chmod 600 "$runtime/direct.json"
 if "$cutover" preflight "$runtime/direct.json" >/dev/null 2>&1; then echo 'direct API tunnel target was accepted' >&2; exit 1; fi
 
@@ -168,7 +191,13 @@ redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:old-redis:state old
 redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:new-redis:sentinel new-only >/dev/null
 "$cutover" cutover "$runtime/new.json" --execute | grep -F "live_cutover=ready commit=$new_commit tunnel_target=http://127.0.0.1:18084 production_promoted=false" >/dev/null
 [ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$new_commit" ]
+[ "$(stat -f '%Lp' "$runtime/releases/$new_commit/release.json")" = 600 ]
+[ "$(jq -r '.commit' "$runtime/releases/$new_commit/release.json")" = "$new_commit" ]
 [ "$(<"$runtime/run/tunnel-state")" = resumed ]
+[ "$(jq -r '.processes.frontdoor' "$runtime/run/committed-generation.json")" = 88001 ]
+[ "$(jq -r '.processes.stack' "$runtime/run/committed-generation.json")" = 88002 ]
+[ "$(sed -n '2p' "$runtime/run/restart-events")" = "start $frontdoor_label" ]
+[ "$(sed -n '3p' "$runtime/run/restart-events")" = "start $stack_label" ]
 [ "$(jq -r '.ready' "$runtime/run/committed-generation.json")" = true ]
 [ "$(jq -r '.processes | has("tunnel")' "$runtime/run/committed-generation.json")" = true ]
 [ "$(sed -n '1p' "$runtime/run/probe-events")" = 'false 200 18080 false false' ]
@@ -183,7 +212,8 @@ for role in crawler dex worker; do
   "$runtime/ops/live-role" "$role" | grep -F "role=$role commit=$new_commit" >/dev/null
 done
 "$runtime/ops/live-api-tunnel" | grep -F 'tunnel_target=http://127.0.0.1:18084 generation=new-generation' >/dev/null
-"$runtime/ops/d1-launch-stack" | grep -F 'listen=127.0.0.1:18084 upstream=http://127.0.0.1:18080 generation=new-generation' >/dev/null
+"$runtime/ops/r1/frontdoor" | grep -F 'listen=127.0.0.1:18084 upstream=http://127.0.0.1:18080 generation=new-generation' >/dev/null
+"$runtime/ops/r1/stack" | grep -F 'business_stack=true' >/dev/null
 
 printf '22222\n' > "$runtime/run/redis.pid"; chmod 600 "$runtime/run/redis.pid"
 "$cutover" pidfile-cleanup "$runtime/run/redis.pid" 11111 "$port"
