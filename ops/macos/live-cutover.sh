@@ -45,6 +45,16 @@ selector_preflight() {
     bash -c 'source "$1"; validate_release_selector "$2"' _ \
     "$repo_root/ops/macos/live-release-selector.sh" "$manifest"
   verify_launch_contract
+  private_runtime_file "$runtime/secrets/public-proxy-hmac" || {
+    echo 'public proxy HMAC file ownership or mode is unsafe' >&2
+    return 1
+  }
+}
+
+private_runtime_file() {
+  local path="$1"
+  [ -f "$path" ] && [ ! -L "$path" ] &&
+    [ "$(stat -f '%u:%Lp' "$path" 2>/dev/null || true)" = "$(id -u):600" ]
 }
 
 label_program_path() {
@@ -296,12 +306,12 @@ capture_generation_processes() {
 
 probe_market_contract() {
   local manifest="$1" port="$2" require_edge="$3" expected_status="$4" binary
+  local secret_file="$runtime/secrets/public-proxy-hmac"
+  private_runtime_file "$secret_file" || return 1
   if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
     "${QIU_MARKET_LIVE_PROBE_HOOK:?}" "$require_edge" "$expected_status" "$manifest" "$port"
     return
   fi
-  local secret_file="$runtime/secrets/public-proxy-hmac"
-  release_private_file "$secret_file" || return 1
   binary="$(jq -r '.binary_path' "$manifest")"
   if [ "$require_edge" = true ]; then
     "$binary" contract-probe \

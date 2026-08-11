@@ -17,6 +17,8 @@ trap cleanup EXIT INT TERM HUP
 
 for command in jq shasum redis-server redis-cli; do command -v "$command" >/dev/null; done
 for path in config ops bin run secrets releases fixture-source logs redis; do install -d -m 700 "$runtime/$path"; done
+printf '%s\n' 'fixture-only-not-a-live-secret' > "$runtime/secrets/public-proxy-hmac"
+chmod 600 "$runtime/secrets/public-proxy-hmac"
 port=''
 for _ in $(jot 100); do
   candidate_port="$((20000 + RANDOM % 20000))"
@@ -178,6 +180,9 @@ printf '%s\n' "$runtime/ops/r1/stack" > "$runtime/run/test-$stack_label.program"
 printf '%s\n' "$runtime/ops/wrong-live-role" > "$runtime/run/test-com.qiu-market.live.dex.program"
 if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'wrong live role Program path was accepted' >&2; exit 1; fi
 printf '%s\n' "$runtime/ops/live-role" > "$runtime/run/test-com.qiu-market.live.dex.program"
+chmod 644 "$runtime/secrets/public-proxy-hmac"
+if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'world-readable probe secret was accepted' >&2; exit 1; fi
+chmod 600 "$runtime/secrets/public-proxy-hmac"
 
 jq '.tunnel_target="http://127.0.0.1:18080"' "$runtime/new.json" > "$runtime/direct.json"; chmod 600 "$runtime/direct.json"
 if "$cutover" preflight "$runtime/direct.json" >/dev/null 2>&1; then echo 'direct API tunnel target was accepted' >&2; exit 1; fi
