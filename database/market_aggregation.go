@@ -1435,7 +1435,7 @@ func (m *marketAggregationDB) QueryAssetIndexSummary(venue string) (*AssetIndexS
 			COUNT(*) FILTER (WHERE ` + displayPriceCondition + `) AS displayed_asset_count,
 			COUNT(*) FILTER (WHERE ` + routeFreshCondition + `) AS routable_asset_count,
 			COUNT(*) FILTER (WHERE ` + referenceOnlyCondition + `) AS reference_only_asset_count,
-			COUNT(*) FILTER (WHERE NOT (` + displayPriceCondition + `)) AS unpriced_asset_count,
+			COUNT(*) - COUNT(*) FILTER (WHERE ` + displayPriceCondition + `) AS unpriced_asset_count,
 			COUNT(*) FILTER (WHERE ` + routeFreshCondition + ` AND snapshot.contributor_count = 1) AS single_venue_priced_asset_count,
 			COUNT(*) FILTER (WHERE ` + routeFreshCondition + ` AND snapshot.contributor_count >= 2) AS multi_venue_priced_asset_count,
 			COUNT(*) FILTER (WHERE (` + displayChange + `) IS NOT NULL) AS change_available_count,

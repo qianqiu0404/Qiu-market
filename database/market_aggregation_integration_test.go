@@ -432,6 +432,129 @@ func TestIntegrationTop50DashboardKeepsUnpricedAssetsAndStablePages(t *testing.T
 	require.EqualValues(t, 3, summary.PricedAssetCount)
 }
 
+func TestIntegrationAssetIndexSummaryCountsNullSnapshotsAsUnavailable(t *testing.T) {
+	dsn := os.Getenv("S78_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("S78_TEST_DATABASE_DSN is not set")
+	}
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{SkipDefaultTransaction: true})
+	require.NoError(t, err)
+	tx := gormDB.Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+
+	const (
+		assetCount  = 106
+		pricedCount = 61
+	)
+	now := time.Now().UTC()
+	selectionVersion := now.UnixNano()
+	assets := make([]Asset, 0, assetCount)
+	metrics := make([]AssetMetricCurrent, 0, assetCount)
+	selections := make([]ProviderAssetSelection, 0, assetCount)
+	venueSnapshots := make([]AssetVenueSnapshot, 0, pricedCount)
+	priceIndexes := make([]AssetPriceIndex, 0, pricedCount)
+	for rank := 1; rank <= assetCount; rank++ {
+		assetID := fmt.Sprintf("test-r2i-asset-%03d", rank)
+		assets = append(assets, Asset{
+			Guid: assetID, AssetName: fmt.Sprintf("R2I Asset %03d", rank),
+			AssetSymbol: fmt.Sprintf("R2I%03d", rank), IsActive: true,
+		})
+		metrics = append(metrics, AssetMetricCurrent{
+			AssetGuid: assetID, Provider: "coingecko",
+			ProviderAssetID: fmt.Sprintf("test-r2i-provider-%03d", rank),
+			MarketCapRank:   &rank, ObservedAt: now, UpdatedAt: now,
+		})
+		selections = append(selections, ProviderAssetSelection{
+			Provider: "binance", SelectionVersion: selectionVersion,
+			AssetGuid: assetID, SelectionRank: rank, MarketCapRank: &rank,
+			SelectionReason: "r2i-106-asset-fixture", SelectedAt: now, CreatedAt: now,
+		})
+		if rank <= pricedCount {
+			price := fmt.Sprintf("%d.25", 1000+rank)
+			venueSnapshots = append(venueSnapshots, AssetVenueSnapshot{
+				AssetGuid: assetID, Provider: "all", PriceKind: "composite_spot",
+				PriceUSD: &price, ContributorCount: 1, MarketCount: 1,
+				Confidence: "low", Quality: "low", Available: true, ObservedAt: now,
+			})
+			priceIndexes = append(priceIndexes, AssetPriceIndex{
+				AssetGuid: assetID, PriceUSD: &price, ContributorCount: 1,
+				Confidence: "low", Available: true, ObservedAt: now,
+				Contributors: datatypes.JSON([]byte(`[{"provider":"fixture"}]`)),
+			})
+		}
+	}
+	require.NoError(t, tx.Create(&assets).Error)
+	store := NewMarketAggregationDB(tx)
+	require.NoError(t, store.UpsertAssetMetrics(metrics))
+	require.NoError(t, tx.Save(&ProviderAssetSelectionState{
+		Provider: "binance", ActiveVersion: selectionVersion,
+		TargetCount: assetCount, CandidateCount: assetCount, SelectedCount: assetCount,
+		GeneratedAt: now, GenerationReason: "r2i-106-asset-fixture",
+		CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	require.NoError(t, tx.Create(&selections).Error)
+	require.NoError(t, store.UpsertAssetVenueSnapshots(venueSnapshots))
+	require.NoError(t, store.UpsertAssetPriceIndexes(priceIndexes))
+
+	summary, err := store.QueryAssetIndexSummary("all")
+	require.NoError(t, err)
+	require.EqualValues(t, assetCount, summary.AssetCount)
+	require.EqualValues(t, pricedCount, summary.PricedAssetCount)
+	require.EqualValues(t, pricedCount, summary.DisplayedAssetCount)
+	require.EqualValues(t, assetCount-pricedCount, summary.UnpricedAssetCount)
+	require.Equal(t, summary.AssetCount,
+		summary.DisplayedAssetCount+summary.UnpricedAssetCount)
+
+	dashboardRows := make([]AssetIndexDashboardRow, 0, assetCount)
+	for page := int64(1); page <= 2; page++ {
+		rows, total, dashboardErr := store.QueryAssetIndexDashboard(AssetIndexDashboardQuery{
+			Page: page, PageSize: 100, Venue: "all", Universe: "provider_union",
+		})
+		require.NoError(t, dashboardErr)
+		require.EqualValues(t, assetCount, total)
+		dashboardRows = append(dashboardRows, rows...)
+	}
+	require.Len(t, dashboardRows, assetCount)
+	dashboardFresh := 0
+	dashboardUnavailable := 0
+	for _, row := range dashboardRows {
+		switch row.FreshnessStatus {
+		case "fresh":
+			dashboardFresh++
+		case "unavailable":
+			dashboardUnavailable++
+		default:
+			require.Failf(t, "unexpected dashboard freshness", "%s: %s", row.AssetID, row.FreshnessStatus)
+		}
+	}
+	require.Equal(t, pricedCount, dashboardFresh)
+	require.Equal(t, assetCount-pricedCount, dashboardUnavailable)
+}
+
+func TestIntegrationReconcileResolvedSpotMarketsTreatsEmptyCatalogAsUnavailable(t *testing.T) {
+	dsn := os.Getenv("S78_TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("S78_TEST_DATABASE_DSN is not set")
+	}
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{SkipDefaultTransaction: true})
+	require.NoError(t, err)
+	tx := gormDB.Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+
+	store := NewMarketAggregationDB(tx)
+	for _, provider := range []string{"binance", "bybit"} {
+		require.NoError(t, tx.Where("provider = ?", provider).
+			Delete(&ProviderMarketCandidate{}).Error)
+		require.NoError(t, store.SetProviderRollout(provider, "shadow", 50, nil, nil))
+		enabled, reconcileErr := store.ReconcileResolvedSpotMarkets(provider)
+		require.NoError(t, reconcileErr,
+			"an unavailable restricted catalog is provider state, not an internal SQL scan failure")
+		require.Zero(t, enabled)
+	}
+}
+
 func TestIntegrationProviderSelectionsBuildAUniqueUnion(t *testing.T) {
 	dsn := os.Getenv("S78_TEST_DATABASE_DSN")
 	if dsn == "" {

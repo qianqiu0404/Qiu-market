@@ -96,6 +96,8 @@ bash ops/macos/summarize-production-slo.sh
 
 Crawler 启动时载入 CoinGecko Top 200 候选池、provider 代码评审清单与四家 CEX 目录，此后市场目录每 6 小时、资产指标每 5 分钟刷新。新市场先进入 `provider_market_candidate`，只有 provider 级 `asset_alias` 已审核且 rollout 允许才可启用；按 symbol 猜身份被禁止。四家 CEX 从审核通过、可交易的 Top 200 Spot 候选中各自冻结 50 个资产；Hyperliquid 从身份确认的 Perp 中冻结 50 个；Uniswap/PancakeSwap 从链上身份复核通过的 listed assets 中各自冻结 50 个。All 读取七张选择的 canonical `asset_id` 去重并集，并按全局市值顺序稳定分页。
 
+Overview 与 dashboard 必须从同一 selection union 对账：display predicate 为真的资产计为 priced/displayed，其余（包括 LEFT JOIN 后没有 snapshot、SQL 值为 NULL 的资产）统一计为 unpriced；守恒条件是 `displayed_asset_count + unpriced_asset_count = asset_count`。零 catalog 是 provider 当前部署不可用，不是内部 SQL 错误；Binance 451、Bybit 403 保留原状态且不得经代理或其它 provider 绕过。Markets 搜索只有当前 query key 成功返回空集合后才显示 empty，慢请求显示 loading，`published_asset_count=0` 显示 deployment unavailable。计数、降级和复现入口见 [Market data quality](docs/market-data-quality.md)。
+
 四家 CEX 实时 feed 都是 **WebSocket primary + REST reconcile**：Binance/Bybit/OKX 订阅 ticker stream，Coinbase 订阅 `ticker_batch`；高频事件只更新内存 latest map，每约 5 秒合并提交一次。REST 每 30 秒对账安静、漏消息或断线资产。每家由独立 supervisor 隔离失败。正式环境中，CEX 在 shadow/paused 时只探测审核资产，不发布快照；canary/enabled 才进入正式 writer。本地 `make dev` 默认开启 Local Preview，但使用 preview source，不改变正式 mode、Canary 清单或 readiness。所有行情经 `marketdata.SnapshotWriter` 先提交 PostgreSQL，再派生 Redis。writer 保留最后成功值：30 秒内 Fresh，30 秒到 5 分钟 Stale（可展示但不参与综合价和涨跌排名），超过 5 分钟 Unavailable。规范 ticker 分开保存 `open_24h` 与可空 `change_24h_pct`；Binance 协议同时声明小写 `o` 开盘价和大写 `O` 窗口开始时间，防止 Go JSON 大小写不敏感把时间戳覆盖价格。综合价每 5 秒只使用 30 秒内的新鲜 CEX Spot，要求 10 分钟内 USD-family 汇率、剔除 3% 中位数离群报价，并在三个以上 contributor 时限制单 venue 权重不超过 40%。Perp/DEX 只扩展 All 成员，永不贡献综合现货价。
 
 K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 selection version 固定到一个具体 USD-family Spot market，只采 provider 原生 1m，再在分钟严格连续时确定性汇总 15m/1h/1d。worker 只产缺口任务，crawler 必须回原 provider 修复；不能用另一家交易所填洞，也不能用 ticker 目录顺序静默换 K 线来源。
@@ -486,7 +488,7 @@ README 全局架构
 | [docs/grpc-service.md](docs/grpc-service.md) | gRPC MarketService、与 HTTP 共用业务层、proto 重新生成 |
 | [docs/doris-analytics.md](docs/doris-analytics.md) | Doris 旧流 + v2 影子流、固定窗口历史动量、Mac mini 不可变 DW 运行与故障隔离 |
 | [docs/market-service-architecture.md](docs/market-service-architecture.md) | 七源独立 selection、三类价格事实、DEX 60 秒 route 边界、All canonical 并集、CEX-only 综合现货价与 rollout |
-| [docs/market-data-quality.md](docs/market-data-quality.md) | provider/research 独立评分、许可门、quarantine/recovery、综合价排除与运行手册 |
+| [docs/market-data-quality.md](docs/market-data-quality.md) | provider/research 独立评分、许可门、overview/dashboard 守恒计数、搜索三态、quarantine/recovery 与综合价排除 |
 | [docs/full-stack-golden.md](docs/full-stack-golden.md) | Q-M7A 真实 PostgreSQL、双 backend 恢复、Vue/研究/质量完整故事、一键运行与清理证据 |
 | [docs/binance-public-provider.md](docs/binance-public-provider.md) | Q-M4A 默认关闭的 Binance BTC/USDT Spot ticker/OHLCV adapter、HTTP 边界与许可门 |
 | [docs/coinglass-derivatives-provider.md](docs/coinglass-derivatives-provider.md) | Q-M4B 默认关闭的 CoinGlass BTCUSD_PERP OI/清算 adapter、secret/套餐/单位与许可门 |

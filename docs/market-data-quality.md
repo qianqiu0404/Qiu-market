@@ -4,6 +4,53 @@
 
 行情数据就是产品。S78 不用 mock、CoinGecko 当前价或假 `0%` 掩盖数据源异常；它保存来源时间、排除原因、confidence 和恢复路径，让调用方知道“有没有值、值来自哪里、还新不新”。
 
+## R2I 覆盖计数与查询三态
+
+R2I 修复的是 read model 的真实性，不增加 provider，也不改变 provider 的地域、许可或
+rollout 边界。`QueryAssetIndexSummary` 对同一个 provider-selection union 做一次聚合：
+`displayed_asset_count` 是 display predicate 为真的行数，`unpriced_asset_count` 固定等于
+`asset_count - displayed_asset_count`。不能写成 `COUNT ... WHERE NOT(predicate)`，因为
+没有 snapshot 的资产会让 SQL predicate 变成 `NULL`，而 `NOT NULL` 仍是 `NULL`；这些行
+会从 priced 和 unpriced 两边同时消失。真实 PostgreSQL fixture 固定构造 106 个已选择资产，
+其中 61 个有新鲜 composite snapshot、45 个没有 snapshot，并同时对账 overview 与两页
+dashboard。
+
+Catalog 与 rollout reconcile 继续分层。`ReconcileResolvedSpotMarkets` 从最新一条成功
+catalog row 读取 `last_seen_at`；零行意味着该 provider 当前部署没有可用 catalog，返回
+零 enabled、保留 provider 的 HTTP 451/403 状态，不再把 PostgreSQL aggregate 的 `NULL`
+扫描成内部错误。这里拒绝的替代方案是代理、换地区出口或用另一家 provider 填数据：它们
+都会越过许可/身份边界，并制造不存在的覆盖。
+
+Markets 搜索按当前 query key 表达三个互斥状态：当前请求尚未结算时显示 loading；成功且
+结果确实为空时显示 search empty；所选 provider 的 `published_asset_count=0` 时显示
+`unavailable in this deployment`。旧查询的 data/loading/error 不得代替新查询状态，慢请求
+期间也不能先显示“无结果”。每个价格仍必须携带 provider、时间和 freshness；这些 UI 状态
+只解释查询进度与来源可用性，不制造价格。
+
+关键入口按顺序是：
+
+1. `database/market_aggregation.go`：从同一 union 计算 displayed/unpriced 守恒计数；
+2. `database/venue_aggregation.go`：把零 catalog 解释为 provider unavailable，而非 SQL 错误；
+3. `services/http/service/market_index.go`：原样输出 overview/dashboard 的只读事实；
+4. `frontend/src/views/Markets.vue`：按 query key 渲染 loading、empty、provider unavailable；
+5. `database/market_aggregation_integration_test.go` 与 `frontend/e2e/markets.spec.ts`：分别锁定
+   106/61/45 和慢搜索三态。
+
+失败与恢复：dashboard 请求失败显示当前 query 的 error，不复用旧查询的空态；catalog
+之后真实恢复时，下一次成功 discovery 写入候选行，30 秒 reconcile 才会重新 enable 合法
+selection；没有 provider 成功前，45 个 unavailable 仍保持 unavailable。Owner 60 秒说明：
+overview 的 unpriced 是总数减 displayed，因此没有 snapshot 的 SQL NULL 也会被计入；零
+catalog 是已知 provider 降级，不是数据库故障；页面只有当前查询返回后才能宣称 empty，
+restricted provider 继续明确不可用，所有价格来源和 freshness 边界不变。
+
+闭卷检查：
+
+- 为什么 `NOT(nullable_predicate)` 会漏掉没有 snapshot 的资产？
+- overview 与 dashboard 必须共享哪个 universe 才能对账？
+- 零 catalog 为什么返回零 enabled，而 451/403 仍必须保留？
+- 为什么慢搜索不能使用轮询 composable 的全局 `loading` 直接决定 empty？
+- provider unavailable 与真实 search empty 的判据分别是什么？
+
 ## 质量事实与位置
 
 | 事实 | 含义 | 项目落点 |

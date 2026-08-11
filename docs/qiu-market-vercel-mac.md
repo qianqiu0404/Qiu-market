@@ -166,6 +166,47 @@ sudo bash ops/macos/manage-system-daemons.sh status
 `~/Library/Application Support/Qiu Market/logs`，Guardian 每 60 秒检查 API、
 trading、Funnel、PostgreSQL 与磁盘；数据库异常不会触发共享 PostgreSQL 的盲目重启。
 
+### D1 live 行情日志轮转与受控恢复
+
+D1 live 行情 lane 与上面的通用 production runtime 分开管理。它的固定根目录是
+`~/Library/Application Support/Qiu Market/d1-candidate`，现役角色是
+`com.qiu-market.live.crawler`、`dex`、`worker` 和 `api-tunnel`。安装轮转器使用：
+
+```bash
+bash ops/macos/manage-live-log-rotation.sh install
+bash ops/macos/manage-live-log-rotation.sh status
+```
+
+`com.qiu-market.live.log-rotation` 每 60 秒只检查 D1 `logs/live-*.out.log` 与
+`logs/live-*.err.log`。单文件超过 50 MiB 时做 copy-truncate：归档保留最近 50 MiB，
+原 inode 留最近 10 MiB，并最多保留两代归档。保留原 inode 是因为 launchd 子进程已打开
+stdout/stderr；直接 rename 会让进程继续写旧文件。被拒绝的方案是递归扫描整个
+`d1-candidate`，因为 evidence、Vercel 构建日志和私有 runtime 文件不属于 live role 日志。
+plist、状态目录、当前日志和归档均收紧为 owner-only；脚本不 source worktree `.env`，也不
+读取 `config/database.env` 或 secrets。`uninstall` 只卸载轮转 LaunchAgent，保留日志，因而
+可以回滚。
+
+受控 restart 前先记录四个 live label、D1 stack/API PID、`/healthz`、overview 的
+asset/priced/unpriced 和最新 freshness。切换 exact-SHA binary 后只用 launchd 的
+`kickstart -k`/现有 D1 restart gate 重启对应只读角色与 API stack；tunnel 必须等 loopback
+health 恢复后再连接。恢复验收要求新的 PID、`/healthz=200`、overview/dashboard 对账、
+freshness 在有界时间内回到 fresh，并跨至少两个 30 秒 reconcile 周期确认零 catalog 不再
+产生 `unsupported Scan ... <nil> into *time.Time`。Binance 451、Bybit 403 仍是
+`unavailable in this deployment`，不能为了消除日志而绕过限制。
+
+Owner 60 秒说明：轮转器只看 D1 live 的八类 stdout/stderr 文件，每分钟有界
+copy-truncate，保持 launchd 已打开的 inode；配置和 secret 不进入 argv、日志或工作树。
+重启前保存 PID/health/freshness，exact-SHA 切换失败就恢复旧 selector/LaunchAgent；恢复后
+既要健康 200，也要等两个 reconcile 周期验证没有重复内部错误。
+
+闭卷检查：
+
+- 为什么 D1 live 不能接到旧的 `com.qiumarket.*` runtime label？
+- 为什么轮转必须保留 inode，且不能递归扫描整个 candidate？
+- uninstall 会删除哪些东西、明确保留哪些东西？
+- 为什么 `healthz=200` 仍不能替代 freshness 与 30 秒 reconcile 观察？
+- restart 失败时 exact selector、PID 和 tunnel 应如何回滚？
+
 ## 3. Tailscale Funnel
 
 本机使用 Homebrew 的开源 Tailscale 1.52+，为 Qiu Market 建立独立的

@@ -385,6 +385,74 @@ test('a disabled provider is explicit instead of looking like an empty search', 
   await expect(page.getByText(/matched this search/)).toHaveCount(0)
 })
 
+test('slow search distinguishes loading from a settled empty result', async ({ page }) => {
+  let releaseSlowSearch: (() => void) | undefined
+  let signalSlowSearch: (() => void) | undefined
+  const slowSearchRequested = new Promise<void>((resolve) => {
+    signalSlowSearch = resolve
+  })
+  const slowSearchResponse = new Promise<void>((resolve) => {
+    releaseSlowSearch = resolve
+  })
+  const monero = {
+    ...asset,
+    rank: 24,
+    asset_id: 'asset-xmr',
+    asset_symbol: 'XMR',
+    asset_name: 'Monero',
+  }
+
+  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as { search?: string }
+    if (request.search === 'XMR') {
+      signalSlowSearch?.()
+      await slowSearchResponse
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 2000,
+          result: [monero],
+          total: 1,
+          universe: 'provider_union',
+        }),
+      })
+      return
+    }
+    if (request.search === 'NO-SUCH-ASSET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          code: 2000,
+          result: [],
+          total: 0,
+          universe: 'provider_union',
+        }),
+      })
+      return
+    }
+    await route.fallback()
+  })
+
+  await page.goto('/markets')
+  await expect(page.locator('tbody tr')).toHaveCount(50)
+
+  const search = page.getByPlaceholder('Search the provider union…')
+  await search.fill('XMR')
+  await slowSearchRequested
+  await expect(page.getByText('Loading market results…')).toBeVisible()
+  await expect(page.getByText(/matched this search/)).toHaveCount(0)
+
+  releaseSlowSearch?.()
+  await expect(page.locator('tbody tr').filter({ hasText: 'Monero' })).toHaveCount(1)
+  await expect(page.getByText('Loading market results…')).toHaveCount(0)
+
+  await search.fill('NO-SUCH-ASSET')
+  await expect(page.getByText('No assets in the provider union matched this search.')).toBeVisible()
+  await expect(page.getByText('Loading market results…')).toHaveCount(0)
+})
+
 test('rapid CEX switching renders the selected venue tick instead of the previous venue response', async ({ page }) => {
   await page.goto('/markets?venue=coinbase')
   await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' }))

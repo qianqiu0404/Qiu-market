@@ -135,6 +135,11 @@ interface DashboardSnapshot {
   data: Paged<AssetDashboardV2Item>
 }
 
+interface DashboardFailure {
+  queryKey: string
+  message: string
+}
+
 function readDashboardQuery(): DashboardQuery {
   return {
     venue: venue.value,
@@ -154,12 +159,13 @@ function dashboardQueryKey(query: DashboardQuery): string {
 
 const currentDashboardQueryKey = computed(() =>
   dashboardQueryKey(readDashboardQuery()))
+const dashboardFailure = ref<DashboardFailure | null>(null)
 const dashboard = usePolling(
   async (): Promise<DashboardSnapshot> => {
     const query = readDashboardQuery()
-    return {
-      queryKey: dashboardQueryKey(query),
-      data: await getAssetDashboardV2(query.page, query.pageSize, {
+    const queryKey = dashboardQueryKey(query)
+    try {
+      const data = await getAssetDashboardV2(query.page, query.pageSize, {
         venue: query.venue,
         search: query.search,
         filter: query.filter,
@@ -167,7 +173,17 @@ const dashboard = usePolling(
         sortDirection: query.sortDirection,
         includeUncovered: true,
         universe: query.universe,
-      }),
+      })
+      if (dashboardFailure.value?.queryKey === queryKey) {
+        dashboardFailure.value = null
+      }
+      return { queryKey, data }
+    } catch (error) {
+      dashboardFailure.value = {
+        queryKey,
+        message: error instanceof Error ? error.message : 'Unable to load market results',
+      }
+      throw error
     }
   },
   { interval: 15_000 },
@@ -179,6 +195,12 @@ const currentDashboard = computed(() => {
     ? snapshot.data
     : null
 })
+const currentDashboardError = computed(() =>
+  dashboardFailure.value?.queryKey === currentDashboardQueryKey.value
+    ? dashboardFailure.value.message
+    : null)
+const currentDashboardLoading = computed(() =>
+  currentDashboard.value === null && currentDashboardError.value === null)
 const assets = computed(() => currentDashboard.value?.items ?? [])
 const total = computed(() => currentDashboard.value?.total ?? 0)
 interface PriceTickSnapshot {
@@ -843,13 +865,22 @@ function coverageReasonLabel(reason: string): string {
       </div>
 
       <ErrorState
-        v-if="dashboard.error.value && assets.length === 0"
-        :message="dashboard.error.value"
+        v-if="currentDashboardError && assets.length === 0"
+        :message="currentDashboardError"
         @retry="dashboard.refresh"
       />
 
       <p
-        v-else-if="!dashboard.loading.value && assets.length === 0"
+        v-else-if="currentDashboardLoading"
+        class="market-loading-state"
+        role="status"
+        aria-live="polite"
+      >
+        Loading market results…
+      </p>
+
+      <p
+        v-else-if="assets.length === 0"
         class="market-empty-state"
         role="status"
       >
@@ -886,12 +917,7 @@ function coverageReasonLabel(reason: string): string {
               <th class="align-center">{{ isDexVenue() ? 'Route / Ref Quality' : 'Quality' }}</th>
             </tr>
           </thead>
-          <tbody v-if="dashboard.loading.value && assets.length === 0">
-            <tr v-for="index in 8" :key="index">
-              <td colspan="8"><div class="shimmer" style="height: 15px"></div></td>
-            </tr>
-          </tbody>
-          <tbody v-else-if="assets.length">
+          <tbody v-if="assets.length">
             <tr
               v-for="asset in assets"
               :key="asset.asset_id"
@@ -1330,7 +1356,8 @@ th {
   background: var(--accent-soft);
   border-color: #bad8f6;
 }
-.market-empty-state {
+.market-empty-state,
+.market-loading-state {
   margin: 0;
   padding: 44px 20px;
   color: var(--text-3);
@@ -1338,6 +1365,7 @@ th {
   text-align: center;
   overflow-wrap: anywhere;
 }
+.market-loading-state { color: var(--text-2); }
 .table-footer,
 .pager,
 .pager label { display: flex; align-items: center; gap: 8px; }

@@ -869,17 +869,22 @@ func (m *marketAggregationDB) ReconcileResolvedSpotMarkets(provider string) (int
 	if rollout == nil {
 		return 0, nil
 	}
-	var latest *time.Time
-	if err := m.gorm.Table("provider_market_candidate").
-		Select("MAX(last_seen_at)").
+	var latest struct {
+		LastSeenAt time.Time `gorm:"column:last_seen_at"`
+	}
+	result := m.gorm.Table("provider_market_candidate").
+		Select("last_seen_at").
 		Where("provider = ? AND market_type = 'spot'", provider).
-		Scan(&latest).Error; err != nil {
-		return 0, err
+		Order("last_seen_at DESC").
+		Limit(1).
+		Scan(&latest)
+	if result.Error != nil {
+		return 0, result.Error
 	}
-	if latest == nil || latest.IsZero() {
-		return 0, fmt.Errorf("provider %s has no successful stored spot catalog", provider)
+	if result.RowsAffected == 0 || latest.LastSeenAt.IsZero() {
+		return 0, nil
 	}
-	return m.EnableResolvedSpotMarkets(provider, latest.UTC(), allowed)
+	return m.EnableResolvedSpotMarkets(provider, latest.LastSeenAt.UTC(), allowed)
 }
 
 func decodeRolloutAssetIDs(raw datatypes.JSON) ([]string, error) {
