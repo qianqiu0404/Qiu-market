@@ -117,6 +117,7 @@ case "$action" in
   pause)
     find "$runtime/run/test-$label.pid" "$runtime/run/test-$label.sha" -maxdepth 0 -type f -delete 2>/dev/null || true
     [ "$label" != com.qiu-market.live.api-tunnel ] || printf 'paused\n' > "$runtime/run/tunnel-state"
+    [ "${QIU_MARKET_LIVE_FAIL_PAUSE_LABEL:-}" != "$label" ] || exit 75
     ;;
   start)
     if [ -n "${QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT:-}" ] &&
@@ -163,10 +164,32 @@ printf '%s %s %s %s %s\n' "$require_edge" "$expected_status" "$port" "$ready" "$
 HOOK
 chmod 700 "$probe_hook"
 
+health_hook="$runtime/health-hook"
+cat > "$health_hook" <<'HOOK'
+#!/bin/bash
+set -euo pipefail
+runtime="${QIU_MARKET_LIVE_RUNTIME:?}"
+commit="$(jq -r '.commit' "$runtime/config/active-release.json")"
+count_file="$runtime/run/health-polls-$commit"
+count=0
+[ ! -f "$count_file" ] || count="$(<"$count_file")"
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+status=503
+if [ "${QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT:-}" != "$commit" ] &&
+  [ "$count" -gt "${QIU_MARKET_LIVE_HEALTH_DELAY_POLLS:-3}" ]; then
+  status=200
+fi
+printf 'health %s %s\n' "$commit" "$status" >> "$runtime/run/restart-events"
+printf '%s\n' "$status"
+HOOK
+chmod 700 "$health_hook"
+
 export QIU_MARKET_LIVE_RUNTIME="$runtime"
 export QIU_MARKET_LIVE_CUTOVER_TEST_MODE=true
 export QIU_MARKET_LIVE_RESTART_HOOK="$restart_hook"
 export QIU_MARKET_LIVE_PROBE_HOOK="$probe_hook"
+export QIU_MARKET_LIVE_HEALTH_HOOK="$health_hook"
 export QIU_MARKET_LIVE_REDIS_PORT="$port"
 cutover="$repo_root/ops/macos/live-cutover.sh"
 "$cutover" preflight "$runtime/new.json" | grep -Fx 'live_cutover_preflight=passed mutated=false' >/dev/null
@@ -203,6 +226,10 @@ redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:new-redis:sentinel 
 [ "$(jq -r '.processes.stack' "$runtime/run/committed-generation.json")" = 88002 ]
 [ "$(sed -n '2p' "$runtime/run/restart-events")" = "start $frontdoor_label" ]
 [ "$(sed -n '3p' "$runtime/run/restart-events")" = "start $stack_label" ]
+[ "$(awk -v commit="$new_commit" '$1=="health" && $2==commit {print $3}' "$runtime/run/restart-events" | sed -n '1,4p')" = $'503\n503\n503\n200' ]
+health_ready_line="$(grep -n -m1 "health $new_commit 200" "$runtime/run/restart-events" | cut -d: -f1)"
+crawler_start_line="$(grep -n -m1 'start com.qiu-market.live.crawler' "$runtime/run/restart-events" | cut -d: -f1)"
+[ "$health_ready_line" -lt "$crawler_start_line" ]
 [ "$(jq -r '.ready' "$runtime/run/committed-generation.json")" = true ]
 [ "$(jq -r '.processes | has("tunnel")' "$runtime/run/committed-generation.json")" = true ]
 [ "$(sed -n '1p' "$runtime/run/probe-events")" = 'false 200 18080 false false' ]
@@ -224,6 +251,16 @@ printf '22222\n' > "$runtime/run/redis.pid"; chmod 600 "$runtime/run/redis.pid"
 "$cutover" pidfile-cleanup "$runtime/run/redis.pid" 11111 "$port"
 [ "$(<"$runtime/run/redis.pid")" = 22222 ]
 
+export QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT="$failed_commit"
+export QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SECONDS=1
+if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'business API health timeout was accepted' >&2; exit 1; fi
+unset QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SECONDS
+[ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$new_commit" ]
+[ "$(jq -r '.generation_id' "$runtime/run/committed-generation.json")" = new-generation ]
+[ "$(<"$runtime/run/tunnel-state")" = resumed ]
+[ "$(jq -r '.phase' "$runtime/run/live-cutover/current.json")" = rolled-back ]
+[ "$(redis-cli -h 127.0.0.1 -p "$port" --raw EXISTS qiu:runtime-generation:failed-redis:owner)" = 0 ]
+
 export QIU_MARKET_LIVE_CUTOVER_FAIL_AT=after_restart
 if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'injected cutover failure did not fail' >&2; exit 1; fi
 unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT
@@ -240,6 +277,24 @@ if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then ech
 unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT
 [ "$(jq -r '.phase' "$runtime/run/live-cutover/current.json")" = rollback-failed ]
 [ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$new_commit" ]
+[ "$(<"$runtime/run/tunnel-state")" = paused ]
+[ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:failed-redis:owner)" = "$failed_owner" ]
+[ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:failed-redis:state)" = committed:failed-generation ]
+
+pause_test_first_line="$(( $(wc -l < "$runtime/run/restart-events") + 1 ))"
+export QIU_MARKET_LIVE_CUTOVER_FAIL_AT=after_restart
+export QIU_MARKET_LIVE_FAIL_PAUSE_LABEL=com.qiu-market.live.crawler
+if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'pause failure injection did not fail' >&2; exit 1; fi
+unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT QIU_MARKET_LIVE_FAIL_PAUSE_LABEL
+pause_failure_events="$(tail -n "+$pause_test_first_line" "$runtime/run/restart-events")"
+for label in com.qiu-market.live.api-tunnel com.qiu-market.live.crawler com.qiu-market.live.dex \
+  com.qiu-market.live.worker "$stack_label" "$frontdoor_label"; do
+  grep -F "pause $label" <<<"$pause_failure_events" >/dev/null
+done
+crawler_pause_line="$(grep -n -m1 'pause com.qiu-market.live.crawler' <<<"$pause_failure_events" | cut -d: -f1)"
+frontdoor_pause_line="$(grep -n -m1 "pause $frontdoor_label" <<<"$pause_failure_events" | cut -d: -f1)"
+[ "$frontdoor_pause_line" -gt "$crawler_pause_line" ]
+[ "$(jq -r '.phase' "$runtime/run/live-cutover/current.json")" = rollback-failed ]
 [ "$(<"$runtime/run/tunnel-state")" = paused ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:failed-redis:owner)" = "$failed_owner" ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:failed-redis:state)" = committed:failed-generation ]

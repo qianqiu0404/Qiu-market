@@ -249,6 +249,31 @@ wait_label_stopped() {
   return 1
 }
 
+market_health_status() {
+  if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
+    "${QIU_MARKET_LIVE_HEALTH_HOOK:?}"
+    return
+  fi
+  curl --silent --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 1 --max-time 2 http://127.0.0.1:18080/healthz 2>/dev/null || true
+}
+
+wait_market_health() {
+  local timeout_seconds=60 deadline status
+  if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
+    timeout_seconds="${QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SECONDS:-3}"
+    [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || return 1
+  fi
+  deadline=$((SECONDS + timeout_seconds))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    status="$(market_health_status)"
+    [ "$status" = 200 ] && return 0
+    sleep 0.25
+  done
+  echo 'live business API did not reach /healthz=200 before the bounded deadline' >&2
+  return 1
+}
+
 wait_frontdoor_binary() {
   local expected_sha="$1" pid executable actual
   if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
@@ -409,6 +434,7 @@ activate_generation() {
   if [ "$schema" = 'qiu.d1.active-release.v2' ]; then wait_frontdoor_binary "$frontdoor_sha" || return 1; fi
   start_label "$stack_label" || return 1
   wait_label_running "$stack_label" || return 1
+  wait_market_health || return 1
   for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do start_label "$label" || return 1; done
   if [ "$schema" = 'qiu.d1.active-release.v2' ]; then
     for label in com.qiu-market.live.crawler com.qiu-market.live.dex com.qiu-market.live.worker; do
@@ -436,12 +462,16 @@ activate_generation() {
 }
 
 stop_candidate_generation() {
-  local label
+  local label stop_ok=true
   for label in com.qiu-market.live.api-tunnel com.qiu-market.live.crawler com.qiu-market.live.dex \
     com.qiu-market.live.worker "$stack_label" "$frontdoor_label"; do
-    pause_label "$label" || return 1
-    wait_label_stopped "$label" || return 1
+    pause_label "$label" || stop_ok=false
   done
+  for label in com.qiu-market.live.api-tunnel com.qiu-market.live.crawler com.qiu-market.live.dex \
+    com.qiu-market.live.worker "$stack_label" "$frontdoor_label"; do
+    wait_label_stopped "$label" || stop_ok=false
+  done
+  [ "$stop_ok" = true ] || return 1
   if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" != true ]; then
     for port in 6389 18080 18081 18083 18084; do
       [ -z "$(listener_pid "$port")" ] || return 1
