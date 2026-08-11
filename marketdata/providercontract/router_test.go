@@ -10,6 +10,7 @@ import (
 )
 
 func TestRouterStableRetryableAndUnsupportedFallback(t *testing.T) {
+	clock := NewManualClock(time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
 	request := Request{Capability: CapabilitySpotTicker, Key: "btc-usdt"}
 	first := fakeWithCapabilities("first", CapabilitySpotTicker)
 	second := fakeWithCapabilities("second", CapabilitySpotTicker)
@@ -19,7 +20,7 @@ func TestRouterStableRetryableAndUnsupportedFallback(t *testing.T) {
 	expected := fixtureResponse("third", CapabilitySpotTicker, "third-result")
 	require.NoError(t, third.Script(request, FakeStep{Response: expected}))
 
-	router, err := NewRouter([]Provider{first, second, third}, RouterOptions{})
+	router, err := NewRouter([]Provider{first, second, third}, RouterOptions{Clock: clock})
 	require.NoError(t, err)
 	result, err := router.Dispatch(context.Background(), request)
 	require.NoError(t, err)
@@ -37,6 +38,7 @@ func TestRouterStableRetryableAndUnsupportedFallback(t *testing.T) {
 }
 
 func TestRouterTimeoutFallsBackToNextProvider(t *testing.T) {
+	clock := NewManualClock(time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
 	request := Request{Capability: CapabilitySpotTicker, Key: "btc-usdt"}
 	primary := fakeWithCapabilities("primary", CapabilitySpotTicker)
 	fallback := fakeWithCapabilities("fallback", CapabilitySpotTicker)
@@ -45,7 +47,7 @@ func TestRouterTimeoutFallsBackToNextProvider(t *testing.T) {
 	}))
 	expected := fixtureResponse("fallback", CapabilitySpotTicker, "timeout-fallback")
 	require.NoError(t, fallback.Script(request, FakeStep{Response: expected}))
-	router, err := NewRouter([]Provider{primary, fallback}, RouterOptions{})
+	router, err := NewRouter([]Provider{primary, fallback}, RouterOptions{Clock: clock})
 	require.NoError(t, err)
 
 	result, err := router.Dispatch(context.Background(), request)
@@ -80,13 +82,14 @@ func TestRouterFailClosedErrorsNeverFallback(t *testing.T) {
 }
 
 func TestRouterBindsOrRejectsProviderErrorIdentity(t *testing.T) {
+	clock := NewManualClock(time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC))
 	request := Request{Capability: CapabilitySpotTicker, Key: "btc-usdt"}
 	t.Run("empty identity is bound to actual provider", func(t *testing.T) {
 		first := fakeWithCapabilities("first", CapabilitySpotTicker)
 		second := fakeWithCapabilities("second", CapabilitySpotTicker)
 		require.NoError(t, first.Script(request, FakeStep{Err: NewError(ErrorNetwork, "", "fetch", nil)}))
 		require.NoError(t, second.Script(request, FakeStep{Response: fixtureResponse("second", CapabilitySpotTicker, "ok")}))
-		router, err := NewRouter([]Provider{first, second}, RouterOptions{})
+		router, err := NewRouter([]Provider{first, second}, RouterOptions{Clock: clock})
 		require.NoError(t, err)
 
 		result, err := router.Dispatch(context.Background(), request)
