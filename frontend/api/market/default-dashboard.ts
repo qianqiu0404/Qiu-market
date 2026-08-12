@@ -48,6 +48,11 @@ function capturedProxyResponse() {
   return { response, headers, result: () => ({ statusCode, body }) }
 }
 
+function safeDecodedResponseVary(value: unknown): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '' || normalized === 'accept-encoding'
+}
+
 export default async function handler(
   request: DefaultDashboardRequest,
   response: DefaultDashboardResponse,
@@ -95,9 +100,9 @@ export default async function handler(
     typeof captured.headers.get('x-qiu-market-backend-release-commit') === 'string' &&
     captured.headers.get('x-qiu-market-data-mode') === 'live'
   const hasCookies = captured.headers.has('set-cookie')
-  const vary = String(captured.headers.get('vary') ?? '').trim()
+  const safeVary = safeDecodedResponseVary(captured.headers.get('vary'))
   if (result.statusCode === 200 && !stale && verified &&
-    (cacheState === 'MISS' || cacheState === 'FRESH') && !hasCookies && vary === '') {
+    (cacheState === 'MISS' || cacheState === 'FRESH') && !hasCookies && safeVary) {
     response.setHeader('Cache-Control', BROWSER_CACHE_CONTROL)
     response.setHeader('Vercel-CDN-Cache-Control', CDN_CACHE_CONTROL)
   } else {

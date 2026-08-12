@@ -115,9 +115,18 @@ rotate_one() {
   done
 }
 
-for pattern in 'live-*.out.log' 'live-*.err.log'; do
-  for log_file in "$log_dir"/$pattern; do
-    [ -e "$log_file" ] || continue
-    rotate_one "$log_file"
-  done
+allowed_logs=(
+  live-crawler.out.log live-crawler.err.log
+  live-dex.out.log live-dex.err.log
+  live-worker.out.log live-worker.err.log
+  live-api-tunnel.out.log live-api-tunnel.err.log
+  live-keepawake.out.log live-keepawake.err.log
+  live-log-rotation.out.log live-log-rotation.err.log
+  r1-frontdoor.out.log r1-frontdoor.err.log
+  r1-stack.out.log r1-stack.err.log
+)
+for basename in "${allowed_logs[@]}"; do
+  log_file="$log_dir/$basename"
+  [ -e "$log_file" ] || continue
+  rotate_one "$log_file"
 done

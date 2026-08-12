@@ -282,6 +282,9 @@ R3 Phase 1 只缓存八个 venue 的固定默认查询：Assets/Gainers/Losers�
 rank desc。浏览器 GET `/api/market/default-dashboard`，function 翻译为带新 nonce 的既有签名
 POST；仅 200 + VERIFIED contract + MISS/FRESH 且无 Cookie/Vary 才发 CDN fresh15/SWR45，
 BFF STALE、错误与动态查询都 no-store。
+inner fetch 已完成内容解压，因此 upstream `Vary` 仅允许空值或大小写/首尾空白归一后的
+单一 `Accept-Encoding` token；外层不透传该 `Vary`。`Cookie`、`Authorization`、其它 token、
+多 token `Vary` 或 `Set-Cookie` 一律 no-store，防止把身份相关响应放入共享 CDN。
 
 网络与 IndexedDB restore 并行。持久化 key 绑定编译期 strict 40-hex release SHA、完整 query
 和 venue，TTL 5 分钟、最多 64 项、单项 1.5MB；读取重验 snapshot/schema、overview/row

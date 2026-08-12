@@ -180,4 +180,33 @@ describe('default dashboard CDN GET', () => {
     expect(target.headers.get('cache-control')).toBe('no-store')
     expect(target.headers.has('vercel-cdn-cache-control')).toBe(false)
   })
+
+  it('accepts only a normalized single Accept-Encoding vary after inner decompression', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init: RequestInit) =>
+      contracted(dashboardBody(), init, { Vary: '  AcCePt-EnCoDiNg  ' })))
+    const target = response()
+    await handler(request({ venue: 'coinbase', filter: 'losers' }) as never, target.value as never)
+    expect(target.result.status).toBe(200)
+    expect(target.headers.has('vary')).toBe(false)
+    expect(target.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate')
+    expect(target.headers.get('vercel-cdn-cache-control')).toBe(
+      'public, s-maxage=15, stale-while-revalidate=45',
+    )
+  })
+
+  it.each([
+    ['Cookie', 'uniswap'],
+    ['Authorization', 'pancakeswap'],
+    ['Accept-Encoding, Cookie', 'hyperliquid'],
+    ['Origin', 'bybit'],
+  ])('rejects unsafe or multi-token Vary %s', async (vary, venue) => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: URL, init: RequestInit) =>
+      contracted(dashboardBody(), init, { Vary: vary })))
+    const target = response()
+    await handler(request({ venue, filter: 'gainers' }) as never, target.value as never)
+    expect(target.result.status).toBe(200)
+    expect(target.headers.has('vary')).toBe(false)
+    expect(target.headers.get('cache-control')).toBe('no-store')
+    expect(target.headers.has('vercel-cdn-cache-control')).toBe(false)
+  })
 })

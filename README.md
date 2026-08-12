@@ -105,12 +105,18 @@ R3 Phase 1 只把八个 venue 的 page1/50、空搜索、default sort 查询暴�
 fresh15/SWR45。动态搜索、分页、自定义排序和显式 snapshot 继续 POST/no-store。浏览器
 last-good 绑定 exact release/query/venue、TTL 5 分钟，并在空闲时串行预取其它七个默认
 Assets；hidden/offline/Save-Data/交互或 query generation 变化立即中止。
+exact-release 浏览器门必须显式注入候选 40-hex SHA，例如
+`QIU_MARKET_RELEASE_COMMIT=<sha> S78_E2E_PORT=<unused> npm run test:e2e -- e2e/default-dashboard.spec.ts`；
+普通本地 E2E 只证明 POST fallback。测试通过仍不授权 promote 或修改 Production。
 
 本机优先运行还必须显式安装登录恢复与防空闲睡眠：
 `ops/macos/manage-live-user-runtime.sh install` 将八个精确、owner-only LaunchAgent
 清单同步到 `~/Library/LaunchAgents`，并用系统 `/usr/bin/caffeinate -i` 在用户已登录时
 阻止 idle system sleep；屏幕仍可熄灭，手动睡眠、合盖、关机与注销不会被绕过。这个
 用户级边界不等于“断电后无人登录恢复”；该能力仍需机器所有者单独批准 LaunchDaemon。
+当前 24 小时方案继续使用 Mac mini、不采购 VPS；因此供电、网络、登录态和异地容灾风险
+仍由机器所有者承担，不能宣称为无人值守高可用。D1 轮转固定覆盖 16 个登记日志：六类
+live role 的 stdout/stderr，加 frontdoor/stack 的 stdout/stderr；不扫描 evidence 或 secret。
 
 四家 CEX 实时 feed 都是 **WebSocket primary + REST reconcile**：Binance/Bybit/OKX 订阅 ticker stream，Coinbase 订阅 `ticker_batch`；高频事件只更新内存 latest map，每约 5 秒合并提交一次。REST 每 30 秒对账安静、漏消息或断线资产。每家由独立 supervisor 隔离失败。正式环境中，CEX 在 shadow/paused 时只探测审核资产，不发布快照；canary/enabled 才进入正式 writer。本地 `make dev` 默认开启 Local Preview，但使用 preview source，不改变正式 mode、Canary 清单或 readiness。所有行情经 `marketdata.SnapshotWriter` 先提交 PostgreSQL，再派生 Redis。writer 保留最后成功值：30 秒内 Fresh，30 秒到 5 分钟 Stale（可展示但不参与综合价和涨跌排名），超过 5 分钟 Unavailable。规范 ticker 分开保存 `open_24h` 与可空 `change_24h_pct`；Binance 协议同时声明小写 `o` 开盘价和大写 `O` 窗口开始时间，防止 Go JSON 大小写不敏感把时间戳覆盖价格。综合价每 5 秒只使用 30 秒内的新鲜 CEX Spot，要求 10 分钟内 USD-family 汇率、剔除 3% 中位数离群报价，并在三个以上 contributor 时限制单 venue 权重不超过 40%。Perp/DEX 只扩展 All 成员，永不贡献综合现货价。
 

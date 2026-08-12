@@ -17,9 +17,14 @@ mkdir -p "$runtime_root/ops" "$runtime_root/run" "$runtime_root/evidence" \
   "$log_dir" "$launch_dir" "$fixture_bin"
 
 dd if=/dev/zero of="$log_dir/live-crawler.err.log" bs=220 count=1 2>/dev/null
+dd if=/dev/zero of="$log_dir/r1-frontdoor.out.log" bs=220 count=1 2>/dev/null
+dd if=/dev/zero of="$log_dir/r1-stack.err.log" bs=220 count=1 2>/dev/null
+dd if=/dev/zero of="$log_dir/live-provider-secret.out.log" bs=220 count=1 2>/dev/null
 printf 'small\n' > "$log_dir/live-worker.out.log"
 dd if=/dev/zero of="$runtime_root/evidence/live-provider-secret.log" bs=220 count=1 2>/dev/null
-chmod 644 "$log_dir/live-crawler.err.log" "$log_dir/live-worker.out.log" \
+chmod 644 "$log_dir/live-crawler.err.log" "$log_dir/r1-frontdoor.out.log" \
+  "$log_dir/r1-stack.err.log" "$log_dir/live-provider-secret.out.log" \
+  "$log_dir/live-worker.out.log" \
   "$runtime_root/evidence/live-provider-secret.log"
 tail -c 40 "$log_dir/live-crawler.err.log" > "$fixture_dir/expected-retained"
 
@@ -35,10 +40,20 @@ cmp "$fixture_dir/expected-retained" "$log_dir/live-crawler.err.log"
 test "$(stat -f '%Lp' "$log_dir/live-crawler.err.log")" = 600
 test "$(stat -f '%Lp' "$log_dir/live-crawler.err.log.1")" = 600
 test "$(stat -f '%Lp' "$log_dir/live-worker.out.log")" = 600
+for log_file in "$log_dir/r1-frontdoor.out.log" "$log_dir/r1-stack.err.log"; do
+  test "$(stat -f '%z' "$log_file")" = 40
+  test "$(stat -f '%z' "$log_file.1")" = 100
+  test "$(stat -f '%Lp' "$log_file")" = 600
+  test "$(stat -f '%Lp' "$log_file.1")" = 600
+done
+test "$(stat -f '%z' "$log_dir/live-provider-secret.out.log")" = 220
+test "$(stat -f '%Lp' "$log_dir/live-provider-secret.out.log")" = 644
+test ! -e "$log_dir/live-provider-secret.out.log.1"
 test "$(stat -f '%z' "$runtime_root/evidence/live-provider-secret.log")" = 220
 test "$(stat -f '%Lp' "$runtime_root/evidence/live-provider-secret.log")" = 644
 
 dd if=/dev/zero bs=120 count=1 2>/dev/null >> "$log_dir/live-crawler.err.log"
+dd if=/dev/zero bs=120 count=1 2>/dev/null >> "$log_dir/r1-frontdoor.out.log"
 QIU_MARKET_LIVE_RUNTIME_ROOT="$runtime_root" \
 QIU_MARKET_LOG_MAX_BYTES=100 \
 QIU_MARKET_LOG_KEEP_BYTES=40 \
@@ -48,6 +63,10 @@ test "$(stat -f '%z' "$log_dir/live-crawler.err.log")" = 40
 test "$(stat -f '%z' "$log_dir/live-crawler.err.log.1")" = 100
 test "$(stat -f '%z' "$log_dir/live-crawler.err.log.2")" = 100
 test ! -e "$log_dir/live-crawler.err.log.3"
+test "$(stat -f '%z' "$log_dir/r1-frontdoor.out.log")" = 40
+test "$(stat -f '%z' "$log_dir/r1-frontdoor.out.log.1")" = 100
+test "$(stat -f '%z' "$log_dir/r1-frontdoor.out.log.2")" = 100
+test ! -e "$log_dir/r1-frontdoor.out.log.3"
 
 if QIU_MARKET_LIVE_RUNTIME_ROOT="$runtime_root" \
   QIU_MARKET_LOG_MAX_BYTES=100 \

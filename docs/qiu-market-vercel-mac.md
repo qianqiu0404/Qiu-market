@@ -7,6 +7,11 @@ Vercel 只托管 `frontend` 的 Vue/Vite 静态产物与 `/api/**` 轻量 BFF。
 HTTP 和 gRPC 都只监听本机；Tailscale Funnel 只把 HTTP `127.0.0.1:9092`
 映射为 HTTPS/WSS。
 
+当前 24 小时方案明确选择现有 Mac mini，不采购 VPS：成本更低，也复用 owner-only
+PostgreSQL/Redis/runtime 边界；代价是可用性依赖本机供电、网络和用户登录，用户级
+LaunchAgent/keep-awake 不等于无人值守高可用。断电后无人登录自动恢复、异地容灾和 VPS
+迁移均是后续需要单独授权的运维决策，本手册不把它们描述为已经具备。
+
 行情 REST 必须经过 Vercel BFF。BFF 对时间戳、方法、路径、查询串和 body SHA-256
 做 HMAC；Mac mini 配置 `MARKET_PUBLIC_PROXY_HMAC_SECRET` 后，除 `/healthz` 和持有
 一次性 ticket 的交易 WebSocket 外，所有未签名 `/api/**` 请求均返回 401。
@@ -201,8 +206,10 @@ idle system sleep，但不阻止屏幕休眠，也不绕过手动睡眠、合盖
 bash ops/macos/test-live-user-runtime.sh
 ```
 
-`com.qiu-market.live.log-rotation` 每 60 秒只检查 D1 `logs/live-*.out.log` 与
-`logs/live-*.err.log`。单文件超过 50 MiB 时做 copy-truncate：归档保留最近 50 MiB，
+`com.qiu-market.live.log-rotation` 每 60 秒只检查固定 allowlist：crawler、dex、worker、
+api-tunnel、keepawake、log-rotation 的 `live-*.{out,err}.log`，以及现役
+`r1-frontdoor.{out,err}.log`、`r1-stack.{out,err}.log`。不使用目录递归或任意 `r1-*`
+glob。单文件超过 50 MiB 时做 copy-truncate：归档保留最近 50 MiB，
 原 inode 留最近 10 MiB，并最多保留两代归档。保留原 inode 是因为 launchd 子进程已打开
 stdout/stderr；直接 rename 会让进程继续写旧文件。被拒绝的方案是递归扫描整个
 `d1-candidate`，因为 evidence、Vercel 构建日志和私有 runtime 文件不属于 live role 日志。
@@ -218,7 +225,7 @@ freshness 在有界时间内回到 fresh，并跨至少两个 30 秒 reconcile �
 产生 `unsupported Scan ... <nil> into *time.Time`。Binance 451、Bybit 403 仍是
 `unavailable in this deployment`，不能为了消除日志而绕过限制。
 
-Owner 60 秒说明：轮转器只看 D1 live 的八类 stdout/stderr 文件，每分钟有界
+Owner 60 秒说明：轮转器只看固定登记的 D1 role/frontdoor/stack stdout/stderr 文件，每分钟有界
 copy-truncate，保持 launchd 已打开的 inode；配置和 secret 不进入 argv、日志或工作树。
 用户级运行安装器把八个精确 plist 放入标准登录扫描目录，并只在登录期间阻止空闲睡眠；
 它不等于无人登录 LaunchDaemon。重启前保存 PID/health/freshness，exact-SHA 切换失败就恢复旧 selector/LaunchAgent；恢复后
