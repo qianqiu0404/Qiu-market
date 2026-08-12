@@ -31,6 +31,23 @@ func TestValidateConfigRequiresLoopback(t *testing.T) {
 	}
 }
 
+func TestPracticeConfigRequiresIndependentDatabases(t *testing.T) {
+	t.Parallel()
+	valid := Config{
+		StatePostgresURL:     "postgres://127.0.0.1/trading_state",
+		ReferencePostgresURL: "postgres://127.0.0.1/market_reference",
+		GRPCAddress:          "127.0.0.1:9094", PracticeMode: true,
+		CursorHMACCurrent: "test:" + strings.Repeat("A", 43),
+	}
+	if err := validateConfig(valid); err != nil {
+		t.Fatal(err)
+	}
+	valid.ReferencePostgresURL = valid.StatePostgresURL
+	if err := validateConfig(valid); err == nil {
+		t.Fatal("practice backend accepted shared state/reference PostgreSQL")
+	}
+}
+
 func TestRunnerConfigSnapshotCadenceZeroPreservesDefault(t *testing.T) {
 	t.Parallel()
 	defaultCadence := tradingruntime.DefaultConfig().SnapshotEvery

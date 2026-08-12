@@ -183,6 +183,22 @@ var (
 		Value:   "127.0.0.1:9094",
 		EnvVars: prefixEnvVars("TRADING_GRPC_ADDR"),
 	}
+	TradingPracticeModeFlag = &cli.BoolFlag{
+		Name:    "trading-practice-mode",
+		Usage:   "enable the loopback-only virtual trading practice boundary",
+		Value:   false,
+		EnvVars: prefixEnvVars("TRADING_PRACTICE_MODE"),
+	}
+	TradingStateDSNFileFlag = &cli.StringFlag{
+		Name:    "trading-state-dsn-file",
+		Usage:   "owner-only 0600 file containing the trading-state PostgreSQL DSN",
+		EnvVars: prefixEnvVars("TRADING_STATE_DSN_FILE"),
+	}
+	TradingReferenceDSNFileFlag = &cli.StringFlag{
+		Name:    "trading-reference-dsn-file",
+		Usage:   "owner-only 0600 file containing the read-only market-reference PostgreSQL DSN",
+		EnvVars: prefixEnvVars("TRADING_REFERENCE_DSN_FILE"),
+	}
 	TradingAllowedOriginsFlag = &cli.StringFlag{
 		Name:    "trading-allowed-origins",
 		Usage:   "comma-separated browser origins allowed by the trading REST/WebSocket gateway",
@@ -332,6 +348,9 @@ var optionalFlags = []cli.Flag{
 	PublicProxyHMACSecretFlag,
 	ResearchSignalsEnabledFlag,
 	TradingGRPCAddressFlag,
+	TradingPracticeModeFlag,
+	TradingStateDSNFileFlag,
+	TradingReferenceDSNFileFlag,
 	TradingAllowedOriginsFlag,
 	TradingLocalAuthFlag,
 	TradingSecureCookiesFlag,

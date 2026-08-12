@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -18,6 +22,7 @@ import (
 	"github.com/the-web3/s78-market-services/redis"
 	"github.com/the-web3/s78-market-services/services/grpc"
 	rest "github.com/the-web3/s78-market-services/services/http"
+	tradinggateway "github.com/the-web3/s78-market-services/trading/gateway"
 	"github.com/the-web3/s78-market-services/trading/recovery"
 	tradingservice "github.com/the-web3/s78-market-services/trading/service"
 	"github.com/the-web3/s78-market-services/worker"
@@ -80,18 +85,86 @@ func runRestApi(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Life
 	return rest.NewApi(context.Background(), &cfg, rest.NewMarketReadContract(releaseCommit))
 }
 
+type tradingGatewayLifecycle struct {
+	gateway  *tradinggateway.Gateway
+	server   *http.Server
+	listener net.Listener
+	shutdown context.CancelCauseFunc
+	stopped  atomic.Bool
+}
+
+func (g *tradingGatewayLifecycle) Start(context.Context) error {
+	go func() {
+		if err := g.server.Serve(g.listener); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) && !g.stopped.Load() {
+			g.shutdown(fmt.Errorf("practice trading gateway HTTP server: %w", err))
+		}
+	}()
+	return nil
+}
+func (g *tradingGatewayLifecycle) Stop(ctx context.Context) error {
+	if g.stopped.CompareAndSwap(false, true) {
+		return errors.Join(g.server.Shutdown(ctx), g.gateway.Close())
+	}
+	return nil
+}
+func (g *tradingGatewayLifecycle) Stopped() bool { return g.stopped.Load() }
+
+func runTradingGateway(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
+	cfg := config.NewConfig(ctx)
+	if !cfg.Trading.PracticeMode {
+		return nil, fmt.Errorf("the standalone trading gateway requires explicit practice mode")
+	}
+	stateURL, _, err := cfg.TradingPostgresURLs()
+	if err != nil {
+		return nil, err
+	}
+	bindAddress := net.JoinHostPort(cfg.RestServer.Host, fmt.Sprintf("%d", cfg.RestServer.Port))
+	gateway, err := tradinggateway.New(ctx.Context, tradinggateway.Config{
+		PostgresURL: stateURL, PracticeMode: true,
+		VirtualLiquidityEnabled: cfg.Trading.DemoMakerEnabled,
+		GRPCAddress:             cfg.Trading.GRPCAddress, BindAddress: bindAddress,
+		AllowedOrigins: cfg.Trading.AllowedOrigins, LocalAuth: cfg.Trading.LocalAuth,
+		SecureCookies: cfg.Trading.SecureCookies, DiskPath: "/", MinWriteBytes: 15 << 30,
+	})
+	if err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", bindAddress)
+	if err != nil {
+		_ = gateway.Close()
+		return nil, fmt.Errorf("listen practice trading gateway: %w", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.WriteHeader(http.StatusOK)
+	})
+	mux.Handle("/api/v1/trading/", gateway.Handler())
+	return &tradingGatewayLifecycle{
+		gateway: gateway, server: &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second},
+		listener: listener, shutdown: shutdown,
+	}, nil
+}
+
 func runTrading(ctx *cli.Context, shutdown context.CancelCauseFunc) (cliapp.Lifecycle, error) {
 	log.Info("run isolated virtual BTC/USDT trading service...")
 	cfg := config.NewConfig(ctx)
+	stateURL, referenceURL, err := cfg.TradingPostgresURLs()
+	if err != nil {
+		return nil, err
+	}
 	return tradingservice.New(ctx.Context, tradingservice.Config{
-		PostgresURL:        cfg.MasterDB.PostgresURL(),
-		GRPCAddress:        cfg.Trading.GRPCAddress,
-		DemoMakerEnabled:   cfg.Trading.DemoMakerEnabled,
-		DiskPath:           "/",
-		MinWriteBytes:      15 << 30,
-		CursorHMACCurrent:  cfg.Trading.CursorHMACCurrent,
-		CursorHMACPrevious: cfg.Trading.CursorHMACPrevious,
-		RecoveryGate:       cfg.Trading.RecoveryGate,
+		StatePostgresURL:     stateURL,
+		ReferencePostgresURL: referenceURL,
+		GRPCAddress:          cfg.Trading.GRPCAddress,
+		PracticeMode:         cfg.Trading.PracticeMode,
+		DemoMakerEnabled:     cfg.Trading.DemoMakerEnabled,
+		DiskPath:             "/",
+		MinWriteBytes:        15 << 30,
+		CursorHMACCurrent:    cfg.Trading.CursorHMACCurrent,
+		CursorHMACPrevious:   cfg.Trading.CursorHMACPrevious,
+		RecoveryGate:         cfg.Trading.RecoveryGate,
 		RecoveryProvenance: recovery.Provenance{
 			ProductionOrigin: cfg.Trading.ProductionOrigin,
 			DeploymentID:     cfg.Trading.DeploymentID,
@@ -235,6 +308,12 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 				Flags:       flags,
 				Description: "Run isolated virtual BTC/USDT matching and ledger service",
 				Action:      cliapp.LifecycleCmd(runTrading),
+			},
+			{
+				Name:        "trading-gateway",
+				Flags:       flags,
+				Description: "Run the loopback-only Practice trading HTTP gateway",
+				Action:      cliapp.LifecycleCmd(runTradingGateway),
 			},
 			{
 				Name:        "crawler",

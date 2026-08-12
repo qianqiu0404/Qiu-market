@@ -89,6 +89,12 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 	if err != nil {
 		return domain.Result{}, fmt.Errorf("match order %s: %w", order.ID, err)
 	}
+	// Match mutates the incoming order to its final state before settlement is
+	// journaled. Lifecycle events must instead carry the state after each fill,
+	// otherwise a multi-level taker reports the same final remainder on every
+	// trade and the durable projection correctly rejects the batch.
+	eventRemainingQuantity := request.Quantity
+	eventRemainingQuoteBudget := request.QuoteBudget
 	for fillIndex, fill := range matchResult.Fills {
 		trade, settleErr := s.settleFill(command.Sequence, fillIndex+1, order, fill)
 		if settleErr != nil {
@@ -130,6 +136,20 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 		}
 		s.orders[maker.ID] = maker
 		s.trades = append(s.trades, trade)
+		var eventQuoteBudget *int64
+		if order.Type == domain.OrderTypeMarket && order.Side == domain.SideBuy {
+			if eventRemainingQuoteBudget < fill.QuoteAmount {
+				return domain.Result{}, fmt.Errorf("event remaining quote budget became negative")
+			}
+			eventRemainingQuoteBudget -= fill.QuoteAmount
+			remaining := eventRemainingQuoteBudget
+			eventQuoteBudget = &remaining
+		} else {
+			if eventRemainingQuantity < fill.Quantity {
+				return domain.Result{}, fmt.Errorf("event remaining quantity became negative")
+			}
+			eventRemainingQuantity -= fill.Quantity
+		}
 
 		events = appendEvent(events, domain.Event{
 			Sequence:             command.Sequence,
@@ -138,8 +158,8 @@ func (s *state) applySubmit(command domain.Command) (domain.Result, error) {
 			Status:               domain.OrderStatusPartiallyFilled,
 			Price:                fill.Price,
 			Quantity:             fill.Quantity,
-			Remaining:            order.RemainingQuantity,
-			RemainingQuoteBudget: remainingQuoteBudgetFor(order),
+			Remaining:            eventRemainingQuantity,
+			RemainingQuoteBudget: eventQuoteBudget,
 			QuoteAmount:          fill.QuoteAmount,
 			Trade:                &trade,
 		})

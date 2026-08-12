@@ -178,6 +178,8 @@ function systemStatusFixture() {
 interface HarnessOptions {
   realKlines?: boolean
   authDisabled?: boolean
+  initiallyLoggedIn?: boolean
+  starterFunded?: boolean
   publicReadDelayMs?: number
   submitResponseLostBeforeCommitOnce?: boolean
   submitCommittedButResponseLostOnce?: boolean
@@ -185,6 +187,8 @@ interface HarnessOptions {
   cancelCommittedButResponseLostOnce?: boolean
   fundCommittedButResponseLostOnce?: boolean
   recoveryStatus?: Record<string, unknown>
+  practiceMode?: boolean
+  liquidityState?: 'disabled' | 'recovering' | 'active' | 'paused'
 }
 
 type HarnessPanel =
@@ -207,9 +211,9 @@ type BrowserOrder = Record<string, unknown> & {
 }
 
 async function installBrowserContract(page: Page, options: HarnessOptions = {}) {
-  let loggedIn = false
+  let loggedIn = options.initiallyLoggedIn === true
   let sessionRequests = 0
-  let sequence = 10
+  let sequence = options.starterFunded === true ? 12 : 10
   let recoveryCount = 1
   let recoveryStatus = options.recoveryStatus ?? writableRecoveryStatus()
   let loseSubmitBeforeCommit = options.submitResponseLostBeforeCommitOnce === true
@@ -218,9 +222,16 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
   let loseCancelAfterCommit = options.cancelCommittedButResponseLostOnce === true
   let loseFundAfterCommit = options.fundCommittedButResponseLostOnce === true
   let publicReadDelayMs = options.publicReadDelayMs ?? 0
+  let liquidityState = options.liquidityState ?? 'active'
   let activePublicReads = 0
   let maximumConcurrentPublicReads = 0
-  let balances: Array<{ asset: string; available: string; held: string }> = []
+  let balances: Array<{ asset: string; available: string; held: string }> =
+    options.starterFunded === true
+      ? [
+          { asset: 'USDT', available: '10000', held: '0' },
+          { asset: 'BTC', available: '0.1', held: '0' },
+        ]
+      : []
   let orders: BrowserOrder[] = []
   let accountTrades: Array<Record<string, unknown>> = []
   let publicTrades: Array<Record<string, unknown>> = []
@@ -233,8 +244,31 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
     account_id: string
     asset: string
     amount: string
-  }> = []
-  const fundResults = new Map<string, { sequence: string; status: string }>()
+  }> = options.starterFunded === true
+    ? [
+        {
+          request_id: 'starter-v1-usdt',
+          account_id: principal.account_id,
+          asset: 'USDT',
+          amount: '10000',
+        },
+        {
+          request_id: 'starter-v1-btc',
+          account_id: principal.account_id,
+          asset: 'BTC',
+          amount: '0.1',
+        },
+      ]
+    : []
+  const fundResults = new Map<string, { sequence: string; status: string }>(
+    options.starterFunded === true
+      ? [
+          ['starter-v1-usdt', { sequence: '11', status: 'accepted' }],
+          ['starter-v1-btc', { sequence: '12', status: 'accepted' }],
+        ]
+      : [],
+  )
+  const starterTrace: string[] = []
   const cancelResults = new Map<string, { sequence: string; status: string; order_id: string }>()
   const failedPanels = new Set<HarnessPanel>()
   const sockets: WebSocketRoute[] = []
@@ -322,7 +356,34 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
     }
 
     if (path === '/api/v2/get_asset_dashboard') {
-      await json(200, { code: 2000, result: [btcAsset], total: 1 })
+      const snapshot = {
+        snapshot_id: 'snp_74726164696e672d6274630000000000',
+        snapshot_as_of: 1_785_938_400_000,
+        snapshot_schema: 'qiu.market-snapshot.v1',
+      }
+      await json(200, {
+        code: 2000,
+        ...snapshot,
+        overview: {
+          venue: 'all',
+          ...snapshot,
+          asset_count: 1,
+          priced_asset_count: 1,
+          displayed_asset_count: 1,
+          unpriced_asset_count: 0,
+          fresh_asset_count: 1,
+          stale_asset_count: 0,
+          unavailable_asset_count: 0,
+          single_venue_priced_asset_count: 0,
+          multi_venue_priced_asset_count: 1,
+          global_market_cap_usd: { value: '1300000000000', available: true },
+          covered_spot_volume_24h_usd: { value: '20000000000', available: true },
+          btc_dominance_pct: { value: '50', available: true },
+          coverage_ratio_pct: { value: '100', available: true },
+        },
+        result: [btcAsset],
+        total: 1,
+      })
       return
     }
     if (path === '/api/v2/get_asset_markets' || path === '/api/v2/get_asset_venues') {
@@ -345,11 +406,27 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
       await json(200, { code: 2000, result: systemStatusFixture() })
       return
     }
+    if (path === '/api/v1/get_system_overview') {
+      await json(200, {
+        code: 2000,
+        result: {
+          crawler_status: 'Running',
+          redis_status: 'Running',
+          database_status: 'Running',
+          worker_status: 'Running',
+          api_status: 'Running',
+        },
+      })
+      return
+    }
     if (path === '/api/v1/trading/auth/capabilities') {
       await json(200, {
         github_oauth_enabled: false,
         local_login_enabled: options.authDisabled !== true,
         recovery_gate_enabled: true,
+        practice_mode_enabled: options.practiceMode === true,
+        starter_funds_enabled: options.practiceMode === true,
+        virtual_liquidity_enabled: options.practiceMode === true,
       })
       return
     }
@@ -390,6 +467,15 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
         outbox_state: 'ready',
         outbox_checkpoint_sequence: String(sequence),
         outbox_checkpoint_event_index: 1,
+        virtual_liquidity: options.practiceMode === true ? {
+          provider: 'Qiu Virtual Liquidity',
+          state: liquidityState,
+          reason: liquidityState === 'paused' ? 'reference_stale' : '',
+          bid_levels: liquidityState === 'active' ? 3 : 0,
+          ask_levels: liquidityState === 'active' ? 3 : 0,
+          reference_observed_at: observedAt,
+          last_refresh_at: observedAt,
+        } : undefined,
       })
       return
     }
@@ -492,6 +578,7 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
         asset: string
         amount: string
       }
+      if (body.request_id.startsWith('starter-v1-')) starterTrace.push(`fund:${body.request_id}`)
       fundRequests.push(body)
       let result = fundResults.get(body.request_id)
       if (!result) {
@@ -513,6 +600,31 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
         }
       }
       await json(200, result)
+      return
+    }
+    if (/^\/api\/v1\/trading\/account\/funding\/[^/]+$/.test(path)) {
+      if (!await requireSession()) return
+      const requestID = decodeURIComponent(path.split('/').at(-1) ?? '')
+      if (requestID.startsWith('starter-v1-')) starterTrace.push(`query:${requestID}`)
+      const result = fundResults.get(requestID)
+      const funding = fundRequests.find((item) => item.request_id === requestID)
+      if (!result || !funding) {
+        await json(404, {
+          code: 'funding_request_not_found', message: 'funding request was not found',
+        })
+        return
+      }
+      await json(200, {
+        market_id: 'BTC-USDT',
+        request_id: requestID,
+        funding_event_id: `${result.sequence}:1`,
+        sequence: result.sequence,
+        asset: funding.asset,
+        amount: funding.amount,
+        projection_result: 'applied',
+        ledger_balanced: true,
+        occurred_at: observedAt,
+      })
       return
     }
     if (path === '/api/v1/trading/orders' && request.method() === 'POST') {
@@ -649,10 +761,14 @@ async function installBrowserContract(page: Page, options: HarnessOptions = {}) 
     get submitRequestIDs() { return [...submitRequestIDs] },
     get cancelRequestIDs() { return [...cancelRequestIDs] },
     get fundRequests() { return [...fundRequests] },
+    get starterTrace() { return [...starterTrace] },
     get sessionRequests() { return sessionRequests },
     get maximumConcurrentPublicReads() { return maximumConcurrentPublicReads },
     get socketCount() { return sockets.length },
     get socketURLs() { return [...socketURLs] },
+    setLiquidityState(next: 'disabled' | 'recovering' | 'active' | 'paused') {
+      liquidityState = next
+    },
     partialFill(orderID: string) {
       const order = orders.find((candidate) => candidate.id === orderID)
       if (!order) throw new Error(`order ${orderID} is absent from the browser fixture`)
@@ -816,6 +932,82 @@ test('does not probe a private session when every login method is disabled', asy
   expect(harness.sessionRequests).toBe(0)
 })
 
+test('local practice starter funding is query-first, fixed-ID and idempotent across reload', async ({ page }) => {
+  const harness = await installBrowserContract(page, { practiceMode: true })
+  await page.goto('/trade/BTC-USDT')
+  await signIn(page)
+
+  await expect(page.getByText('VIRTUAL ONLY')).toBeVisible()
+  await expect(page.getByText('Qiu Virtual Order Book', { exact: true })).toBeVisible()
+  await expect(page.getByText('Qiu Virtual Matcher', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('reference-not-executable')).toContainText(
+    'Reference price is not executable',
+  )
+
+  await page.goto('/system')
+  const practice = page.getByTestId('system-trading-practice')
+  await expect(practice).toContainText('Local practice enabled')
+  await expect(practice).toContainText('Qiu Virtual Liquidity')
+  await expect(practice).toContainText('active')
+
+  const starter = page.getByTestId('starter-funds')
+  await expect(starter).toContainText('10,000 Virtual USDT')
+  await expect(starter).toContainText('0.1 Virtual BTC')
+  await page.getByTestId('starter-funds-submit').click()
+  await expect(page.getByRole('status')).toContainText(
+    'Both starter funding events are applied and balanced',
+  )
+
+  expect(harness.fundRequests).toEqual([
+    {
+      request_id: 'starter-v1-usdt',
+      account_id: principal.account_id,
+      asset: 'USDT',
+      amount: '10000',
+    },
+    {
+      request_id: 'starter-v1-btc',
+      account_id: principal.account_id,
+      asset: 'BTC',
+      amount: '0.1',
+    },
+  ])
+  for (const requestID of ['starter-v1-usdt', 'starter-v1-btc']) {
+    const fundIndex = harness.starterTrace.indexOf(`fund:${requestID}`)
+    expect(fundIndex).toBeGreaterThan(0)
+    expect(harness.starterTrace.slice(0, fundIndex)).toContain(`query:${requestID}`)
+    expect(harness.starterTrace.slice(fundIndex + 1)).toContain(`query:${requestID}`)
+  }
+
+  await page.reload()
+  await expect(page.getByTestId('starter-funds-submit')).toBeDisabled()
+  await expect(page.getByTestId('starter-funds-submit')).toHaveText('Starter funds applied')
+  expect(harness.fundRequests).toHaveLength(2)
+})
+
+test('paused virtual liquidity blocks Submit while an existing order can still be canceled', async ({ page }) => {
+  const harness = await installBrowserContract(page, { practiceMode: true })
+  await page.goto('/trade/BTC-USDT')
+  await signIn(page)
+  await fundFromSystem(page, '1000')
+  await page.goto('/trade/BTC-USDT')
+  await placeLimitMaker(page)
+
+  harness.setLiquidityState('paused')
+  await page.getByRole('button', { name: 'Refresh' }).click()
+  await expect(page.getByTestId('write-gate-reason')).toContainText(
+    'Qiu Virtual Liquidity is paused',
+  )
+  await expect(page.locator('.submit-order')).toBeDisabled()
+
+  const cancel = page.getByRole('button', { name: 'Cancel', exact: true })
+  await expect(cancel).toBeEnabled()
+  await cancel.click()
+  expect(harness.orders[0]?.status).toBe('canceled')
+  await page.getByRole('button', { name: 'Order history', exact: true }).click()
+  await expect(page.getByText('Canceled')).toBeVisible()
+})
+
 test('localizes recovery admission without exposing internal write-gate codes', async ({ page }) => {
   await installBrowserContract(page, {
     recoveryStatus: writableRecoveryStatus({
@@ -908,6 +1100,7 @@ test('panel failures retain explicitly marked last-good data instead of a full-p
   await fundFromSystem(page, '1000')
   await page.goto('/trade/BTC-USDT')
   await placeLimitMaker(page)
+  await expect(page.getByTestId('panel-kline-state')).toContainText('CURRENT')
 
   for (const panel of [
     'kline',
@@ -1234,20 +1427,83 @@ test('transport cursor deduplicates replay, reconciles a gap and resumes from th
 })
 
 for (const viewport of [
-  { name: 'desktop', width: 1440, height: 900 },
-  { name: 'compact', width: 1180, height: 820 },
-  { name: 'mobile', width: 768, height: 900 },
+  { name: 'desktop', width: 1440, height: 1000 },
+  { name: 'mobile-390', width: 390, height: 844 },
+  { name: 'mobile-320', width: 320, height: 844 },
 ]) {
-  test(`Trade Product V1 contains horizontal page overflow at ${viewport.name} width`, async ({ page }) => {
+  test(`local practice Trade and System stay accessible without page overflow at ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height })
-    await installBrowserContract(page)
+    const consoleErrors: string[] = []
+    const pageErrors: string[] = []
+    const failedRequests: string[] = []
+    const serverErrors: string[] = []
+    const clientErrors: string[] = []
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text())
+    })
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+    page.on('requestfailed', (request) => failedRequests.push(request.url()))
+    page.on('response', (response) => {
+      if (response.status() >= 500) serverErrors.push(`${response.status()} ${response.url()}`)
+      else if (response.status() >= 400) clientErrors.push(`${response.status()} ${response.url()}`)
+    })
+
+    await installBrowserContract(page, {
+      practiceMode: true,
+      initiallyLoggedIn: true,
+      starterFunded: true,
+    })
     await page.goto('/trade/BTC-USDT')
     await expect(page.getByRole('heading', { name: 'BTC / USDT' })).toBeVisible()
+    await expect(page.getByText('Identity bound')).toBeVisible()
 
-    const dimensions = await page.evaluate(() => ({
+    const tradeDimensions = await page.evaluate(() => ({
       viewport: document.documentElement.clientWidth,
-      page: document.documentElement.scrollWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
     }))
-    expect(dimensions.page).toBeLessThanOrEqual(dimensions.viewport)
+    expect(tradeDimensions.document).toBeLessThanOrEqual(tradeDimensions.viewport)
+    expect(tradeDimensions.body).toBeLessThanOrEqual(tradeDimensions.viewport)
+
+    const shortTradeTargets = await page.locator([
+      '.trade-page button:visible',
+      '.trade-page input:not([type="checkbox"]):visible',
+      '.trade-page select:visible',
+      '.trade-page label.checkbox:visible',
+      '.trade-page a.btn:visible',
+    ].join(',')).evaluateAll((elements) => elements.flatMap((element) => {
+      const box = element.getBoundingClientRect()
+      return box.height + 0.01 < 44
+        ? [{ tag: element.tagName, text: element.textContent?.trim() ?? '', height: box.height }]
+        : []
+    }))
+    expect(shortTradeTargets).toEqual([])
+
+    await page.goto('/system')
+    await expect(page.getByTestId('system-trading-practice')).toBeVisible()
+    const systemDimensions = await page.evaluate(() => ({
+      viewport: document.documentElement.clientWidth,
+      document: document.documentElement.scrollWidth,
+      body: document.body.scrollWidth,
+    }))
+    expect(systemDimensions.document).toBeLessThanOrEqual(systemDimensions.viewport)
+    expect(systemDimensions.body).toBeLessThanOrEqual(systemDimensions.viewport)
+
+    const shortSystemTargets = await page.getByTestId('system-trading-practice').locator([
+      'button:visible',
+      'input:visible',
+      'select:visible',
+      'summary:visible',
+    ].join(',')).evaluateAll((elements) => elements.flatMap((element) => {
+      const box = element.getBoundingClientRect()
+      return box.height + 0.01 < 44
+        ? [{ tag: element.tagName, text: element.textContent?.trim() ?? '', height: box.height }]
+        : []
+    }))
+    expect(shortSystemTargets).toEqual([])
+    expect({ consoleErrors, clientErrors }).toEqual({ consoleErrors: [], clientErrors: [] })
+    expect(pageErrors).toEqual([])
+    expect(failedRequests).toEqual([])
+    expect(serverErrors).toEqual([])
   })
 }

@@ -85,6 +85,15 @@ func TestReaderAccountScopeKeysetsTimelineLedgerAndRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	funding, found, err := reader.GetFundingRequest(ctx, "maker", "fund-maker")
+	if err != nil || !found || funding.FundingEventID != "1:1" || funding.Sequence != 1 ||
+		funding.Asset != market.BaseAsset || funding.Amount != 30_000_000 ||
+		!funding.LedgerBalanced || funding.OccurredAt.IsZero() {
+		t.Fatalf("funding=%+v found=%v err=%v", funding, found, err)
+	}
+	if _, found, err := reader.GetFundingRequest(ctx, "taker", "fund-maker"); err != nil || found {
+		t.Fatalf("cross-account funding found=%v err=%v", found, err)
+	}
 	firstPage, err := reader.ListOrders(
 		ctx,
 		"maker",

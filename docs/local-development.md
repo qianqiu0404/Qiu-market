@@ -48,6 +48,57 @@ S78_CEX_PREVIEW=0 S78_DEX_PREVIEW=0 make dev
 
 关闭时会撤回预览发布范围、把预览 venue snapshot 置为 unavailable、删除 `spot-tickers-preview` 状态，并重新开始正式观察窗口。正式 mode 和 Canary 清单从未被预览修改。
 
+## T1 独立 BTC/USDT Practice
+
+T1 不复用上面的 `make dev` 交易数据库，也不读取工作树 `.env`。操作者先准备两个不同的
+PostgreSQL database：一个带 `qiu-market/trading-practice/v1` ownership marker 的 Practice
+state 库；另一个是行情库中的只读角色，只授予 `asset_price_index` 与
+`asset_external_mapping` 的 `SELECT`。两个 DSN 分别写入当前用户所有、0600、regular、非
+symlink 的运行文件：
+
+```text
+<runtime>/config/state-postgres-dsn
+<runtime>/config/reference-postgres-dsn
+<runtime>/secrets/cursor-hmac-current
+```
+
+不要在命令行、日志或本文档中粘贴 DSN。Practice manager 只接受绝对、非 live 的运行目录，
+默认管理 loopback `19094` gRPC 与 `19092` HTTP gateway；它同时检查 gateway health 和真实
+BTC/USDT status，避免静态 health 200 掩盖 trading 尚未恢复。启动、查看与有界停止：
+
+```bash
+go build -o /absolute/private/runtime/bin/market-services ./cmd/market-services
+chmod 700 /absolute/private/runtime/bin/market-services
+
+bash trading/scripts/practice-local.sh start \
+  /absolute/private/runtime /absolute/private/runtime/bin/market-services
+bash trading/scripts/practice-local.sh status /absolute/private/runtime
+bash trading/scripts/practice-local.sh stop /absolute/private/runtime
+```
+
+浏览器仍使用固定 <http://127.0.0.1:5174>。行情读请求继续代理到原 market API，只有
+`/api/v1/trading/**` 指向独立 Practice gateway：
+
+```bash
+cd frontend
+VITE_API_PROXY_TARGET=http://127.0.0.1:9092 \
+VITE_TRADING_API_PROXY_TARGET=http://127.0.0.1:19092 \
+npm run dev
+```
+
+manager 默认只允许 `http://127.0.0.1:5174` Origin。测试覆盖可用
+`QIU_T1_FRONTEND_ORIGIN` 指定另一个显式 HTTP loopback IP 与非后端端口；hostname、HTTPS、
+无端口、9092/9094 和越界端口都会 fail closed。真实双 PostgreSQL、固定 60000 参考、六档
+报价、两笔 Starter、三档成交、撤单、账本、重启恢复与进程清理的一次性验收命令是：
+
+```bash
+bash trading/scripts/test-practice-postgres.sh
+```
+
+该验收使用临时数据库和端口，退出时只回收自己记录的两个 PID 与 PostgreSQL，不会触碰 live
+runtime。产品本轮没有 reset/delete；要保留练习历史，应始终复用同一已验证的 Practice state
+库。共享 Preview 与 Production 的 OAuth、fund、submit、cancel、virtual liquidity 仍关闭。
+
 ## Provider 独立 rollout 安全门
 
 新来源不再由一个全局布尔值一起切流。`provider_rollout_state` 为每个 provider 独立保存：

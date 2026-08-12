@@ -17,6 +17,12 @@ export interface AuthCapabilities {
    * never turn a recovery endpoint 404 into writable legacy mode.
    */
   recovery_gate_enabled?: boolean
+  /** Local-only practice runtime capability. Missing means disabled. */
+  practice_mode_enabled?: boolean
+  /** The fixed, query-first starter funding workflow is available. */
+  starter_funds_enabled?: boolean
+  /** Qiu Virtual Liquidity may publish Post Only practice quotes. */
+  virtual_liquidity_enabled?: boolean
 }
 
 export interface PriceLevel {
@@ -102,6 +108,31 @@ export interface TradingStatus {
   outbox_last_error?: string
   outbox_last_published_at?: string
   outbox_last_cleanup_at?: string
+  virtual_liquidity?: VirtualLiquidityStatus
+}
+
+export type VirtualLiquidityState = 'disabled' | 'recovering' | 'active' | 'paused'
+
+export interface VirtualLiquidityStatus {
+  provider: string
+  state: VirtualLiquidityState
+  reason: string
+  bid_levels: number
+  ask_levels: number
+  reference_observed_at: string
+  last_refresh_at: string
+}
+
+export interface FundingRequestResult {
+  market_id: string
+  request_id: string
+  funding_event_id: string
+  sequence: string
+  asset: 'BTC' | 'USDT'
+  amount: string
+  projection_result: 'applied'
+  ledger_balanced: boolean
+  occurred_at: string
 }
 
 export type TradingRecoveryPhase =
@@ -500,6 +531,9 @@ export const tradingAPI = {
       },
       true,
     ),
+  fundingRequest: (requestID: string) => request<FundingRequestResult>(
+    `/account/funding/${encodeURIComponent(requestID)}`,
+  ),
   ticket: () => request<{ ticket: string; expires_at: string }>(
     '/ws-ticket',
     { method: 'POST', body: '{}' },

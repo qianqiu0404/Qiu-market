@@ -35,20 +35,22 @@ type GitHubOAuth interface {
 }
 
 type Config struct {
-	MarketID         string
-	AllowedLogin     string
-	AllowedOrigins   []string
-	BindAddress      string
-	LocalMode        bool
-	LocalAccountID   string
-	SecureCookies    bool
-	RecoveryGate     bool
-	SessionCookie    string
-	CSRFCookie       string
-	SessionTTL       time.Duration
-	WriteLimit       int
-	WriteWindow      time.Duration
-	FrontendRedirect string
+	MarketID                string
+	AllowedLogin            string
+	AllowedOrigins          []string
+	BindAddress             string
+	LocalMode               bool
+	LocalAccountID          string
+	SecureCookies           bool
+	RecoveryGate            bool
+	PracticeMode            bool
+	VirtualLiquidityEnabled bool
+	SessionCookie           string
+	CSRFCookie              string
+	SessionTTL              time.Duration
+	WriteLimit              int
+	WriteWindow             time.Duration
+	FrontendRedirect        string
 }
 
 func DefaultConfig() Config {
@@ -165,6 +167,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/trading/trades", s.listTrades)
 	s.mux.HandleFunc("GET /api/v1/trading/ledger/entries", s.listLedgerEntries)
 	s.mux.HandleFunc("GET /api/v1/trading/balances", s.getBalances)
+	s.mux.HandleFunc("GET /api/v1/trading/account/funding/{request_id}", s.getFundingRequest)
 	s.mux.HandleFunc("POST /api/v1/trading/admin/fund", s.fundVirtual)
 	s.mux.HandleFunc("POST /api/v1/trading/ws-ticket", s.issueWebSocketTicket)
 	s.mux.HandleFunc("GET /api/v1/trading/events/ws", s.serveWebSocket)
@@ -172,9 +175,12 @@ func (s *Server) routes() {
 
 func (s *Server) authCapabilities(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]bool{
-		"github_oauth_enabled":  s.github != nil,
-		"local_login_enabled":   s.config.LocalMode,
-		"recovery_gate_enabled": s.config.RecoveryGate,
+		"github_oauth_enabled":      s.github != nil,
+		"local_login_enabled":       s.config.LocalMode,
+		"recovery_gate_enabled":     s.config.RecoveryGate,
+		"practice_mode_enabled":     s.config.PracticeMode,
+		"starter_funds_enabled":     s.config.PracticeMode,
+		"virtual_liquidity_enabled": s.config.PracticeMode && s.config.VirtualLiquidityEnabled,
 	})
 }
 
@@ -596,6 +602,21 @@ func (s *Server) getBalances(writer http.ResponseWriter, request *http.Request) 
 	s.writeGRPC(writer, response, err)
 }
 
+func (s *Server) getFundingRequest(writer http.ResponseWriter, request *http.Request) {
+	session, _, ok := s.requireSession(writer, request, false)
+	if !ok {
+		return
+	}
+	response, err := s.client.GetFundingRequest(
+		request.Context(),
+		&tradingv1.GetFundingRequestRequest{
+			MarketId: s.config.MarketID, AccountId: session.Principal.AccountID,
+			RequestId: request.PathValue("request_id"),
+		},
+	)
+	s.writeGRPC(writer, response, err)
+}
+
 type fundBody struct {
 	AccountID string `json:"account_id"`
 	RequestID string `json:"request_id"`
@@ -620,6 +641,13 @@ func (s *Server) fundVirtual(writer http.ResponseWriter, request *http.Request) 
 	if target == "" {
 		target = session.Principal.AccountID
 	}
+	if s.config.PracticeMode {
+		if reservedStarterFundID(body.RequestID) &&
+			(target != session.Principal.AccountID || !validStarterFund(body)) {
+			writeError(writer, http.StatusBadRequest, "validation_failed", "reserved starter funding identity has a fixed current-session payload")
+			return
+		}
+	}
 	response, err := s.client.AdminFundVirtual(
 		request.Context(),
 		&tradingv1.AdminFundVirtualRequest{
@@ -631,6 +659,15 @@ func (s *Server) fundVirtual(writer http.ResponseWriter, request *http.Request) 
 		},
 	)
 	s.writeGRPC(writer, response, err)
+}
+
+func validStarterFund(body fundBody) bool {
+	return (body.RequestID == "starter-v1-usdt" && body.Asset == "USDT" && body.Amount == "10000") ||
+		(body.RequestID == "starter-v1-btc" && body.Asset == "BTC" && body.Amount == "0.1")
+}
+
+func reservedStarterFundID(requestID string) bool {
+	return requestID == "starter-v1-usdt" || requestID == "starter-v1-btc"
 }
 
 func (s *Server) issueWebSocketTicket(writer http.ResponseWriter, request *http.Request) {
@@ -766,6 +803,10 @@ func (s *Server) writeGRPC(writer http.ResponseWriter, value any, err error) {
 		if strings.HasPrefix(message, "order_not_found") {
 			errorCode = "order_not_found"
 		}
+		if strings.HasPrefix(message, "funding_request_not_found") {
+			errorCode = "funding_request_not_found"
+			message = "funding request was not found"
+		}
 	case codes.AlreadyExists:
 		httpStatus = http.StatusConflict
 	case codes.FailedPrecondition:
@@ -775,6 +816,10 @@ func (s *Server) writeGRPC(writer http.ResponseWriter, value any, err error) {
 	case codes.Unavailable:
 		httpStatus = http.StatusServiceUnavailable
 		errorCode = "backend_unavailable"
+		if message == "liquidity_paused" {
+			errorCode = "liquidity_paused"
+			message = "virtual liquidity is unavailable"
+		}
 	case codes.DeadlineExceeded:
 		httpStatus = http.StatusGatewayTimeout
 		errorCode = "backend_timeout"

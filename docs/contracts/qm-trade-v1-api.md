@@ -63,9 +63,10 @@
 | 429 | `rate_limited` | 写接口限流 |
 | 503 | `recovery_in_progress` | 权威恢复门禁关闭写入 |
 | 503 | `trading_write_paused` | 磁盘或运行时门禁关闭写入 |
+| 503 | `liquidity_paused` | 本机虚拟流动性尚未形成安全双边报价；只阻断新 Submit |
 | 502/503/504 | `backend_unavailable` / `backend_timeout` | 结果可能 unknown，按接口语义核对 |
 
-## 2. 现有写入契约（existing，V1 保持兼容）
+## 2. 现有写入、能力与状态契约（existing，V1 保持兼容）
 
 ### 2.1 `POST /orders`
 
@@ -105,6 +106,78 @@
 ```
 
 该接口只允许 admin，V1 UI 移至 System/Trading Admin。
+
+### 2.4 `GET /auth/capabilities`（existing，T1 扩展）
+
+既有能力字段保持兼容，并增加：
+
+```json
+{
+  "practice_mode_enabled": true,
+  "starter_funds_enabled": true,
+  "virtual_liquidity_enabled": true
+}
+```
+
+- 三个字段都是服务端运行边界的事实，不由前端配置猜测；
+- `practice_mode_enabled` 只有在 loopback、local auth、OAuth 关闭、非 Secure Cookie、
+  loopback Origin 和独立 Practice PostgreSQL 全部成立时才可为 `true`；
+- `starter_funds_enabled` 只表示本机会话可以走固定 Starter funding 流程；
+- `virtual_liquidity_enabled` 只表示该能力已配置，不表示当前六档报价已经安全可用。
+
+### 2.5 `GET /markets/BTC-USDT/status`（existing，T1 扩展）
+
+状态响应增加：
+
+```json
+{
+  "virtual_liquidity": {
+    "provider": "Qiu Virtual Liquidity",
+    "state": "active",
+    "reason": "two-sided virtual liquidity is active",
+    "bid_levels": 3,
+    "ask_levels": 3,
+    "reference_observed_at": "2026-08-13T10:00:00Z",
+    "last_refresh_at": "2026-08-13T10:00:05Z"
+  }
+}
+```
+
+`state` 只允许 `disabled | recovering | active | paused`。新 Submit 还必须同时通过原有
+runner/recovery/disk/session/CSRF/Origin 门；`active` 不能绕过这些门。虚拟流动性不是
+`active` 时，普通账户 Submit 返回 503 `liquidity_paused`，查询和本人撤单仍保留；maker
+自己的 Post Only 维护命令不通过这个外部门再次拦截。
+
+### 2.6 `GET /account/funding/{request_id}`（existing，T1 新增）
+
+该私有只读接口只使用当前 HttpOnly session 的账户；请求不能携带 `account_id`：
+
+```json
+{
+  "market_id": "BTC-USDT",
+  "request_id": "starter-v1-usdt",
+  "funding_event_id": "12:0",
+  "sequence": "12",
+  "asset": "USDT",
+  "amount": "10000",
+  "projection_result": "applied",
+  "ledger_balanced": true,
+  "occurred_at": "2026-08-13T10:00:00Z"
+}
+```
+
+不存在或属于其他账户都返回 404 `funding_request_not_found`，避免账户枚举。响应从 funding
+event、payload identity 和对平账本重验得到，不能根据余额变化合成。Starter 资金固定为两步：
+
+| 顺序 | request ID | 固定 payload |
+|---:|---|---|
+| 1 | `starter-v1-usdt` | 当前 session 账户、`USDT`、`10000` |
+| 2 | `starter-v1-btc` | 当前 session 账户、`BTC`、`0.1` |
+
+每一步都执行 `GET -> found 且 payload/ledger 一致则完成；404 且所有写门开放才 POST 原 ID`。
+超时后再次 GET；只有权威事实仍不存在时，才允许使用同一个 ID 重放。两步不是一个数据库事务，
+也不能用随机 ID、余额或 UI 本地状态冒充恢复进度。手动 admin 虚拟入金继续接受其它合法
+request ID；仅上述两个保留 ID 被固定为当前 session 和固定 payload。
 
 ## 3. 订单分页（planned-P0）
 

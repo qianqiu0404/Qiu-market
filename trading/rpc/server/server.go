@@ -14,6 +14,7 @@ import (
 	"github.com/the-web3/s78-market-services/trading/domain"
 	"github.com/the-web3/s78-market-services/trading/exchange"
 	"github.com/the-web3/s78-market-services/trading/ledger"
+	"github.com/the-web3/s78-market-services/trading/marketmaker"
 	"github.com/the-web3/s78-market-services/trading/outbox"
 	"github.com/the-web3/s78-market-services/trading/query"
 	"github.com/the-web3/s78-market-services/trading/recovery"
@@ -34,6 +35,8 @@ type Engine interface {
 	Depth(int) (exchange.OrderBookView, error)
 	Status() tradingruntime.Status
 }
+
+const demoMakerAccount = domain.AccountID("system:demo-maker")
 
 type Cursor struct {
 	Sequence   uint64
@@ -59,12 +62,19 @@ type DeliveryStatusSource interface {
 type Config struct {
 	EventBatchSize int
 	EventPollEvery time.Duration
+	// Now is injectable only for deterministic freshness boundary tests.
+	// Production always receives time.Now from DefaultConfig/New.
+	Now func() time.Time
 	// Queries is the optional Trade Product V1 read-model boundary. New query
 	// RPCs remain unimplemented until a PostgreSQL-backed Reader is wired.
-	Queries query.Reader
+	Queries         query.Reader
+	FundingRequests query.FundingReader
 	// Cursors is required whenever Queries is configured. Process wiring owns
 	// loading current/previous secrets from the private runtime environment.
-	Cursors  CursorConfig
+	Cursors          CursorConfig
+	VirtualLiquidity interface {
+		Status() marketmaker.LiquidityStatus
+	}
 	Recovery interface {
 		Status(context.Context) (recovery.Status, error)
 		Promote(context.Context, recovery.Binding, recovery.TransportEvidence) (recovery.Status, error)
@@ -216,6 +226,7 @@ func DefaultConfig() Config {
 	return Config{
 		EventBatchSize: 100,
 		EventPollEvery: 100 * time.Millisecond,
+		Now:            time.Now,
 	}
 }
 
@@ -226,6 +237,7 @@ type Server struct {
 	events   EventSource
 	delivery DeliveryStatusSource
 	queries  query.Reader
+	funding  query.FundingReader
 	cursors  *queryCursorCodec
 	config   Config
 }
@@ -245,6 +257,9 @@ func New(
 	if config.EventPollEvery <= 0 {
 		return nil, fmt.Errorf("event poll interval must be positive")
 	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
 	if len(delivery) > 1 {
 		return nil, fmt.Errorf("at most one delivery status source is supported")
 	}
@@ -257,7 +272,8 @@ func New(
 		}
 	}
 	server := &Server{
-		engine: engine, events: events, queries: config.Queries, cursors: cursors, config: config,
+		engine: engine, events: events, queries: config.Queries,
+		funding: config.FundingRequests, cursors: cursors, config: config,
 	}
 	if len(delivery) == 1 {
 		server.delivery = delivery[0]
@@ -276,6 +292,10 @@ func (s *Server) SubmitOrder(
 	if request.GetAccountId() == "" || request.GetClientOrderId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "account_id and client_order_id are required")
 	}
+	if s.config.VirtualLiquidity != nil && request.GetAccountId() != string(demoMakerAccount) &&
+		!s.virtualLiquidityStatus().SubmitEnabled() && !s.submitMayBeIdempotentReplay(request) {
+		return nil, status.Error(codes.Unavailable, "liquidity_paused")
+	}
 	order, err := parseOrderRequest(market, request)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -289,6 +309,22 @@ func (s *Server) SubmitOrder(
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return response, nil
+}
+
+// A retry of an already accepted client_order_id must reach the exchange's
+// exact payload/idempotency check even if liquidity has paused since the
+// original submission. A new client_order_id remains fail-closed.
+func (s *Server) submitMayBeIdempotentReplay(request *tradingv1.SubmitOrderRequest) bool {
+	orders, err := s.engine.Orders(domain.AccountID(request.GetAccountId()), false)
+	if err != nil {
+		return false
+	}
+	for _, order := range orders {
+		if order.ClientOrderID == request.GetClientOrderId() {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) CancelOrder(
@@ -501,6 +537,16 @@ func (s *Server) GetStatus(
 		LastRecoveredAt: current.LastRecoveredAt,
 		StateHash:       current.StateHash,
 	}
+	if s.config.VirtualLiquidity != nil {
+		liquidity := s.virtualLiquidityStatus()
+		response.VirtualLiquidity = &tradingv1.VirtualLiquidityStatus{
+			Provider: liquidity.Provider, State: string(liquidity.State),
+			Reason: liquidity.Reason, BidLevels: liquidity.BidLevels,
+			AskLevels:           liquidity.AskLevels,
+			ReferenceObservedAt: formatOptionalTime(liquidity.ReferenceObservedAt),
+			LastRefreshAt:       formatOptionalTime(liquidity.LastRefreshAt),
+		}
+	}
 	if s.delivery != nil {
 		delivery := s.delivery.Status()
 		response.OutboxState = delivery.State
@@ -514,6 +560,52 @@ func (s *Server) GetStatus(
 		response.OutboxLastCleanupAt = formatOptionalTime(delivery.LastCleanupAt)
 	}
 	return response, nil
+}
+
+func (s *Server) virtualLiquidityStatus() marketmaker.LiquidityStatus {
+	if s.config.VirtualLiquidity == nil {
+		return marketmaker.LiquidityStatus{}
+	}
+	current := s.config.VirtualLiquidity.Status()
+	orders, err := s.engine.Orders(demoMakerAccount, true)
+	if err != nil {
+		current.State = marketmaker.LiquidityPaused
+		current.Reason = "virtual liquidity order state is unavailable"
+		current.BidLevels = 0
+		current.AskLevels = 0
+		return current
+	}
+	expectedBids, expectedAsks := current.BidLevels, current.AskLevels
+	current.BidLevels = 0
+	current.AskLevels = 0
+	for _, order := range orders {
+		switch order.Side {
+		case domain.SideBuy:
+			current.BidLevels++
+		case domain.SideSell:
+			current.AskLevels++
+		}
+	}
+	if current.State == marketmaker.LiquidityActive &&
+		(current.BidLevels != expectedBids || current.AskLevels != expectedAsks ||
+			current.BidLevels == 0 || current.AskLevels == 0) {
+		current.State = marketmaker.LiquidityRecovering
+		current.Reason = "replenishing two-sided virtual liquidity"
+	}
+	if current.State == marketmaker.LiquidityActive {
+		now := s.config.Now().UTC()
+		referenceAge := now.Sub(current.ReferenceObservedAt)
+		refreshAge := now.Sub(current.LastRefreshAt)
+		switch {
+		case current.ReferenceObservedAt.IsZero() || referenceAge < 0 || referenceAge > 30*time.Second:
+			current.State = marketmaker.LiquidityPaused
+			current.Reason = "virtual liquidity reference is stale or invalid"
+		case current.LastRefreshAt.IsZero() || refreshAge < 0 || refreshAge > 15*time.Second:
+			current.State = marketmaker.LiquidityPaused
+			current.Reason = "virtual liquidity refresh is stale or invalid"
+		}
+	}
+	return current
 }
 
 func formatOptionalTime(value time.Time) string {

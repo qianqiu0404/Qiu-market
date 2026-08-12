@@ -23,7 +23,11 @@ async function setScenario(request: APIRequestContext, page: Page, scenario: str
 }
 
 async function expectNoOverflow(page: Page): Promise<void> {
-  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+  for (const viewport of [
+    { width: 1440, height: 1000 },
+    { width: 390, height: 844 },
+    { width: 320, height: 844 },
+  ]) {
     await page.setViewportSize(viewport)
     // Insights contains canvas charts which resize on the window event; wait
     // for two frames so the assertion measures the settled responsive layout.
@@ -108,6 +112,11 @@ test('Vue renders the real read-only research handler and loopback upstream with
   await expect(feed.getByText('Published')).toBeVisible()
   await expect(feed.getByText('Received')).toBeVisible()
   await expect(feed.getByText('Not supplied')).toBeVisible()
+  const practice = page.getByTestId('insights-practice-entry')
+  await expect(practice).toContainText('No side, signal price, quantity, or order submission')
+  const practiceLink = practice.getByRole('link', { name: 'Open BTC virtual practice' })
+  await expect(practiceLink).toHaveAttribute('href', '/trade/BTC-USDT')
+  expect(new URL(await practiceLink.getAttribute('href') ?? '/', 'http://qiu.local').search).toBe('')
 
   await expect.poll(() => researchResponses.filter((item) =>
     item.method === 'GET' && item.path === '/api/v1/research/signals/summary' && item.status === 200).length,

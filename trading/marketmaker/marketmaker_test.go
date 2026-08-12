@@ -52,11 +52,14 @@ func TestDemoMakerQuotesThreeLevelsAndStopsOnStaleOrJump(t *testing.T) {
 		Price:      60_000_000_000,
 		ObservedAt: time.Now(),
 	}}
+	tracker := marketmaker.NewStatusTracker(true)
+	makerConfig := marketmaker.DefaultConfig()
+	makerConfig.Status = tracker
 	maker, err := marketmaker.New(
 		domain.DefaultBTCUSDTMarket(),
 		runner,
 		source,
-		marketmaker.DefaultConfig(),
+		makerConfig,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +73,11 @@ func TestDemoMakerQuotesThreeLevelsAndStopsOnStaleOrJump(t *testing.T) {
 	}
 	if len(orders) != 6 {
 		t.Fatalf("open demo-maker orders = %d, want 6", len(orders))
+	}
+	active := tracker.Status()
+	if active.State != marketmaker.LiquidityActive || !active.SubmitEnabled() ||
+		active.BidLevels != 3 || active.AskLevels != 3 || active.ReferenceObservedAt.IsZero() {
+		t.Fatalf("active liquidity status = %+v", active)
 	}
 	assertQuote(t, orders, domain.SideBuy, 59_940_000_000)
 	assertQuote(t, orders, domain.SideSell, 60_060_000_000)
@@ -114,6 +122,11 @@ func TestDemoMakerQuotesThreeLevelsAndStopsOnStaleOrJump(t *testing.T) {
 	if err != nil || len(orders) != 0 {
 		t.Fatalf("orders after unsafe jump = %d, %v", len(orders), err)
 	}
+	paused := tracker.Status()
+	if paused.State != marketmaker.LiquidityPaused || paused.SubmitEnabled() || paused.Reason == "" ||
+		paused.BidLevels != 0 || paused.AskLevels != 0 {
+		t.Fatalf("paused liquidity status = %+v", paused)
+	}
 
 	source.reference = marketmaker.Reference{
 		Price:      60_000_000_000,
@@ -141,6 +154,24 @@ func TestDemoMakerQuotesThreeLevelsAndStopsOnStaleOrJump(t *testing.T) {
 		if len(orders) != want {
 			t.Fatalf("recovery sample %d orders = %d, want %d", sample, len(orders), want)
 		}
+	}
+	if recovered := tracker.Status(); recovered.State != marketmaker.LiquidityActive ||
+		recovered.BidLevels != 3 || recovered.AskLevels != 3 {
+		t.Fatalf("recovered liquidity status = %+v", recovered)
+	}
+}
+
+func TestVirtualLiquidityStatusStartsDisabledOrRecovering(t *testing.T) {
+	t.Parallel()
+	disabled := marketmaker.NewStatusTracker(false).Status()
+	if disabled.State != marketmaker.LiquidityDisabled || disabled.Provider != "Qiu Virtual Liquidity" ||
+		disabled.SubmitEnabled() {
+		t.Fatalf("disabled status = %+v", disabled)
+	}
+	recovering := marketmaker.NewStatusTracker(true).Status()
+	if recovering.State != marketmaker.LiquidityRecovering || recovering.Reason == "" ||
+		recovering.SubmitEnabled() {
+		t.Fatalf("recovering status = %+v", recovering)
 	}
 }
 

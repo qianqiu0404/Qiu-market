@@ -17,6 +17,46 @@ import (
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 )
 
+func (s *Server) GetFundingRequest(
+	ctx context.Context,
+	request *tradingv1.GetFundingRequestRequest,
+) (*tradingv1.FundingRequestResponse, error) {
+	market, err := s.market(request.GetMarketId())
+	if err != nil {
+		return nil, err
+	}
+	if request.GetAccountId() == "" || request.GetRequestId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "account_id and request_id are required")
+	}
+	if s.funding == nil {
+		return nil, status.Error(codes.Unimplemented, "funding request query is unavailable")
+	}
+	funding, found, err := s.funding.GetFundingRequest(
+		ctx, domain.AccountID(request.GetAccountId()), request.GetRequestId(),
+	)
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, "funding request query is unavailable")
+	}
+	if !found {
+		return nil, status.Error(codes.NotFound, "funding_request_not_found")
+	}
+	scale, err := assetScale(market, funding.Asset)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "format funding request")
+	}
+	amount, err := decimal.Format(funding.Amount, scale)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "format funding request")
+	}
+	return &tradingv1.FundingRequestResponse{
+		MarketId: string(funding.MarketID), RequestId: funding.RequestID,
+		FundingEventId: funding.FundingEventID,
+		Sequence:       strconv.FormatUint(funding.Sequence, 10), Asset: string(funding.Asset),
+		Amount: amount, ProjectionResult: "applied", LedgerBalanced: funding.LedgerBalanced,
+		OccurredAt: funding.OccurredAt.UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
 const (
 	orderCursorKind    = "orders"
 	tradeCursorKind    = "account_trades"

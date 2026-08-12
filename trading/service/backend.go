@@ -36,14 +36,26 @@ const (
 	demoMakerUSDT    = int64(1_000_000_000_000) // 1,000,000 virtual USDT
 )
 
+const practiceOwnerMarker = "qiu-market/trading-practice/v1"
+
+type postgresIdentity struct {
+	ServerAddress string
+	ServerPort    int
+	DatabaseName  string
+	DatabaseOID   uint32
+}
+
 type Config struct {
-	PostgresURL        string
-	GRPCAddress        string
-	DemoMakerEnabled   bool
-	DiskPath           string
-	MinWriteBytes      int64
-	CursorHMACCurrent  string
-	CursorHMACPrevious string
+	PostgresURL          string // legacy alias for StatePostgresURL
+	StatePostgresURL     string
+	ReferencePostgresURL string
+	GRPCAddress          string
+	PracticeMode         bool
+	DemoMakerEnabled     bool
+	DiskPath             string
+	MinWriteBytes        int64
+	CursorHMACCurrent    string
+	CursorHMACPrevious   string
 	// SnapshotEvery optionally selects the standard runner snapshot cadence.
 	// Zero preserves the production default. Isolated recovery verification may
 	// use a smaller positive cadence to prove snapshot-plus-event-tail replay.
@@ -59,6 +71,7 @@ type Backend struct {
 	shutdown context.CancelCauseFunc
 
 	pool               *pgxpool.Pool
+	referencePool      *pgxpool.Pool
 	runner             *tradingruntime.MarketRunner
 	grpcServer         *grpc.Server
 	listener           net.Listener
@@ -77,6 +90,7 @@ type Backend struct {
 	recoveryHead       postgresstore.Cursor
 	recoveryIncidentMu sync.Mutex
 	recoveryIncident   error
+	liquidityStatus    *marketmaker.StatusTracker
 
 	started  atomic.Bool
 	stopped  atomic.Bool
@@ -101,7 +115,15 @@ func New(
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	pool, err := pgxpool.New(ctx, config.PostgresURL)
+	stateURL := config.StatePostgresURL
+	if stateURL == "" {
+		stateURL = config.PostgresURL
+	}
+	referenceURL := config.ReferencePostgresURL
+	if referenceURL == "" {
+		referenceURL = stateURL
+	}
+	pool, err := pgxpool.New(ctx, stateURL)
 	if err != nil {
 		return nil, fmt.Errorf("open trading PostgreSQL pool: %w", err)
 	}
@@ -116,6 +138,35 @@ func New(
 	}
 	if err := postgresstore.VerifySchema(ctx, pool); err != nil {
 		return nil, err
+	}
+	referencePool := pool
+	cleanupReferencePool := false
+	if referenceURL != stateURL {
+		referenceConfig, parseErr := pgxpool.ParseConfig(referenceURL)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse trading reference PostgreSQL: %w", parseErr)
+		}
+		if config.PracticeMode {
+			referenceConfig.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
+		}
+		referencePool, err = pgxpool.NewWithConfig(ctx, referenceConfig)
+		if err != nil {
+			return nil, fmt.Errorf("open trading reference PostgreSQL pool: %w", err)
+		}
+		cleanupReferencePool = true
+	}
+	defer func() {
+		if cleanupReferencePool {
+			referencePool.Close()
+		}
+	}()
+	if err := referencePool.Ping(ctx); err != nil {
+		return nil, fmt.Errorf("ping trading reference PostgreSQL: %w", err)
+	}
+	if config.PracticeMode {
+		if err := verifyPracticePostgresBoundary(ctx, pool, referencePool); err != nil {
+			return nil, err
+		}
 	}
 
 	market := domain.DefaultBTCUSDTMarket()
@@ -263,7 +314,13 @@ func New(
 	rpcConfig := tradingserver.DefaultConfig()
 	rpcConfig.Recovery = recoveryCoordinator
 	rpcConfig.Queries = queries
+	rpcConfig.FundingRequests = queries
 	rpcConfig.Cursors = cursors
+	var liquidityStatus *marketmaker.StatusTracker
+	if config.PracticeMode {
+		liquidityStatus = marketmaker.NewStatusTracker(config.DemoMakerEnabled)
+		rpcConfig.VirtualLiquidity = liquidityStatus
+	}
 	rpcService, err := tradingserver.New(
 		runner,
 		tradingserver.NewPostgresEventSource(persistence),
@@ -301,7 +358,7 @@ func New(
 				return nil, err
 			}
 		}
-		source, err := reference.NewPostgresSource(pool, market.QuoteScale)
+		source, err := reference.NewPostgresSource(referencePool, market.QuoteScale)
 		if err != nil {
 			return nil, err
 		}
@@ -316,6 +373,7 @@ func New(
 		makerConfig = marketmaker.DefaultConfig()
 		makerConfig.AccountID = demoMakerAccount
 		makerConfig.RequestPrefix = requestPrefix
+		makerConfig.Status = liquidityStatus
 		if recoveryCoordinator == nil {
 			maker, err = marketmaker.New(market, runner, makerSource, makerConfig)
 			if err != nil {
@@ -325,23 +383,26 @@ func New(
 	}
 
 	cleanupPool = false
+	cleanupReferencePool = false
 	cleanupRunner = false
 	cleanupListener = false
 	return &Backend{
-		config:        config,
-		shutdown:      shutdown,
-		pool:          pool,
-		runner:        runner,
-		grpcServer:    grpcServer,
-		listener:      listener,
-		maker:         maker,
-		makerEnabled:  config.DemoMakerEnabled,
-		makerSource:   makerSource,
-		makerConfig:   makerConfig,
-		publisher:     publisher,
-		recovery:      recoveryCoordinator,
-		recoveryProof: recoveryProof,
-		recoveryHead:  recoveryHead,
+		config:          config,
+		shutdown:        shutdown,
+		pool:            pool,
+		referencePool:   referencePool,
+		runner:          runner,
+		grpcServer:      grpcServer,
+		listener:        listener,
+		maker:           maker,
+		makerEnabled:    config.DemoMakerEnabled,
+		makerSource:     makerSource,
+		makerConfig:     makerConfig,
+		liquidityStatus: liquidityStatus,
+		publisher:       publisher,
+		recovery:        recoveryCoordinator,
+		recoveryProof:   recoveryProof,
+		recoveryHead:    recoveryHead,
 	}, nil
 }
 
@@ -354,8 +415,19 @@ func runnerConfigFor(config Config) tradingruntime.Config {
 }
 
 func validateConfig(config Config) error {
-	if config.PostgresURL == "" {
+	stateURL := config.StatePostgresURL
+	if stateURL == "" {
+		stateURL = config.PostgresURL
+	}
+	referenceURL := config.ReferencePostgresURL
+	if referenceURL == "" {
+		referenceURL = stateURL
+	}
+	if stateURL == "" || referenceURL == "" {
 		return fmt.Errorf("trading PostgreSQL URL is required")
+	}
+	if config.PracticeMode && stateURL == referenceURL {
+		return fmt.Errorf("practice mode requires independent trading state and reference PostgreSQL")
 	}
 	if !netutil.IsIPLoopbackAddress(config.GRPCAddress) {
 		return fmt.Errorf("trading gRPC must bind to an explicit IP loopback address")
@@ -749,9 +821,56 @@ func (b *Backend) Stop(ctx context.Context) error {
 		}
 		_ = b.listener.Close()
 		b.pool.Close()
+		if b.referencePool != nil && b.referencePool != b.pool {
+			b.referencePool.Close()
+		}
 		log.Info("virtual trading backend stopped")
 	})
 	return b.stopErr
+}
+
+func verifyPracticePostgresBoundary(
+	ctx context.Context,
+	statePool *pgxpool.Pool,
+	referencePool *pgxpool.Pool,
+) error {
+	state, err := readPostgresIdentity(ctx, statePool)
+	if err != nil {
+		return fmt.Errorf("identify trading state PostgreSQL: %w", err)
+	}
+	referenceIdentity, err := readPostgresIdentity(ctx, referencePool)
+	if err != nil {
+		return fmt.Errorf("identify trading reference PostgreSQL: %w", err)
+	}
+	if state == referenceIdentity {
+		return fmt.Errorf("practice mode state and reference resolve to the same PostgreSQL database")
+	}
+	var marker string
+	if err := statePool.QueryRow(ctx, `
+		SELECT owner_key
+		FROM qiu_trading_practice_owner
+		WHERE singleton=TRUE
+	`).Scan(&marker); err != nil || marker != practiceOwnerMarker {
+		return fmt.Errorf("trading state PostgreSQL ownership marker is missing or invalid")
+	}
+	var readOnly string
+	if err := referencePool.QueryRow(ctx, "SHOW transaction_read_only").Scan(&readOnly); err != nil || readOnly != "on" {
+		return fmt.Errorf("trading reference PostgreSQL session is not read-only")
+	}
+	return nil
+}
+
+func readPostgresIdentity(ctx context.Context, pool *pgxpool.Pool) (postgresIdentity, error) {
+	var identity postgresIdentity
+	err := pool.QueryRow(ctx, `
+		SELECT COALESCE(inet_server_addr()::text, ''),
+		       COALESCE(inet_server_port(), 0), current_database(), oid
+		FROM pg_database WHERE datname=current_database()
+	`).Scan(
+		&identity.ServerAddress, &identity.ServerPort,
+		&identity.DatabaseName, &identity.DatabaseOID,
+	)
+	return identity, err
 }
 
 func (b *Backend) Stopped() bool {

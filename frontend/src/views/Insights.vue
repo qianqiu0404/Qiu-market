@@ -39,6 +39,9 @@ const { locale } = useI18n()
 const copy = computed(() => locale.value === 'zh-CN' ? {
   title: '市场洞察',
   subtitle: '用于分析市场宽度、跨场所价差和固定时间窗口的历史动量；这里展示研究信号，不提供可执行交易价格。',
+  practiceTitle: 'BTC 虚拟练习',
+  practiceDescription: '只打开 BTC/USDT 本机练习终端；不会携带方向、信号价格、数量，也不会自动提交订单。',
+  practiceAction: '打开 BTC 虚拟练习',
   selectionTitle: '数据源入选覆盖',
   selectionDescription: '每个数据源都有稳定且经过审核的资产集合。CEX 目标为 50 项；DEX 只统计通过身份与路线资格校验的真实资产；All 是 CEX 资产的去重并集。',
   unavailable: '不可用',
@@ -102,6 +105,9 @@ const copy = computed(() => locale.value === 'zh-CN' ? {
 } : {
   title: 'Insights',
   subtitle: 'Analyze market breadth, cross-venue spreads, and fixed-window historical momentum. These are research signals, not executable prices.',
+  practiceTitle: 'BTC virtual practice',
+  practiceDescription: 'Opens only the local BTC/USDT practice terminal. No side, signal price, quantity, or order submission is carried across.',
+  practiceAction: 'Open BTC virtual practice',
   selectionTitle: 'Provider Selection Coverage',
   selectionDescription: 'Every provider owns a stable reviewed selection. CEX targets 50; DEX shows only the real assets it can qualify. All remains the deduplicated CEX union.',
   unavailable: 'Unavailable',
@@ -369,6 +375,16 @@ function signedClass(value: number): string {
       :refreshed-at="realtime.lastUpdated.value"
     />
 
+    <aside class="practice-entry card" data-testid="insights-practice-entry">
+      <div>
+        <strong>{{ copy.practiceTitle }}</strong>
+        <p>{{ copy.practiceDescription }}</p>
+      </div>
+      <RouterLink class="btn btn--accent" to="/trade/BTC-USDT">
+        {{ copy.practiceAction }}
+      </RouterLink>
+    </aside>
+
     <ResearchSignalFeed
       :feed="researchEvents.data.value"
       :summary="researchSummary.data.value"
@@ -614,6 +630,10 @@ function signedClass(value: number): string {
 
 <style scoped>
 .insight-section { margin-bottom: 34px; }
+.practice-entry { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; padding: 14px 16px; border-left: 4px solid var(--accent); }
+.practice-entry strong { font-size: 13px; }
+.practice-entry p { margin: 4px 0 0; color: var(--text-3); font-size: 11px; }
+.practice-entry a { flex: 0 0 auto; min-height: 44px; }
 .section-heading {
   display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 12px;
 }
@@ -695,6 +715,8 @@ tbody tr:hover td { background: #f8fbff; }
   .monitor-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 767px) {
+  .practice-entry { align-items: stretch; flex-direction: column; }
+  .practice-entry a { width: 100%; justify-content: center; }
   .breadth-grid { grid-template-columns: 1fr; }
   .coverage-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
   .momentum-heading { align-items: flex-start; flex-direction: column; }

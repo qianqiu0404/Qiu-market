@@ -56,7 +56,12 @@ HTTP API / gRPC（共用业务层，数据一致）
 Vue Dashboard（Qiu Market，蓝白金融产品风）
 ```
 
-虚拟交易是独立故障域：共享 HTTP API 通过本机 `127.0.0.1:9094` gRPC 调用 `market-services trading`，撮合事件与账本写 PostgreSQL。交易进程异常只降级 `/api/v1/trading/**`，行情页面继续工作；行情参考异常只会让虚拟 demo-maker 撤单停机，不阻断撮合恢复。
+虚拟交易是独立故障域：HTTP gateway 通过 loopback gRPC 调用 `market-services trading`。
+正式兼容模式仍沿用既有数据库接线；T1 本机 `practice_mode` 则把 session、订单、资金、event、
+ledger、outbox、snapshot 和投影全部写入带 ownership marker 的独立 Practice PostgreSQL，
+`Qiu Virtual Liquidity` 只通过另一条只读连接读取 BTC composite reference。交易进程异常只
+降级 `/api/v1/trading/**`；参考异常会撤销虚拟流动性并关闭新 Submit，不影响行情读路径或
+本人撤单。Practice、共享 Preview、Production 和任何真实资金状态必须分别报告。
 
 Mac mini 单机生产、极省空间 K 线保留、备份恢复、Guardian 与 Vercel 验收见
 [`docs/qiu-market-vercel-mac.md`](docs/qiu-market-vercel-mac.md)。滚动生产证据使用：
@@ -146,6 +151,12 @@ Q-M7A 把此前分开的交易、研究和质量 golden path 合成一个 produc
 
 - `implemented`：`BTC-USDT` 定点数撮合、全部首版订单语义、双重记账、每市场串行 runner、PostgreSQL 事件/快照/outbox/投影、正式迁移已覆盖至 `2026082800030.sql`、loopback gRPC、共享 HTTP gateway、单用户鉴权、WebSocket cursor、可信参考 demo-maker 和共享 `/trade/BTC-USDT` 已落地。
 - `implemented`（Trade Product V1）：订单/个人成交/账本/事件真值时间线已提供账户绑定的 cursor 分页；Trade 展示专业单市场终端，管理员虚拟入金迁至 System；submit、cancel、fund 三种写入都持久化原 request ID 并按权威事实核对。cursor 使用私有持久化 HMAC 轮换键，订单 lifecycle checkpoint 同时记录 sequence 和 row count，缺行、多行或孤儿行会 fail closed。
+- `implemented / local-activation-pending`（T1 Practice）：显式 loopback/local-auth Practice
+  边界、独立 state PostgreSQL、只读 reference PostgreSQL、六档 `Qiu Virtual Liquidity` 状态、
+  Submit-only 流动性门、账户绑定 funding truth 和两枚固定 Starter request ID 已进入 T1
+  隔离分支。只有真实双 PostgreSQL、隔离 HTTP/gRPC、浏览器闭环与重启恢复全部通过后，才能
+  升级为 `local-runtime-verified`；共享 Preview/Production 的 OAuth、fund、submit、cancel 和
+  demo-maker 继续关闭。
 - `build-verified`：2026-08-05 的 `go build ./...`、`go vet ./...`、`go test ./...`、`go test -race ./trading/...`、真实临时 PostgreSQL 串行专项、前端 125 个 Vitest、production build、49 个 Playwright、production dependency audit 0、不可变候选 fixture 与 `git diff --check` 通过。
 - `integration-verified`：一次性真实 PostgreSQL 上执行正式 migration，启动真实 gRPC + REST，完成虚拟入金、挂单、撤单、优雅快照、整套重启、session 延续、跨重启幂等，并确认 snapshot/event state hash 完全一致。
 - `production-pending`：真实资金、充值提现、私钥、实盘下单不在目标内；生产 HTTPS/OAuth 回调、容量压测、备份恢复演练、监控告警和长期 soak 仍未验收。
@@ -495,10 +506,10 @@ README 全局架构
 
 | 文档 | 内容 |
 |---|---|
-| [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
+| [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、T1 Practice 隔离运行、停止、日志与常见故障 |
 | [docs/sensitive-files.md](docs/sensitive-files.md) | dotenv、私钥、wallet/TSS 与数据库状态的本地边界、CI 路径门和事故响应 |
-| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX 双栏、R3 CDN/IndexedDB 分层恢复、行情竞态回归和响应式验收 |
-| [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、submitted/unknown、fill/cancel 竞态、cursor reconcile、崩溃恢复、鉴权和验收边界 |
+| [docs/frontend.md](docs/frontend.md) | 资产首页、T1 Trade/Insights/System 练习体验、三类价格事实、R3 CDN/IndexedDB 分层恢复、竞态与响应式验收 |
+| [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、T1 双 PostgreSQL Practice、虚拟流动性、Starter 恢复、cursor reconcile 与验收边界 |
 | [docs/prd-qm-trade-001.md](docs/prd-qm-trade-001.md) | Trade Product V1 用户主流程、页面范围、P0/P1、非目标、验收与并行所有权 |
 | [docs/contracts/qm-trade-v1-api.md](docs/contracts/qm-trade-v1-api.md) | Trade Product V1 cursor、订单时间线、账本、账户摘要和 Cancel All 冻结 API Schema |
 | [docs/qm-trade-v1-goal-context.md](docs/qm-trade-v1-goal-context.md) | Trade Product V1 的持续目标、冻结范围、并行所有权、证据状态和终止条件 |

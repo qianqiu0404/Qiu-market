@@ -450,6 +450,99 @@ Trade Product V1 的私有查询包括订单、账户成交、账本流水和事
 
 `system:demo-maker` 只使用虚拟资金，围绕参考价在 `±10/25/50 bps` 各挂一档 Post Only 订单。参考时间超过 30 秒，或相邻参考跳变超过 5%，maker 会先撤销自己的挂单再停止；撮合服务仍保持 ready。每次进程启动使用随机 request prefix，启动资金命令自身仍幂等。
 
+## T1 本机 Practice mode
+
+T1 不是第二套撮合器，也不是把共享 Preview 的写开关打开。它把既有 BTC/USDT 引擎装进一个
+本机、单用户、可恢复且可证明隔离的运行边界：
+
+架构依据使用上游原始规范：Coinbase 描述价格时间优先和按 resting order 价格成交；FIX 把
+当前 OrdStatus 与导致变化的 execution event 分开；Coinbase WebSocket 要求 sequence 缺口用
+snapshot + queued replay 恢复；PostgreSQL Serializable 事务仍要求调用方处理
+`serialization_failure` 重试；TigerBeetle 用每笔资金必须同时 debit/credit 解释双重记账。
+对应原文入口为 [Coinbase Matching Engine](https://docs.cdp.coinbase.com/exchange/concepts/matching-engine)、
+[FIX Order State Changes](https://www.fixtrading.org/wp-content/uploads/download-manager-files/FIX-Latest-as-of-EP284-Order-State-Changes.pdf)、
+[Coinbase WebSocket Channels](https://docs.cdp.coinbase.com/exchange/websocket-feed/channels)、
+[PostgreSQL Transaction Isolation](https://www.postgresql.org/docs/16/transaction-iso.html) 和
+[TigerBeetle Financial Accounting](https://docs.tigerbeetle.com/coding/financial-accounting/)。
+
+```text
+Vue 127.0.0.1
+  -> isolated HTTP gateway 127.0.0.1
+  -> loopback gRPC
+  -> one BTC-USDT MarketRunner
+       -> Practice PostgreSQL: session/event/journal/ledger/outbox/snapshot/projection
+       -> read-only reference PostgreSQL: asset_price_index + asset_external_mapping
+```
+
+启动时 `practice_mode=true` 必须同时满足：HTTP 与 gRPC 都是显式 IP loopback、local auth 开启、
+GitHub OAuth 关闭、Cookie 不带 Secure、每个 Allowed Origin 都是 loopback、state/reference 两个
+PostgreSQL 连接解析到不同的服务端 database identity。state 库还必须有固定 ownership marker；
+reference pool 强制 `default_transaction_read_only=on`。任一条件不成立就拒绝启动，不能退回
+`MasterDB`、共享 trading schema 或宽松网络绑定。
+
+两个 PostgreSQL DSN 只从当前用户所有、0600、regular、非 symlink 的单行运行文件读取；
+错误只报告哪个边界无效，不打印 URL、用户名或口令。Practice 的 session、订单、资金、event、
+outbox、snapshot 和读模型都写 state 库；maker 只通过窄 `ReferenceSource` 从 reference 库读取
+BTC composite 及资产 identity。浏览器刷新和服务重启复用同一 state 库，本轮不提供 reset、
+删除历史或清空账户的产品操作。
+
+### Qiu Virtual Liquidity 与 Submit 门
+
+`system:demo-maker` 的内部账户和撮合规则保持不变，用户可见名称固定为
+`Qiu Virtual Liquidity`。安全参考下每侧挂 `10/25/50 bps × 0.01 Virtual BTC` 三档，全部
+Post Only；每 5 秒检查，累计移动至少 10 bps 才换档。参考超过 30 秒、相邻跳变超过 500 bps、
+来源读取失败或双边订单不完整时，先撤销系统报价并进入 `paused/recovering`；连续三个相邻安全
+样本后才恢复 `active`。
+
+只有普通账户的新 Submit 叠加 maker safety gate；maker 自己的补单不能被自己的门锁死。
+流动性非 active 时查询和本人 Cancel 仍可达，但 Cancel 仍须通过 runner/recovery/session/
+CSRF/Origin/pending-journal 等原门。被拒绝的是“为了能撤单就放宽全局恢复门”，因为那会让
+continuity 不确定时仍修改账本。
+
+外部 composite 只是 maker 锚点，不是成交对手。最终 fill 使用虚拟订单簿中的 resting order
+价格，订单、成交、费用和账本都标为 `Qiu Virtual Matcher`；不能称为任何 CEX/DEX 成交。
+
+### Starter funding 的两步恢复
+
+Starter 固定为 `starter-v1-usdt = 10000 Virtual USDT` 和
+`starter-v1-btc = 0.1 Virtual BTC`。每一步都先用当前 session 查询 funding event；found 时
+必须重验 request/account/asset/amount、projection 与逐资产 ledger 对平，404 且全部写门开放
+才 POST 相同 ID。响应丢失后再次查询；权威事实仍不存在才允许原 ID 重放。两个步骤各自持久，
+不是伪装成一个 PostgreSQL 事务。重复点击、刷新、进程重启和跨 tab 都不能生成新 ID，也不能
+根据余额差推断完成。
+
+保留原 admin 手动虚拟入金；只把两枚 reserved starter ID 固定到当前 session 和上述 payload，
+其它合法 admin request ID 不受 Starter 规则替代。私有
+`GET /api/v1/trading/account/funding/{request_id}` 对不存在和他人事实统一返回 404，不泄露
+account identity。
+
+### T1 失败与恢复表
+
+| 故障 | 可见行为 | 恢复规则 |
+|---|---|---|
+| state/reference 指向同一真实数据库 | 进程启动失败 | 修正 0600 配置和数据库 ownership 后重新启动 |
+| state marker 缺失或漂移 | trading 与 gateway 启动失败 | 只修复明确的 Practice 库，不自动认领未知库 |
+| reference 写会话或来源越权 | integration gate 失败；maker 不启动 | 使用只读角色与 session read-only，禁止降级成 state 连接 |
+| 参考过期、跳变或读取失败 | 撤销六档，状态 paused，Submit 503 | 连续三个安全样本且双边报价完整后恢复 |
+| funding POST 响应丢失 | UI 显示核对中，不再次生成 ID | GET 权威 event；不存在且门开才 exact-ID replay |
+| Submit 响应 unknown | 保留原 client_order_id，关闭冲突写 | 先查订单真值，再按原 ID 恢复 |
+| API/runner 重启 | 页面离线或 reconnect，持久事实不丢 | state event/snapshot 恢复、cursor 补齐后再开写 |
+| WS sequence/event_index 缺口 | fail closed，不跳号 | 从权威 checkpoint/snapshot 补齐并重验 batch count |
+
+### T1 关键入口
+
+1. `config/config.go`：Practice 开关与两个 owner-only DSN 文件边界。
+2. `trading/service/backend.go`：双 PostgreSQL identity、只读 reference pool、runner 与 maker 接线。
+3. `trading/marketmaker/marketmaker.go`：六档报价、30 秒/500 bps/三样本恢复和公开状态。
+4. `trading/httpapi/api.go` 与 `trading/rpc/server/`：Submit/Cancel 分门、funding truth 查询和能力契约。
+5. `frontend/src/features/system/TradingAdminCard.vue`：两枚固定 ID 的 query-first Starter 编排；
+   `frontend/src/features/trade/useTradeTerminal.ts` 只镜像 Submit gate。
+
+T1 的成本是本机多一个独立 state 库、一个窄只读角色和两条连接池，启动配置也更严格；收益是
+不会把练习订单、session 或资金写入行情/共享交易库。被拒绝的替代方案包括：复制一套模拟 API、
+在浏览器内撮合、复用 `MasterDB`、让 maker 直接写行情库、用余额猜 Starter 完成、以及在
+Insights 中携带方向/价格自动下单。
+
 ## 运行
 
 先迁移：
@@ -690,6 +783,13 @@ Recovery admission：
 
 > 这个切片只做一个虚拟 BTC/USDT 市场。浏览器写请求经登录、CSRF、Origin 和限流后，通过 loopback gRPC 进入唯一的 MarketRunner；它把 submit、fill 和 cancel 线性化，所以 sequence 与同价 FIFO 确定。Exchange 在 trial state 中冻结、撮合和双重记账，PostgreSQL 先原子提交 event、journal、outbox 与投影，随后才替换内存。若响应丢失，fund、submit、cancel 都保留原 ID 查询或重放，绝不换 ID 再做一遍。断线事件以 `(market_sequence,event_index)` 去重补发，batch count 暴露缺口；未 reconcile 完成就拒绝新写。启动时校验 snapshot，再重放 tail，逐批重算结果和 hash；损坏或不一致就 fail closed。完整 event history 还能证明每笔每资产借贷平衡和总资产守恒。这里没有真实资金或真实交易所下单，PostgreSQL/浏览器故障联调要和本地内存证明分开标注。
 
+T1 的 60 秒补充是：Practice 只有在 loopback/local auth/OAuth off 与两个不同数据库的服务端
+identity、state ownership、reference read-only 都通过时才启动。maker 用真实 BTC composite
+做锚，但六档 Post Only 报价和成交都属于 Qiu 虚拟簿。参考不安全时先撤系统单，只关普通
+Submit，不放宽查询、本人 Cancel 或任何恢复门。Starter 不是看余额加钱，而是用两枚固定 ID
+逐笔查询 funding event 和对平账本；查不到且门开才原 ID 重放。因此刷新、超时和重启不会多
+发资金。该环境只在本机隔离库启用，Preview/Production 继续没有 OAuth 写、入金或下单。
+
 发布部分的 60 秒解释是：目标 SHA 必须等于干净工作树 HEAD，但 binary 真正从该 Git
 object 的 archive 编译；完整 migrations 和 runtime scripts 分别封箱算 hash，再由协调器
 确认同一 commit。`verify` 会把新备份恢复到临时库并用候选 binary 重放；`preflight`
@@ -723,6 +823,10 @@ object 的 archive 编译；完整 migrations 和 runtime scripts 分别封箱�
 22. 随机测试必须记录哪些信息，才能让失败闭环复现？
 23. 哪些结果只是 `build-verified`，还需要 PostgreSQL、HTTP 或浏览器环境证明？
 24. 为什么“干净 HEAD”之外，binary 还必须从该 commit 的 Git archive 编译？
+25. 为什么 Practice 要比较服务端数据库 identity，而不能只比较两个 DSN 字符串？
+26. 为什么 reference stale 时只关 Submit，而 Cancel 仍要保留全部 recovery/auth 门？
+27. Starter 两步为什么不能通过余额变化判断完成？
+28. 为什么 maker 的外部综合参考价不是用户的可执行成交价？
 25. 为什么 migration ledger 只能是候选 migration set 的连续 checksum 前缀？
 26. `prepare`、`verify`、`preflight` 和 `activate --execute` 的副作用边界分别是什么？
 27. runtime 激活失败后，为什么回滚 binary 而不逆向删除数据库迁移？

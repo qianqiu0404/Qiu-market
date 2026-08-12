@@ -28,6 +28,7 @@ const (
 	TradingService_ListOrderEvents_FullMethodName   = "/s78.trading.v1.TradingService/ListOrderEvents"
 	TradingService_ListLedgerEntries_FullMethodName = "/s78.trading.v1.TradingService/ListLedgerEntries"
 	TradingService_GetBalances_FullMethodName       = "/s78.trading.v1.TradingService/GetBalances"
+	TradingService_GetFundingRequest_FullMethodName = "/s78.trading.v1.TradingService/GetFundingRequest"
 	TradingService_GetOrderBook_FullMethodName      = "/s78.trading.v1.TradingService/GetOrderBook"
 	TradingService_GetStatus_FullMethodName         = "/s78.trading.v1.TradingService/GetStatus"
 	TradingService_GetRecoveryStatus_FullMethodName = "/s78.trading.v1.TradingService/GetRecoveryStatus"
@@ -49,6 +50,7 @@ type TradingServiceClient interface {
 	ListOrderEvents(ctx context.Context, in *ListOrderEventsRequest, opts ...grpc.CallOption) (*ListOrderEventsResponse, error)
 	ListLedgerEntries(ctx context.Context, in *ListLedgerEntriesRequest, opts ...grpc.CallOption) (*ListLedgerEntriesResponse, error)
 	GetBalances(ctx context.Context, in *GetBalancesRequest, opts ...grpc.CallOption) (*GetBalancesResponse, error)
+	GetFundingRequest(ctx context.Context, in *GetFundingRequestRequest, opts ...grpc.CallOption) (*FundingRequestResponse, error)
 	GetOrderBook(ctx context.Context, in *GetOrderBookRequest, opts ...grpc.CallOption) (*OrderBook, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
 	GetRecoveryStatus(ctx context.Context, in *GetRecoveryStatusRequest, opts ...grpc.CallOption) (*RecoveryStatusResponse, error)
@@ -146,6 +148,15 @@ func (c *tradingServiceClient) GetBalances(ctx context.Context, in *GetBalancesR
 	return out, nil
 }
 
+func (c *tradingServiceClient) GetFundingRequest(ctx context.Context, in *GetFundingRequestRequest, opts ...grpc.CallOption) (*FundingRequestResponse, error) {
+	out := new(FundingRequestResponse)
+	err := c.cc.Invoke(ctx, TradingService_GetFundingRequest_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *tradingServiceClient) GetOrderBook(ctx context.Context, in *GetOrderBookRequest, opts ...grpc.CallOption) (*OrderBook, error) {
 	out := new(OrderBook)
 	err := c.cc.Invoke(ctx, TradingService_GetOrderBook_FullMethodName, in, out, opts...)
@@ -236,6 +247,7 @@ type TradingServiceServer interface {
 	ListOrderEvents(context.Context, *ListOrderEventsRequest) (*ListOrderEventsResponse, error)
 	ListLedgerEntries(context.Context, *ListLedgerEntriesRequest) (*ListLedgerEntriesResponse, error)
 	GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error)
+	GetFundingRequest(context.Context, *GetFundingRequestRequest) (*FundingRequestResponse, error)
 	GetOrderBook(context.Context, *GetOrderBookRequest) (*OrderBook, error)
 	GetStatus(context.Context, *GetStatusRequest) (*StatusResponse, error)
 	GetRecoveryStatus(context.Context, *GetRecoveryStatusRequest) (*RecoveryStatusResponse, error)
@@ -275,6 +287,9 @@ func (UnimplementedTradingServiceServer) ListLedgerEntries(context.Context, *Lis
 }
 func (UnimplementedTradingServiceServer) GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetBalances not implemented")
+}
+func (UnimplementedTradingServiceServer) GetFundingRequest(context.Context, *GetFundingRequestRequest) (*FundingRequestResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetFundingRequest not implemented")
 }
 func (UnimplementedTradingServiceServer) GetOrderBook(context.Context, *GetOrderBookRequest) (*OrderBook, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetOrderBook not implemented")
@@ -469,6 +484,24 @@ func _TradingService_GetBalances_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _TradingService_GetFundingRequest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetFundingRequestRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(TradingServiceServer).GetFundingRequest(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: TradingService_GetFundingRequest_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(TradingServiceServer).GetFundingRequest(ctx, req.(*GetFundingRequestRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _TradingService_GetOrderBook_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetOrderBookRequest)
 	if err := dec(in); err != nil {
@@ -622,6 +655,10 @@ var TradingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetBalances",
 			Handler:    _TradingService_GetBalances_Handler,
+		},
+		{
+			MethodName: "GetFundingRequest",
+			Handler:    _TradingService_GetFundingRequest_Handler,
 		},
 		{
 			MethodName: "GetOrderBook",

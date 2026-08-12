@@ -8,7 +8,7 @@ const enumValues = new Set([
   'order_rejected', 'order_rested', 'trade_executed', 'order_filled',
   'order_canceled', 'cancel_rejected', 'self_trade_prevented', 'yes', 'no',
   'ready', 'connecting', 'recovering', 'failed', 'healthy', 'unavailable',
-  'live', 'polling', 'offline', 'stale', 'paused',
+  'live', 'polling', 'offline', 'stale', 'paused', 'disabled',
   'fresh', 'high', 'medium', 'low', 'unknown',
   'active', 'one-sided', 'websocket', 'reconnecting',
   'post_only_would_cross', 'fok_not_fillable', 'insufficient_balance',
@@ -23,7 +23,7 @@ export function tradeEnumKey(value: string): MessageKey {
 const exactWriteReasons = new Set([
   'request_in_flight', 'login_required', 'reconcile_pending',
   'transport_reconcile_pending', 'validation_failed', 'matching_status_missing',
-  'matching_status_stale', 'transport_not_reconciled',
+  'matching_status_stale', 'transport_not_reconciled', 'liquidity_paused',
 ])
 
 export function tradeWriteReasonKey(value: string): MessageKey {

@@ -172,6 +172,17 @@ type LedgerPage struct {
 	NextCursor *LedgerCursor
 }
 
+type FundingRequest struct {
+	MarketID       domain.MarketID
+	RequestID      string
+	FundingEventID string
+	Sequence       uint64
+	Asset          domain.Asset
+	Amount         int64
+	LedgerBalanced bool
+	OccurredAt     time.Time
+}
+
 // Reader is the only read-model dependency the V1 transport may consume.
 // Account identity is always supplied by the authenticated server boundary.
 type Reader interface {
@@ -180,4 +191,8 @@ type Reader interface {
 	ListAccountTrades(context.Context, domain.AccountID, TradeFilter, *TradeCursor, int) (TradePage, error)
 	ListOrderEvents(context.Context, domain.AccountID, domain.OrderID, *TimelineCursor, int) (OrderEventPage, error)
 	ListLedgerEntries(context.Context, domain.AccountID, LedgerFilter, *LedgerCursor, int) (LedgerPage, error)
+}
+
+type FundingReader interface {
+	GetFundingRequest(context.Context, domain.AccountID, string) (FundingRequest, bool, error)
 }

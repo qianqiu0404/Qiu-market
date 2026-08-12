@@ -15,12 +15,163 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
+	"github.com/the-web3/s78-market-services/trading/marketmaker"
 	"github.com/the-web3/s78-market-services/trading/recovery"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 	tradingserver "github.com/the-web3/s78-market-services/trading/rpc/server"
 	tradingruntime "github.com/the-web3/s78-market-services/trading/runtime"
 	"github.com/the-web3/s78-market-services/trading/store"
 )
+
+type liquidityProvider struct{ status marketmaker.LiquidityStatus }
+
+func (p liquidityProvider) Status() marketmaker.LiquidityStatus { return p.status }
+
+func TestPausedLiquidityRejectsSubmitButAllowsCancelAndFund(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemory()
+	runner, err := tradingruntime.NewMarketRunner(
+		ctx, domain.DefaultBTCUSDTMarket(), memory, memory, tradingruntime.DefaultConfig(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runner.Close(context.Background()) }()
+	if _, err := runner.Fund(ctx, domain.FundRequest{
+		RequestID: "seed", AccountID: "alice", Asset: "USDT", Amount: 1_000_000_000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	open, err := runner.Submit(ctx, domain.NewOrder{
+		ClientOrderID: "open-before-pause", AccountID: "alice", Side: domain.SideBuy,
+		Type: domain.OrderTypeLimit, TimeInForce: domain.TimeInForceGTC,
+		Price: 60_000_000_000, Quantity: 100_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausedAt := time.Now().UTC()
+	config := tradingserver.DefaultConfig()
+	config.VirtualLiquidity = liquidityProvider{status: marketmaker.LiquidityStatus{
+		Provider: marketmaker.VirtualLiquidityProvider, State: marketmaker.LiquidityPaused,
+		Reason: "reference is unavailable", LastRefreshAt: pausedAt,
+	}}
+	server, err := tradingserver.New(runner, nil, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := server.SubmitOrder(ctx, &tradingv1.SubmitOrderRequest{
+		MarketId: "BTC-USDT", AccountId: "alice", ClientOrderId: "open-before-pause",
+		Side: tradingv1.Side_SIDE_BUY, Type: tradingv1.OrderType_ORDER_TYPE_LIMIT,
+		TimeInForce: tradingv1.TimeInForce_TIME_IN_FORCE_GTC,
+		Price:       "60000", Quantity: "0.001",
+	})
+	if err != nil || replay.Sequence != strconv.FormatUint(open.Sequence, 10) || replay.OrderId != string(open.OrderID) {
+		t.Fatalf("paused exact replay=%+v err=%v", replay, err)
+	}
+	_, err = server.SubmitOrder(ctx, &tradingv1.SubmitOrderRequest{
+		MarketId: "BTC-USDT", AccountId: "alice", ClientOrderId: "open-before-pause",
+		Side: tradingv1.Side_SIDE_BUY, Type: tradingv1.OrderType_ORDER_TYPE_LIMIT,
+		TimeInForce: tradingv1.TimeInForce_TIME_IN_FORCE_GTC,
+		Price:       "59999", Quantity: "0.001",
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("paused conflicting replay error=%v", err)
+	}
+	_, err = server.SubmitOrder(ctx, &tradingv1.SubmitOrderRequest{
+		MarketId: "BTC-USDT", AccountId: "alice", ClientOrderId: "blocked",
+		Side: tradingv1.Side_SIDE_BUY, Type: tradingv1.OrderType_ORDER_TYPE_LIMIT,
+		TimeInForce: tradingv1.TimeInForce_TIME_IN_FORCE_GTC,
+		Price:       "60000", Quantity: "0.001",
+	})
+	if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "liquidity_paused") {
+		t.Fatalf("submit error = %v", err)
+	}
+	if _, err := server.CancelOrder(ctx, &tradingv1.CancelOrderRequest{
+		MarketId: "BTC-USDT", AccountId: "alice", RequestId: "cancel-during-pause",
+		OrderId: string(open.OrderID),
+	}); err != nil {
+		t.Fatalf("cancel during liquidity pause: %v", err)
+	}
+	if _, err := server.AdminFundVirtual(ctx, &tradingv1.AdminFundVirtualRequest{
+		MarketId: "BTC-USDT", AccountId: "alice", RequestId: "fund-during-pause",
+		Asset: "BTC", Amount: "0.1",
+	}); err != nil {
+		t.Fatalf("fund during liquidity pause: %v", err)
+	}
+	got, err := server.GetStatus(ctx, &tradingv1.GetStatusRequest{MarketId: "BTC-USDT"})
+	if err != nil || got.GetVirtualLiquidity().GetState() != "paused" ||
+		got.GetVirtualLiquidity().GetProvider() != "Qiu Virtual Liquidity" ||
+		got.GetVirtualLiquidity().GetLastRefreshAt() != pausedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("status=%+v err=%v", got.GetVirtualLiquidity(), err)
+	}
+}
+
+func TestVirtualLiquidityFreshnessBoundaryIsAuthoritativeForSubmit(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		age  time.Duration
+		want codes.Code
+	}{
+		{name: "29s", age: 29 * time.Second, want: codes.OK},
+		{name: "30s", age: 30 * time.Second, want: codes.OK},
+		{name: "31s", age: 31 * time.Second, want: codes.Unavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			memory := store.NewMemory()
+			runner, err := tradingruntime.NewMarketRunner(ctx, domain.DefaultBTCUSDTMarket(), memory, memory, tradingruntime.DefaultConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = runner.Close(context.Background()) }()
+			if _, err := runner.Fund(ctx, domain.FundRequest{RequestID: "fund", AccountID: "alice", Asset: "USDT", Amount: 100_000_000_000}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Fund(ctx, domain.FundRequest{RequestID: "maker-btc", AccountID: "system:demo-maker", Asset: "BTC", Amount: 1_000_000}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Fund(ctx, domain.FundRequest{RequestID: "maker-usdt", AccountID: "system:demo-maker", Asset: "USDT", Amount: 100_000_000_000}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Submit(ctx, domain.NewOrder{ClientOrderID: "maker-ask", AccountID: "system:demo-maker", Side: domain.SideSell, Type: domain.OrderTypeLimit, TimeInForce: domain.TimeInForceGTC, Price: 61_000_000_000, Quantity: 1_000_000, PostOnly: true}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runner.Submit(ctx, domain.NewOrder{ClientOrderID: "maker-bid", AccountID: "system:demo-maker", Side: domain.SideBuy, Type: domain.OrderTypeLimit, TimeInForce: domain.TimeInForceGTC, Price: 59_000_000_000, Quantity: 1_000_000, PostOnly: true}); err != nil {
+				t.Fatal(err)
+			}
+			config := tradingserver.DefaultConfig()
+			config.Now = func() time.Time { return now }
+			config.VirtualLiquidity = liquidityProvider{status: marketmaker.LiquidityStatus{
+				Provider: marketmaker.VirtualLiquidityProvider, State: marketmaker.LiquidityActive,
+				BidLevels: 1, AskLevels: 1, ReferenceObservedAt: now.Add(-test.age), LastRefreshAt: now,
+			}}
+			server, err := tradingserver.New(runner, nil, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = server.SubmitOrder(ctx, &tradingv1.SubmitOrderRequest{
+				MarketId: "BTC-USDT", AccountId: "alice", ClientOrderId: "age-" + test.name,
+				Side: tradingv1.Side_SIDE_BUY, Type: tradingv1.OrderType_ORDER_TYPE_LIMIT,
+				TimeInForce: tradingv1.TimeInForce_TIME_IN_FORCE_GTC, Price: "60000", Quantity: "0.001", PostOnly: true,
+			})
+			if status.Code(err) != test.want {
+				t.Fatalf("age=%s submit code=%s err=%v", test.age, status.Code(err), err)
+			}
+			if test.want == codes.Unavailable {
+				open, openErr := runner.Submit(ctx, domain.NewOrder{ClientOrderID: "cancel-target", AccountID: "alice", Side: domain.SideBuy, Type: domain.OrderTypeLimit, TimeInForce: domain.TimeInForceGTC, Price: 59_000_000_000, Quantity: 100_000, PostOnly: true})
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
+				if _, cancelErr := server.CancelOrder(ctx, &tradingv1.CancelOrderRequest{MarketId: "BTC-USDT", AccountId: "alice", RequestId: "cancel-stale", OrderId: string(open.OrderID)}); cancelErr != nil {
+					t.Fatalf("cancel at stale reference: %v", cancelErr)
+				}
+			}
+		})
+	}
+}
 
 func TestRecoveryOperatorRPCBindsAndPromotesAuthoritativeCoordinator(t *testing.T) {
 	ctx := context.Background()

@@ -17,6 +17,8 @@ import (
 
 const bitcoinExternalID = "bitcoin"
 
+const referenceQueryTimeout = 2 * time.Second
+
 type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
@@ -26,23 +28,33 @@ type rowQuerier interface {
 // conversion; the virtual BTC/USDT market treats those USD quote atoms as its
 // reference, never as an executable venue price.
 type PostgresSource struct {
-	queryer    rowQuerier
-	quoteScale int64
+	queryer      rowQuerier
+	quoteScale   int64
+	queryTimeout time.Duration
 }
 
 func NewPostgresSource(pool *pgxpool.Pool, quoteScale int64) (*PostgresSource, error) {
 	if pool == nil || quoteScale <= 0 {
 		return nil, fmt.Errorf("PostgreSQL pool and positive quote scale are required")
 	}
-	return &PostgresSource{queryer: pool, quoteScale: quoteScale}, nil
+	return newPostgresSource(pool, quoteScale, referenceQueryTimeout)
+}
+
+func newPostgresSource(queryer rowQuerier, quoteScale int64, timeout time.Duration) (*PostgresSource, error) {
+	if queryer == nil || quoteScale <= 0 || timeout <= 0 {
+		return nil, fmt.Errorf("PostgreSQL queryer, positive quote scale and timeout are required")
+	}
+	return &PostgresSource{queryer: queryer, quoteScale: quoteScale, queryTimeout: timeout}, nil
 }
 
 func (s *PostgresSource) Current(ctx context.Context) (marketmaker.Reference, error) {
+	queryContext, cancel := context.WithTimeout(ctx, s.queryTimeout)
+	defer cancel()
 	var (
 		priceText  string
 		observedAt time.Time
 	)
-	err := s.queryer.QueryRow(ctx, `
+	err := s.queryer.QueryRow(queryContext, `
 		SELECT index.price_usd::text, index.observed_at
 		FROM asset_price_index AS index
 		JOIN asset_external_mapping AS mapping

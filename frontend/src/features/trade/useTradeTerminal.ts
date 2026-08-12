@@ -93,6 +93,7 @@ const TRADING_ERROR_MESSAGES: Partial<Record<string, MessageKey>> = {
   rate_limited: 'trade.error.rate_limited',
   recovery_in_progress: 'trade.error.recovery_in_progress',
   trading_write_paused: 'trade.error.trading_write_paused',
+  liquidity_paused: 'trade.error.liquidity_paused',
   backend_unavailable: 'trade.error.backend_unavailable',
   backend_timeout: 'trade.error.backend_timeout',
 }
@@ -143,6 +144,9 @@ export function useTradeTerminal() {
   const authCapabilities = ref<AuthCapabilities>({
     github_oauth_enabled: false,
     local_login_enabled: false,
+    practice_mode_enabled: false,
+    starter_funds_enabled: false,
+    virtual_liquidity_enabled: false,
   })
   const book = ref<OrderBook>({ market_id: MARKET_ID, sequence: '0', bids: [], asks: [] })
   const publicTrades = ref<Trade[]>([])
@@ -178,6 +182,7 @@ export function useTradeTerminal() {
   const referenceFreshness = ref('unavailable')
   const referenceConfidence = ref('unknown')
   const referenceObservedAt = ref(0)
+  const referenceProvider = ref('')
   const referenceError = ref('')
   const klineMarketID = ref('')
   const klineProvider = ref('')
@@ -276,7 +281,15 @@ export function useTradeTerminal() {
   ))
   const writesEnabled = computed(() =>
     !busy.value && terminalHealth.value.writesAllowed && recoveryAdmission.value.writesAllowed)
+  const virtualLiquidityState = computed(() =>
+    status.value.virtual_liquidity?.state ?? 'disabled')
+  const virtualLiquiditySubmitAllowed = computed(() =>
+    authCapabilities.value.practice_mode_enabled !== true || (
+      authCapabilities.value.virtual_liquidity_enabled === true &&
+      virtualLiquidityState.value === 'active'
+    ))
   const submitEnabled = computed(() => writesEnabled.value &&
+    virtualLiquiditySubmitAllowed.value &&
     !pendingJournalBlocked.value && orderPreview.value.valid)
   const writeGateReason = computed(() => {
     if (busy.value) return 'request_in_flight'
@@ -286,6 +299,7 @@ export function useTradeTerminal() {
     if (eventReconcilePending.value) return 'transport_reconcile_pending'
     if (!recoveryAdmission.value.writesAllowed) return recoveryAdmission.value.reason
     if (!terminalHealth.value.writesAllowed) return terminalHealth.value.writeBlockReason
+    if (!virtualLiquiditySubmitAllowed.value) return 'liquidity_paused'
     if (!orderPreview.value.valid) return 'validation_failed'
     return 'ready'
   })
@@ -791,7 +805,13 @@ export function useTradeTerminal() {
     try {
       authCapabilities.value = await tradingAPI.authCapabilities()
     } catch {
-      authCapabilities.value = { github_oauth_enabled: false, local_login_enabled: false }
+      authCapabilities.value = {
+        github_oauth_enabled: false,
+        local_login_enabled: false,
+        practice_mode_enabled: false,
+        starter_funds_enabled: false,
+        virtual_liquidity_enabled: false,
+      }
     }
   }
 
@@ -1107,6 +1127,9 @@ export function useTradeTerminal() {
       referenceFreshness.value = btc.freshness_status || 'unavailable'
       referenceConfidence.value = btc.confidence || 'unknown'
       referenceObservedAt.value = btc.last_success_at || btc.observed_at
+      referenceProvider.value = btc.display_price.contributors.length
+        ? btc.display_price.contributors.join(' + ')
+        : btc.display_price.source || btc.price_source || 'unavailable'
       referenceError.value = referencePrice.value === null
         ? btc.coverage_reason || 'No fresh CEX Spot contributor'
         : ''
@@ -1275,6 +1298,7 @@ export function useTradeTerminal() {
     referenceFreshness,
     referenceConfidence,
     referenceObservedAt,
+    referenceProvider,
     referenceError,
     klineProvider,
     klineInterval,
@@ -1291,6 +1315,8 @@ export function useTradeTerminal() {
     terminalHealth,
     writesEnabled,
     submitEnabled,
+    virtualLiquidityState,
+    virtualLiquiditySubmitAllowed,
     writeGateReason,
     lastSuccessAt,
     wsState,

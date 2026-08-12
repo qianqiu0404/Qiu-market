@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   TradingRequestError,
   tradingAPI,
+  type FundingRequestResult,
 } from '../../api/trading'
 import { setLocale, systemTradingMessageKeys } from '../../i18n'
 import {
@@ -52,7 +53,60 @@ function setValue(element: HTMLInputElement | HTMLSelectElement, value: string):
   element.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
-beforeEach(() => setLocale('en'))
+function starterResult(
+  requestID: 'starter-v1-usdt' | 'starter-v1-btc',
+  sequence: string,
+): FundingRequestResult {
+  const btc = requestID === 'starter-v1-btc'
+  return {
+    market_id: 'BTC-USDT',
+    request_id: requestID,
+    funding_event_id: `event:${sequence}:0`,
+    sequence,
+    asset: btc ? 'BTC' : 'USDT',
+    amount: btc ? '0.1' : '10000',
+    projection_result: 'applied',
+    ledger_balanced: true,
+    occurred_at: '2026-08-13T00:00:00Z',
+  }
+}
+
+function pendingStarter(requestID: 'starter-v1-usdt' | 'starter-v1-btc'): PendingTradingWrite {
+  const btc = requestID === 'starter-v1-btc'
+  return {
+    operation_id: `operation-${requestID}`,
+    operation: 'fund',
+    account_id: 'local:practice',
+    request_id: requestID,
+    state: 'unknown',
+    created_at: 10,
+    updated_at: 11,
+    payload: {
+      account_id: 'local:practice',
+      asset: btc ? 'BTC' : 'USDT',
+      amount: btc ? '0.1' : '10000',
+    },
+  }
+}
+
+beforeEach(() => {
+  setLocale('en')
+  vi.spyOn(tradingAPI, 'authCapabilities').mockResolvedValue({
+    github_oauth_enabled: false,
+    local_login_enabled: false,
+    practice_mode_enabled: false,
+    starter_funds_enabled: false,
+    virtual_liquidity_enabled: false,
+  })
+  vi.spyOn(tradingAPI, 'status').mockResolvedValue({
+    market_id: 'BTC-USDT',
+    state: 'ready',
+    sequence: '1',
+    queue_depth: 0,
+    recovery_count: '0',
+    last_error: '',
+  })
+})
 
 afterEach(() => {
   mountedApp?.unmount()
@@ -68,6 +122,189 @@ describe('System virtual funding control', () => {
   it('keeps every frozen System trading key in English and Chinese', () => {
     expect(systemTradingMessageKeys('zh-CN')).toEqual(systemTradingMessageKeys('en'))
     expect(systemTradingMessageKeys('en').length).toBeGreaterThan(20)
+  })
+
+  it('applies the two fixed starter events query-first and never funds them twice', async () => {
+    vi.spyOn(tradingAPI, 'session').mockResolvedValue({
+      principal: { account_id: 'local:practice', github_login: 'practice', admin: true },
+      expires_at: '2099-01-01T00:00:00Z',
+    })
+    vi.mocked(tradingAPI.authCapabilities).mockResolvedValue({
+      github_oauth_enabled: false,
+      local_login_enabled: true,
+      recovery_gate_enabled: true,
+      practice_mode_enabled: true,
+      starter_funds_enabled: true,
+      virtual_liquidity_enabled: true,
+    })
+    const applied = new Map<string, FundingRequestResult>()
+    const trace: string[] = []
+    vi.spyOn(tradingAPI, 'fundingRequest').mockImplementation(async (id) => {
+      trace.push(`query:${id}`)
+      const result = applied.get(id)
+      if (result) return result
+      throw new TradingRequestError(
+        'not found', 'funding_request_not_found', 404, false,
+      )
+    })
+    const fund = vi.spyOn(tradingAPI, 'fund').mockImplementation(async (id, asset, amount) => {
+      trace.push(`fund:${id}`)
+      const result = starterResult(id as 'starter-v1-usdt' | 'starter-v1-btc',
+        id === 'starter-v1-usdt' ? '10' : '11')
+      expect(result.asset).toBe(asset)
+      expect(result.amount).toBe(amount)
+      applied.set(id, result)
+      return {}
+    })
+    const view = await mountCard()
+    await settle()
+
+    view.querySelector<HTMLButtonElement>('[data-testid="starter-funds-submit"]')!.click()
+    await vi.waitFor(() => expect(fund).toHaveBeenCalledTimes(2))
+    await settle()
+
+    expect(fund.mock.calls).toEqual([
+      ['starter-v1-usdt', 'USDT', '10000', 'local:practice'],
+      ['starter-v1-btc', 'BTC', '0.1', 'local:practice'],
+    ])
+    expect(trace.indexOf('query:starter-v1-usdt'))
+      .toBeLessThan(trace.indexOf('fund:starter-v1-usdt'))
+    expect(trace.indexOf('query:starter-v1-btc'))
+      .toBeLessThan(trace.indexOf('fund:starter-v1-btc'))
+    expect(view.textContent).toContain('Both starter funding events are applied and balanced.')
+    expect(window.localStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY)).toBeNull()
+
+    view.querySelector<HTMLButtonElement>('[data-testid="starter-funds-submit"]')!.click()
+    await settle()
+    expect(fund).toHaveBeenCalledTimes(2)
+  })
+
+  it('queries an unknown starter result before one exact-ID replay', async () => {
+    vi.spyOn(tradingAPI, 'session').mockResolvedValue({
+      principal: { account_id: 'local:practice', github_login: 'practice', admin: true },
+      expires_at: '2099-01-01T00:00:00Z',
+    })
+    vi.mocked(tradingAPI.authCapabilities).mockResolvedValue({
+      github_oauth_enabled: false,
+      local_login_enabled: true,
+      practice_mode_enabled: true,
+      starter_funds_enabled: true,
+      virtual_liquidity_enabled: true,
+    })
+    const applied = new Map<string, FundingRequestResult>()
+    vi.spyOn(tradingAPI, 'fundingRequest').mockImplementation(async (id) => {
+      const result = applied.get(id)
+      if (result) return result
+      throw new TradingRequestError(
+        'not found', 'funding_request_not_found', 404, false,
+      )
+    })
+    let usdtAttempts = 0
+    const fund = vi.spyOn(tradingAPI, 'fund').mockImplementation(async (id) => {
+      if (id === 'starter-v1-usdt' && usdtAttempts++ === 0) {
+        throw new TradingRequestError('lost response', 'network_error', 0, true)
+      }
+      applied.set(id, starterResult(
+        id as 'starter-v1-usdt' | 'starter-v1-btc',
+        id === 'starter-v1-usdt' ? '20' : '21',
+      ))
+      return {}
+    })
+    const view = await mountCard()
+    await settle()
+
+    view.querySelector<HTMLButtonElement>('[data-testid="starter-funds-submit"]')!.click()
+    await vi.waitFor(() => expect(fund).toHaveBeenCalledTimes(3))
+    await settle()
+
+    expect(fund.mock.calls.slice(0, 2).map((call) => call[0])).toEqual([
+      'starter-v1-usdt',
+      'starter-v1-usdt',
+    ])
+    expect(fund.mock.calls[2]?.[0]).toBe('starter-v1-btc')
+    expect(window.localStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY)).toBeNull()
+  })
+
+  it('reconciles a committed pending starter by GET without another POST', async () => {
+    window.localStorage.setItem(
+      PENDING_TRADING_WRITE_STORAGE_KEY,
+      JSON.stringify(pendingStarter('starter-v1-usdt')),
+    )
+    vi.spyOn(tradingAPI, 'session').mockResolvedValue({
+      principal: { account_id: 'local:practice', github_login: 'practice', admin: true },
+      expires_at: '2099-01-01T00:00:00Z',
+    })
+    vi.mocked(tradingAPI.authCapabilities).mockResolvedValue({
+      github_oauth_enabled: false,
+      local_login_enabled: true,
+      practice_mode_enabled: true,
+      starter_funds_enabled: true,
+      virtual_liquidity_enabled: true,
+    })
+    const funding = vi.spyOn(tradingAPI, 'fundingRequest').mockImplementation(async (id) => {
+      if (id === 'starter-v1-usdt') return starterResult(id, '31')
+      throw new TradingRequestError('not found', 'funding_request_not_found', 404, false)
+    })
+    const fund = vi.spyOn(tradingAPI, 'fund')
+    const view = await mountCard()
+    await settle()
+    funding.mockClear()
+
+    view.querySelector<HTMLButtonElement>('[data-testid="funding-reconcile"]')!.click()
+    await vi.waitFor(() => {
+      expect(window.localStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY)).toBeNull()
+    })
+
+    expect(funding.mock.calls).toEqual([['starter-v1-usdt']])
+    expect(fund).not.toHaveBeenCalled()
+  })
+
+  it('reconciles a missing pending starter with one exact-ID POST between two GETs', async () => {
+    window.localStorage.setItem(
+      PENDING_TRADING_WRITE_STORAGE_KEY,
+      JSON.stringify(pendingStarter('starter-v1-usdt')),
+    )
+    vi.spyOn(tradingAPI, 'session').mockResolvedValue({
+      principal: { account_id: 'local:practice', github_login: 'practice', admin: true },
+      expires_at: '2099-01-01T00:00:00Z',
+    })
+    vi.mocked(tradingAPI.authCapabilities).mockResolvedValue({
+      github_oauth_enabled: false,
+      local_login_enabled: true,
+      practice_mode_enabled: true,
+      starter_funds_enabled: true,
+      virtual_liquidity_enabled: true,
+    })
+    let applied = false
+    const trace: string[] = []
+    vi.spyOn(tradingAPI, 'fundingRequest').mockImplementation(async (id) => {
+      trace.push(`get:${id}`)
+      if (id === 'starter-v1-usdt' && applied) return starterResult(id, '41')
+      throw new TradingRequestError('not found', 'funding_request_not_found', 404, false)
+    })
+    const fund = vi.spyOn(tradingAPI, 'fund').mockImplementation(async (id) => {
+      trace.push(`post:${id}`)
+      applied = true
+      return {}
+    })
+    const view = await mountCard()
+    await settle()
+    trace.length = 0
+
+    view.querySelector<HTMLButtonElement>('[data-testid="funding-reconcile"]')!.click()
+    await vi.waitFor(() => {
+      expect(window.localStorage.getItem(PENDING_TRADING_WRITE_STORAGE_KEY)).toBeNull()
+    })
+
+    expect(trace).toEqual([
+      'get:starter-v1-usdt',
+      'post:starter-v1-usdt',
+      'get:starter-v1-usdt',
+    ])
+    expect(fund).toHaveBeenCalledTimes(1)
+    expect(fund).toHaveBeenCalledWith(
+      'starter-v1-usdt', 'USDT', '10000', 'local:practice',
+    )
   })
 
   it('does not render for a non-admin server session', async () => {

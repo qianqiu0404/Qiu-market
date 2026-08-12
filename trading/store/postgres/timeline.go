@@ -842,18 +842,23 @@ func buildSingleOrderRow(
 		}
 	case domain.EventOrderFilled:
 		order.Status = domain.OrderStatusFilled
-		release, err := bindings.take(
-			fmt.Sprintf("release:%020d", record.Command.Sequence),
-			"order-release:"+string(order.ID),
-			false,
-		)
-		if err != nil {
-			return lifecycleRow{}, false, err
-		}
-		if release != nil {
-			effects, err = effectsFor(order.AccountID, release, query.LedgerReasonOrderRelease)
+		// A submit command has at most one generic release and it belongs to
+		// the incoming order. Filled makers use the per-fill maker-release
+		// transaction already bound by buildTradeRows.
+		if order.ID == record.Result.OrderID {
+			release, err := bindings.take(
+				fmt.Sprintf("release:%020d", record.Command.Sequence),
+				"order-release:"+string(order.ID),
+				false,
+			)
 			if err != nil {
 				return lifecycleRow{}, false, err
+			}
+			if release != nil {
+				effects, err = effectsFor(order.AccountID, release, query.LedgerReasonOrderRelease)
+				if err != nil {
+					return lifecycleRow{}, false, err
+				}
 			}
 		}
 	case domain.EventOrderCanceled:

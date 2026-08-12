@@ -1,10 +1,13 @@
 package config
 
 import (
+	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/urfave/cli/v2"
 
@@ -44,6 +47,9 @@ type ResearchSignalsConfig struct {
 // trading process.
 type TradingConfig struct {
 	GRPCAddress        string
+	PracticeMode       bool
+	StateDSNFile       string
+	ReferenceDSNFile   string
 	AllowedOrigins     []string
 	LocalAuth          bool
 	SecureCookies      bool
@@ -182,6 +188,9 @@ func NewConfig(ctx *cli.Context) Config {
 		},
 		Trading: TradingConfig{
 			GRPCAddress:        ctx.String(flags.TradingGRPCAddressFlag.Name),
+			PracticeMode:       ctx.Bool(flags.TradingPracticeModeFlag.Name),
+			StateDSNFile:       ctx.String(flags.TradingStateDSNFileFlag.Name),
+			ReferenceDSNFile:   ctx.String(flags.TradingReferenceDSNFileFlag.Name),
 			AllowedOrigins:     splitCSV(ctx.String(flags.TradingAllowedOriginsFlag.Name)),
 			LocalAuth:          ctx.Bool(flags.TradingLocalAuthFlag.Name),
 			SecureCookies:      ctx.Bool(flags.TradingSecureCookiesFlag.Name),
@@ -207,6 +216,58 @@ func NewConfig(ctx *cli.Context) Config {
 			Database:  ctx.String(flags.DorisDbFlag.Name),
 		},
 	}
+}
+
+// TradingPostgresURLs resolves the trading write model and the market-data
+// reference reader without ever returning file contents in an error. Practice
+// mode requires two distinct owner-only files; legacy deployments continue to
+// use the existing master database until they explicitly opt in.
+func (c Config) TradingPostgresURLs() (string, string, error) {
+	if !c.Trading.PracticeMode && c.Trading.StateDSNFile == "" && c.Trading.ReferenceDSNFile == "" {
+		legacy := c.MasterDB.PostgresURL()
+		return legacy, legacy, nil
+	}
+	if c.Trading.StateDSNFile == "" || c.Trading.ReferenceDSNFile == "" {
+		return "", "", fmt.Errorf("trading state and reference DSN files are both required")
+	}
+	state, err := readPrivatePostgresDSN(c.Trading.StateDSNFile)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid trading state DSN file: %w", err)
+	}
+	reference, err := readPrivatePostgresDSN(c.Trading.ReferenceDSNFile)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid trading reference DSN file: %w", err)
+	}
+	if state == reference {
+		return "", "", fmt.Errorf("trading state and reference PostgreSQL must be independent")
+	}
+	return state, reference, nil
+}
+
+func readPrivatePostgresDSN(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("private file is unavailable")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
+		info.Mode().Perm() != 0o600 || int(stat.Uid) != os.Getuid() {
+		return "", fmt.Errorf("private file must be an owner-only regular non-symlink 0600 file")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("private file is unreadable")
+	}
+	value := strings.TrimSpace(string(contents))
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return "", fmt.Errorf("private file must contain exactly one non-empty line")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") ||
+		parsed.Host == "" || strings.TrimPrefix(parsed.Path, "/") == "" {
+		return "", fmt.Errorf("private file does not contain a PostgreSQL DSN")
+	}
+	return value, nil
 }
 
 func splitCSV(value string) []string {

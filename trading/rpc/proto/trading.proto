@@ -14,6 +14,7 @@ service TradingService {
   rpc ListOrderEvents(ListOrderEventsRequest) returns (ListOrderEventsResponse);
   rpc ListLedgerEntries(ListLedgerEntriesRequest) returns (ListLedgerEntriesResponse);
   rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse);
+  rpc GetFundingRequest(GetFundingRequestRequest) returns (FundingRequestResponse);
   rpc GetOrderBook(GetOrderBookRequest) returns (OrderBook);
   rpc GetStatus(GetStatusRequest) returns (StatusResponse);
   rpc GetRecoveryStatus(GetRecoveryStatusRequest) returns (RecoveryStatusResponse);
@@ -101,6 +102,24 @@ message GetBalancesRequest {
 
 message GetBalancesResponse {
   repeated Balance balances = 1;
+}
+
+message GetFundingRequestRequest {
+  string market_id = 1;
+  string account_id = 2;
+  string request_id = 3;
+}
+
+message FundingRequestResponse {
+  string market_id = 1;
+  string request_id = 2;
+  string funding_event_id = 3;
+  string sequence = 4;
+  string asset = 5;
+  string amount = 6;
+  string projection_result = 7;
+  bool ledger_balanced = 8;
+  string occurred_at = 9;
 }
 
 message GetOrderBookRequest {
@@ -289,6 +308,17 @@ message StatusResponse {
   string outbox_last_published_at = 14;
   string outbox_last_cleanup_at = 15;
   string state_hash = 16;
+  VirtualLiquidityStatus virtual_liquidity = 17;
+}
+
+message VirtualLiquidityStatus {
+  string provider = 1;
+  string state = 2;
+  string reason = 3;
+  uint32 bid_levels = 4;
+  uint32 ask_levels = 5;
+  string reference_observed_at = 6;
+  string last_refresh_at = 7;
 }
 
 message EventEnvelope {

@@ -26,6 +26,15 @@ const referenceFresh = computed(() =>
   terminal.referencePrice.value !== null && terminal.referenceFreshness.value === 'fresh')
 const referenceStateLabel = computed(() =>
   `${terminal.tr(tradeEnumKey(terminal.referenceFreshness.value))} · ${terminal.tr(tradeEnumKey(terminal.referenceConfidence.value))}`)
+const referenceObservedLabel = computed(() => {
+  if (!terminal.referenceObservedAt.value) return terminal.tr('trade.status.noObservation')
+  const milliseconds = terminal.referenceObservedAt.value < 1e12
+    ? terminal.referenceObservedAt.value * 1000
+    : terminal.referenceObservedAt.value
+  return new Intl.DateTimeFormat(terminal.locale.value, {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).format(new Date(milliseconds))
+})
 </script>
 
 <template>
@@ -70,16 +79,28 @@ const referenceStateLabel = computed(() =>
     </div>
 
     <section class="market-header card">
-      <div><span>BTC / USDT</span><strong>{{ referenceFormatted }} <small>USDT</small></strong></div>
-      <div><span>{{ terminal.tr('trade.status.reference') }}</span><strong :class="`freshness--${terminal.referenceFreshness.value}`">{{ referenceStateLabel }}</strong></div>
+      <div>
+        <span>BTC / USDT</span><strong>{{ referenceFormatted }} <small>USDT</small></strong>
+        <small>{{ terminal.tr('trade.status.referenceProvider', { provider: terminal.referenceProvider.value || '—' }) }}</small>
+      </div>
+      <div>
+        <span>{{ terminal.tr('trade.status.reference') }}</span>
+        <strong :class="`freshness--${terminal.referenceFreshness.value}`">{{ referenceStateLabel }}</strong>
+        <small>{{ terminal.tr('trade.status.referenceObserved', { time: referenceObservedLabel }) }}</small>
+      </div>
       <div><span>{{ terminal.tr('trade.status.bestBid') }}</span><strong>{{ terminal.bestBid.value || '—' }}</strong></div>
       <div><span>{{ terminal.tr('trade.status.bestAsk') }}</span><strong>{{ terminal.bestAsk.value || '—' }}</strong></div>
     </section>
+    <p class="reference-boundary" data-testid="reference-not-executable">
+      {{ terminal.tr('trade.status.referenceBoundary') }}
+    </p>
 
     <TradeStatusStrip
       :availability="terminal.terminalHealth.value.availability"
       :matching-state="terminal.terminalHealth.value.matchingState"
-      :liquidity-state="terminal.terminalHealth.value.liquidityState"
+      :liquidity-state="terminal.authCapabilities.value.practice_mode_enabled
+        ? terminal.virtualLiquidityState.value
+        : terminal.terminalHealth.value.liquidityState"
       :transport-state="terminal.terminalHealth.value.transportState"
       :data-age-seconds="terminal.terminalHealth.value.dataAgeSeconds"
       :last-success-at="terminal.lastSuccessAt.value"
@@ -209,6 +230,7 @@ const referenceStateLabel = computed(() =>
 .trade-toast { position: fixed; top: 72px; left: 50%; z-index: 90; transform: translateX(-50%); width: min(560px,calc(100vw - 32px)); padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-float); }.trade-toast--error { color: var(--down); background: #fff0f2; }.trade-toast--success { color: var(--up); background: #e9f7f1; }
 .pending-write { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; color: #805700; background: #fff8df; font-size: 11px; }
 .market-header { display: grid; grid-template-columns: 1.4fr repeat(3,1fr); overflow: hidden; }.market-header>div { display: grid; gap: 5px; padding: 13px 18px; border-right: 1px solid var(--border); }.market-header>div:last-child { border-right: 0; }.market-header span { color: var(--text-3); font-size: 9px; text-transform: uppercase; }.market-header strong { font: 15px var(--font-mono); }.market-header>div:first-child strong { font-size: 22px; }.market-header small { color: var(--text-3); font-size: 10px; }.freshness--fresh { color: var(--up); }.freshness--stale { color: var(--warn); }.freshness--unavailable { color: var(--down); }
+.reference-boundary { margin: -14px 0 0; padding: 9px 14px; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--radius-sm) var(--radius-sm); color: var(--text-3); background: var(--bg-panel-2); font-size: 11px; }
 .transport-warning { padding: 10px 14px; border: 1px solid #f0d58a; border-radius: var(--radius-sm); color: #805700; background: #fff8df; font: 11px var(--font-mono); }
 .trading-workspace { display: grid; grid-template-columns: minmax(0,1.7fr) minmax(300px,.72fr) minmax(310px,.72fr); gap: 14px; align-items: start; }.account-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @media(max-width:1260px){.trading-workspace{grid-template-columns:minmax(0,1.4fr) minmax(300px,.75fr)}.trading-workspace>:last-child{grid-column:1/-1}.market-header{grid-template-columns:repeat(2,1fr)}}

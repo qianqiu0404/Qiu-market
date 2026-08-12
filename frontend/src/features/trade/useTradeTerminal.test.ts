@@ -171,6 +171,37 @@ afterEach(() => {
 })
 
 describe('Trade pending-write journal ownership', () => {
+  it('blocks only submit when local virtual liquidity is paused', async () => {
+    const current = await mountTerminal()
+    makeTerminalWritable(current)
+    current.authCapabilities.value = {
+      github_oauth_enabled: false,
+      local_login_enabled: true,
+      practice_mode_enabled: true,
+      starter_funds_enabled: true,
+      virtual_liquidity_enabled: true,
+    }
+    current.status.value.virtual_liquidity = {
+      provider: 'Qiu Virtual Liquidity',
+      state: 'paused',
+      reason: 'reference_stale',
+      bid_levels: 0,
+      ask_levels: 0,
+      reference_observed_at: '',
+      last_refresh_at: '2026-08-13T00:00:00Z',
+    }
+
+    expect(current.writesEnabled.value).toBe(true)
+    expect(current.submitEnabled.value).toBe(false)
+    expect(current.writeGateReason.value).toBe('liquidity_paused')
+
+    current.status.value.virtual_liquidity.state = 'active'
+    current.status.value.virtual_liquidity.bid_levels = 3
+    current.status.value.virtual_liquidity.ask_levels = 3
+    await nextTick()
+    expect(current.submitEnabled.value).toBe(true)
+  })
+
   it('prefers the shared local journal and rejects stale-tab replacement or clearing', () => {
     window.localStorage.setItem(
       PENDING_TRADING_WRITE_STORAGE_KEY,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -67,7 +68,8 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 	var capabilities map[string]bool
 	decodeResponse(t, response, &capabilities)
 	if !capabilities["local_login_enabled"] || capabilities["github_oauth_enabled"] ||
-		!capabilities["recovery_gate_enabled"] {
+		!capabilities["recovery_gate_enabled"] || capabilities["practice_mode_enabled"] ||
+		capabilities["starter_funds_enabled"] || capabilities["virtual_liquidity_enabled"] {
 		t.Fatalf("auth capabilities = %+v", capabilities)
 	}
 
@@ -109,6 +111,19 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 		t.Fatalf("fund status = %d: %s", response.StatusCode, readBody(t, response))
 	}
 	_ = response.Body.Close()
+	response = do(t, client, http.MethodGet,
+		httpServer.URL+"/api/v1/trading/account/funding/fund-self", nil, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("funding query status=%d: %s", response.StatusCode, readBody(t, response))
+	}
+	var funding tradingv1.FundingRequestResponse
+	decodeResponse(t, response, &funding)
+	if funding.GetFundingEventId() != "1:1" || funding.GetAmount() != "0.2" ||
+		funding.GetProjectionResult() != "applied" || !funding.GetLedgerBalanced() {
+		t.Fatalf("funding response id=%q amount=%q projection=%q balanced=%v",
+			funding.GetFundingEventId(), funding.GetAmount(), funding.GetProjectionResult(),
+			funding.GetLedgerBalanced())
+	}
 
 	response = do(t, client, http.MethodPost,
 		httpServer.URL+"/api/v1/trading/orders",
@@ -318,6 +333,65 @@ func TestHTTPAuthCSRFAccountIsolationPublicRedactionAndTicket(t *testing.T) {
 	}
 }
 
+func TestPracticeCapabilitiesAndFixedStarterFunds(t *testing.T) {
+	grpcClient, _ := newGRPCTestClient(t)
+	sessions := newMemorySessions()
+	tickets, _ := auth.NewTicketManager(time.Minute)
+	oauthStates, _ := auth.NewOAuthStateManager(time.Minute)
+	config := httpapi.DefaultConfig()
+	config.LocalMode = true
+	config.PracticeMode = true
+	config.VirtualLiquidityEnabled = true
+	config.AllowedOrigins = []string{"http://practice.test"}
+	config.WriteLimit = 100
+	api, err := httpapi.New(grpcClient, sessions, tickets, oauthStates, nil, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+	response := do(t, client, http.MethodGet, server.URL+"/api/v1/trading/auth/capabilities", nil, "", "")
+	var capabilities map[string]bool
+	decodeResponse(t, response, &capabilities)
+	if !capabilities["practice_mode_enabled"] || !capabilities["starter_funds_enabled"] ||
+		!capabilities["virtual_liquidity_enabled"] {
+		t.Fatalf("practice capabilities = %+v", capabilities)
+	}
+	response = do(t, client, http.MethodPost, server.URL+"/api/v1/trading/auth/local",
+		map[string]any{}, "http://practice.test", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("login status=%d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	csrf := cookieValue(t, jar, server.URL, "s78_trading_csrf")
+	for _, request := range []map[string]any{
+		{"request_id": "starter-v1-usdt", "asset": "USDT", "amount": "10000"},
+		{"request_id": "starter-v1-btc", "asset": "BTC", "amount": "0.1"},
+	} {
+		response = do(t, client, http.MethodPost, server.URL+"/api/v1/trading/admin/fund",
+			request, "http://practice.test", csrf)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("starter response=%d %s", response.StatusCode, readBody(t, response))
+		}
+		_ = response.Body.Close()
+	}
+	response = do(t, client, http.MethodPost, server.URL+"/api/v1/trading/admin/fund",
+		map[string]any{"request_id": "custom", "asset": "USDT", "amount": "1"},
+		"http://practice.test", csrf)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("custom practice fund status=%d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	response = do(t, client, http.MethodPost, server.URL+"/api/v1/trading/admin/fund",
+		map[string]any{"request_id": "starter-v1-usdt", "asset": "USDT", "amount": "1"},
+		"http://practice.test", csrf)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("reserved starter payload drift status=%d", response.StatusCode)
+	}
+}
+
 type memorySessions struct {
 	mu       sync.Mutex
 	sessions map[string]auth.Session
@@ -399,6 +473,7 @@ func newGRPCTestClient(
 	}
 	serverConfig := tradingserver.DefaultConfig()
 	serverConfig.Queries = runnerQueryReader{runner: runner}
+	serverConfig.FundingRequests = memoryFundingReader{memory: memory}
 	serverConfig.Cursors = tradingserver.CursorConfig{Current: tradingserver.CursorKeyConfig{
 		KeyID: "http-test", Secret: bytes.Repeat([]byte{0x41}, 32),
 	}}
@@ -544,6 +619,34 @@ func (runnerQueryReader) ListLedgerEntries(
 }
 
 var _ query.Reader = runnerQueryReader{}
+
+type memoryFundingReader struct{ memory *store.Memory }
+
+func (r memoryFundingReader) GetFundingRequest(
+	ctx context.Context, accountID domain.AccountID, requestID string,
+) (query.FundingRequest, bool, error) {
+	records, err := r.memory.RecordsAfter(ctx, 0)
+	if err != nil {
+		return query.FundingRequest{}, false, err
+	}
+	for _, record := range records {
+		if record.Command.Kind != domain.CommandKindFund || record.Command.Fund == nil ||
+			record.Command.Fund.AccountID != accountID || record.Command.Fund.RequestID != requestID {
+			continue
+		}
+		for _, event := range record.Result.Events {
+			if event.Type == domain.EventAccountFunded {
+				return query.FundingRequest{
+					MarketID: record.MarketID, RequestID: requestID,
+					FundingEventID: fmt.Sprintf("%d:%d", event.Sequence, event.Index),
+					Sequence:       event.Sequence, Asset: event.Asset, Amount: event.Amount,
+					LedgerBalanced: true, OccurredAt: time.Unix(1, 0).UTC(),
+				}, true, nil
+			}
+		}
+	}
+	return query.FundingRequest{}, false, nil
+}
 
 func mustFundGRPC(
 	t *testing.T,

@@ -4,12 +4,72 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
 )
 
 var ErrUnsafeReference = errors.New("reference price is unsafe")
+
+const VirtualLiquidityProvider = "Qiu Virtual Liquidity"
+
+type LiquidityState string
+
+const (
+	LiquidityDisabled   LiquidityState = "disabled"
+	LiquidityRecovering LiquidityState = "recovering"
+	LiquidityActive     LiquidityState = "active"
+	LiquidityPaused     LiquidityState = "paused"
+)
+
+type LiquidityStatus struct {
+	Provider            string
+	State               LiquidityState
+	Reason              string
+	BidLevels           uint32
+	AskLevels           uint32
+	ReferenceObservedAt time.Time
+	LastRefreshAt       time.Time
+}
+
+func (s LiquidityStatus) SubmitEnabled() bool { return s.State == LiquidityActive }
+
+type StatusTracker struct {
+	mu     sync.RWMutex
+	status LiquidityStatus
+}
+
+func NewStatusTracker(enabled bool) *StatusTracker {
+	state := LiquidityDisabled
+	reason := "virtual liquidity is disabled"
+	if enabled {
+		state = LiquidityRecovering
+		reason = "waiting for safe reference and two-sided quotes"
+	}
+	return &StatusTracker{status: LiquidityStatus{
+		Provider: VirtualLiquidityProvider, State: state, Reason: reason,
+	}}
+}
+
+func (t *StatusTracker) Status() LiquidityStatus {
+	if t == nil {
+		return LiquidityStatus{}
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.status
+}
+
+func (t *StatusTracker) update(status LiquidityStatus) {
+	if t == nil {
+		return
+	}
+	status.Provider = VirtualLiquidityProvider
+	t.mu.Lock()
+	t.status = status
+	t.mu.Unlock()
+}
 
 type Reference struct {
 	Price      int64
@@ -35,6 +95,7 @@ type Config struct {
 	MinRepriceBPS int64
 	RefreshEvery  time.Duration
 	RequestPrefix string
+	Status        *StatusTracker
 }
 
 func DefaultConfig() Config {
@@ -98,6 +159,7 @@ func New(
 
 func (m *Maker) Run(ctx context.Context) error {
 	if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) {
+		m.recordPaused("virtual liquidity infrastructure is unavailable", time.Time{})
 		return err
 	}
 	ticker := time.NewTicker(m.config.RefreshEvery)
@@ -109,11 +171,14 @@ func (m *Maker) Run(ctx context.Context) error {
 			cancelErr := m.cancelAll(cancelContext)
 			cancel()
 			if cancelErr != nil {
+				m.recordPaused("unable to remove virtual liquidity safely", time.Time{})
 				return cancelErr
 			}
+			m.recordRecovering("virtual liquidity process stopped")
 			return nil
 		case <-ticker.C:
 			if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) {
+				m.recordPaused("virtual liquidity infrastructure is unavailable", time.Time{})
 				return err
 			}
 		}
@@ -129,6 +194,7 @@ func (m *Maker) refresh(ctx context.Context) error {
 	if err != nil {
 		return m.pauseUnsafe(ctx, fmt.Errorf("%w: source error: %v", ErrUnsafeReference, err))
 	}
+	m.recordRecoveringReference(reference)
 	if err := m.validateBasicReference(reference); err != nil {
 		return m.pauseUnsafe(ctx, err)
 	}
@@ -167,6 +233,7 @@ func (m *Maker) refresh(ctx context.Context) error {
 	if len(openOrders) == 2*len(m.config.SpreadsBPS) &&
 		m.previousPrice > 0 &&
 		!m.shouldReprice(reference.Price) {
+		m.recordActive(reference)
 		return nil
 	}
 	if err := m.cancelAll(ctx); err != nil {
@@ -217,6 +284,7 @@ func (m *Maker) refresh(ctx context.Context) error {
 		}
 	}
 	m.previousPrice = reference.Price
+	m.recordActive(reference)
 	return nil
 }
 
@@ -288,10 +356,47 @@ func (m *Maker) pauseUnsafe(ctx context.Context, cause error) error {
 	m.previousPrice = 0
 	m.recoveryPrice = 0
 	m.freshSamples = 0
+	m.recordPaused("reference is unsafe or unavailable", time.Time{})
 	if cancelErr != nil {
 		return errors.Join(cause, fmt.Errorf("cancel unsafe demo-maker quotes: %w", cancelErr))
 	}
 	return cause
+}
+
+func (m *Maker) recordActive(reference Reference) {
+	m.config.Status.update(LiquidityStatus{
+		State: LiquidityActive, BidLevels: uint32(len(m.config.SpreadsBPS)),
+		AskLevels:           uint32(len(m.config.SpreadsBPS)),
+		ReferenceObservedAt: reference.ObservedAt.UTC(), LastRefreshAt: m.now().UTC(),
+	})
+}
+
+func (m *Maker) recordRecovering(reason string) {
+	m.config.Status.update(LiquidityStatus{
+		State: LiquidityRecovering, Reason: reason, LastRefreshAt: m.now().UTC(),
+	})
+}
+
+func (m *Maker) recordRecoveringReference(reference Reference) {
+	current := m.config.Status.Status()
+	if current.State == LiquidityActive {
+		return
+	}
+	m.config.Status.update(LiquidityStatus{
+		State: LiquidityRecovering, Reason: "validating reference stability",
+		ReferenceObservedAt: reference.ObservedAt.UTC(), LastRefreshAt: m.now().UTC(),
+	})
+}
+
+func (m *Maker) recordPaused(reason string, observedAt time.Time) {
+	current := m.config.Status.Status()
+	if observedAt.IsZero() {
+		observedAt = current.ReferenceObservedAt
+	}
+	m.config.Status.update(LiquidityStatus{
+		State: LiquidityPaused, Reason: reason,
+		ReferenceObservedAt: observedAt, LastRefreshAt: m.now().UTC(),
+	})
 }
 
 func (m *Maker) cancelAll(ctx context.Context) error {

@@ -155,6 +155,45 @@ release、cancel 等事实，不能由浏览器拼出一条看似真实的时间
 与 Trade 的 submit/cancel 共用 pending-write journal：发送前落原 operation/request ID 和
 原始 payload，超时先查权威事实，只允许 exact-ID replay。
 
+### T1 本机虚拟练习契约
+
+T1 不把 Trade 改成新手下单器，也不隐藏 IOC、FOK、Post Only 等专业字段。页面只把事实
+说得更清楚：`Virtual Only`、`Qiu Virtual Order Book / Qiu Virtual Matcher`、
+`Virtual BTC / Virtual USDT` 会一直可见；综合 BTC 参考同时显示 provider、observed time 和
+freshness，并明确“参考价不是可执行价格”。真实 CEX/DEX 行情只给 `Qiu Virtual Liquidity`
+定锚，用户成交仍来自内部虚拟订单簿，不能显示为 Binance、Coinbase 或链上成交。
+
+页面的 Submit 条件在原 terminal/recovery/journal 门上再叠加
+`status.virtual_liquidity.state === active`。流动性处于 `disabled/recovering/paused` 时只关闭
+新 Submit；查询和本人撤单仍可用，但 Cancel 仍必须通过会话、CSRF、Origin、pending journal、
+runner 和 recovery continuity 等原有门，不能因“允许减险”而绕过恢复不变量。
+
+System 的 Practice 区展示 practice mode、matching、virtual liquidity、reference age、event
+transport 和 recovery 事实。管理员可执行一次 Starter funding：
+
+```text
+starter-v1-usdt: 10,000 Virtual USDT
+  -> query current-session funding event
+  -> 404 and all write gates open ? POST exact same ID
+  -> timeout ? query again before exact-ID replay
+starter-v1-btc: 0.1 Virtual BTC
+  -> repeat the same state machine
+```
+
+两步分别持久化进度；刷新、重复点击或响应丢失都不能改 ID，也不能通过余额变化猜成功。既有
+admin 手动虚拟入金保留在 Advanced 区域。Insights 只增加 `/trade/BTC-USDT` 路由入口，
+不携带 side、price、quantity、signal 或自动提交参数，研究卡片继续保持 non-executable。
+
+响应式验收固定覆盖 1440×1000、390×844、320×844。页面本身不得横向溢出，订单/账本表
+只能在自己的容器局部滚动，主要按钮和输入目标至少 44px。Playwright fixture 可以证明 UI
+竞态和几何，但不能冒充真实 Practice PostgreSQL、真实做市参考或 Production 写能力。
+
+本机 Practice 使用独立 HTTP gateway 时，Vite 通过两个显式目标隔离请求：
+`VITE_API_PROXY_TARGET` 仍承载 Markets/Insights/System 行情读；
+`VITE_TRADING_API_PROXY_TARGET` 只匹配更具体的 `/api/v1/trading/**`，默认回退前者以兼容旧
+开发方式。T1 启动时前者指向现有 market API，后者指向 loopback Practice gateway；不能把
+整站 `/api` 改指 Practice state，也不能把 private trading 路由送到 Vercel Preview。
+
 ### Recovery 准入证据
 
 Trade 与 System 都读取匿名只读的
@@ -278,6 +317,9 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 12. **使用小型、类型化的本地语言状态，不引入完整翻译框架。** 当前只有两种语言和
     两个深度页面；引入第三方 i18n 运行时会增加包体和迁移成本。代价是文案暂时由页面
     内类型化 copy 维护；当第三个语言或更多页面进入范围时，再迁移成独立消息目录。
+13. **Starter funding 是两步可恢复组合，不是乐观余额按钮。** 被拒绝的是随机 ID、按余额
+    推断和“一次 POST 两种资产”；代价是多两次账户绑定查询，收益是响应丢失、刷新和重启
+    后仍能证明每一笔 funding event 只发生一次且账本对平。
 
 ## 关键代码入口与顺序
 
@@ -305,14 +347,17 @@ STALE 不能再被 CDN 缓存？为什么预取不能直接替换当前页面？
 3. `frontend/src/features/markets/quality-grade.ts`：只把独立 CEX contributor evidence 归一为 High/Medium/Low/Unavailable，不读取 route quality 或 freshness。
 4. `frontend/src/features/markets/venue-quotes.ts`：固定七个 provider 行、选择每家主报价并合成 honest unavailable；AMM 还校验 chain/protocol/path/pool/block identity。
 5. `frontend/src/views/Markets.vue`：概览条、DEX 单一事实选择、tick generation、last-good 降级、3 秒报价抽屉和 venue K 线入口。
-6. `frontend/src/api/trading.ts`：十进制字符串 REST、CSRF 和 WebSocket cursor。
+6. `frontend/src/api/trading.ts`：十进制字符串 REST、CSRF、funding truth 与 WebSocket cursor。
 7. `frontend/src/trading/recovery-admission.ts`：把 404、读取失败和权威 recovery
    status 派生成保守的前端准入镜像。
-8. `frontend/src/views/Trade.vue`：参考/K 线、订单簿、Recovery 证明、下单、余额、订单与成交。
-9. `frontend/src/views/System.vue`：八探针总状态与独立 Recovery Admission 证据。
-10. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
-11. `frontend/src/composables/usePolling.ts`：可见性暂停、恢复刷新和卸载清理。
-12. `frontend/src/i18n.ts`：语言规范化、浏览器回退、持久化和 `<html lang>` 同步。
+8. `frontend/src/views/Trade.vue` 与 `frontend/src/features/trade/useTradeTerminal.ts`：参考/K 线、
+   Qiu 虚拟订单簿、Submit-only 流动性门、Recovery 证明、余额、订单与成交。
+9. `frontend/src/features/system/TradingAdminCard.vue` 与 `starter-funds.ts`：Practice 运行事实、
+   两枚固定 ID 的 query-first Starter 状态机和保留的高级 admin funding。
+10. `frontend/src/views/System.vue`：八探针总状态与独立 Recovery Admission 证据。
+11. `frontend/src/views/CatalogAudit.vue`：provider/status 审计筛选与分页。
+12. `frontend/src/composables/usePolling.ts`：可见性暂停、恢复刷新和卸载清理。
+13. `frontend/src/i18n.ts`：语言规范化、浏览器回退、持久化和 `<html lang>` 同步。
 
 ## 术语
 
@@ -336,6 +381,8 @@ STALE 不能再被 CDN 缓存？为什么预取不能直接替换当前页面？
 | Recovery admission | 服务端基于 epoch 和 proof 决定交易写命令能否进入唯一 writer | 复电后先验账、验事件、验传输，再打开闸门 | recovery status / runner gate |
 | Recovery epoch | 一次启动恢复流程的持久化身份 | 本次开机体检的编号 | `epoch_id` |
 | Proof summary | 状态哈希、账本、事件、投影、outbox、transport 的完成证据 | 六项体检清单，不是一个绿色按钮 | `TradingRecoveryProof` |
+| Qiu Virtual Liquidity | 以真实综合参考为锚、只在 Qiu 虚拟簿内发布的六档 Post Only 系统报价 | 教练放进练习场的三档买卖牌，不是交易所真实订单 | Trade status / maker |
+| Starter funding | 两枚固定 request ID 组成、逐步 query-first 恢复的首次虚拟资金 | 两张只能盖一次章的练习券 | System Trading Admin |
 
 ## 失败、降级与恢复
 
@@ -355,6 +402,9 @@ STALE 不能再被 CDN 缓存？为什么预取不能直接替换当前页面？
 | A→B→A 旧 A 响应最后返回 | generation 不匹配，旧 A 不进入当前状态 | 当前 A generation 完成 |
 | Catalog ambiguous | 只在 Audit 展示原因，不进入首页 | 审核 alias 后刷新 |
 | Doris 不可达 | Insights 历史模块报错；Markets 不受影响 | Doris 模块独立重试 |
+| Qiu Virtual Liquidity 非 active | Trade 保留查询与撤单，新 Submit 显示 `liquidity_paused` | 连续三个安全参考并形成 3 bid + 3 ask 后恢复 |
+| Starter funding 响应丢失 | System 保留原 ID 并显示核对中，不按余额宣告成功 | 查询账户 funding event；不存在且门开才 exact-ID replay |
+| Practice funding 属于其他账户或 payload 损坏 | 当前 session 视为 not-found 或 integrity error，不上屏 | 修复权威 event/ledger；不能从 UI 覆盖 |
 | API 整体失败 | 对应模块 ErrorState + retry，不显示 mock | 服务恢复后轮询/手动重试 |
 | dashboard 瞬时 502/504 且同 query 有 last-good | 保留表格并标注刷新延迟与快照年龄，不借其它 venue 数据 | 下一轮成功后原子替换 |
 | Trading gRPC 不可用 | Trade 显示服务 unavailable；Markets/Insights 正常 | trading 恢复后刷新/WS 重连 |

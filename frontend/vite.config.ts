@@ -9,9 +9,16 @@ const releaseCommit = /^[0-9a-f]{40}$/.test(releaseCommitCandidate)
   : ''
 
 // https://vite.dev/config/
+const marketAPIProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:9092'
+const tradingAPIProxyTarget = process.env.VITE_TRADING_API_PROXY_TARGET ?? marketAPIProxyTarget
 const apiProxy = {
+  '/api/v1/trading': {
+    target: tradingAPIProxyTarget,
+    changeOrigin: true,
+    ws: true,
+  },
   '/api': {
-    target: process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:9092',
+    target: marketAPIProxyTarget,
     changeOrigin: true,
     ws: true,
   },

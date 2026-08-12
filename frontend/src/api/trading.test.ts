@@ -98,6 +98,28 @@ describe('trading API', () => {
     ])
   })
 
+  it('queries funding truth only through the current-session account path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      market_id: 'BTC-USDT',
+      request_id: 'starter-v1-usdt',
+      funding_event_id: 'event:8:0',
+      sequence: '8',
+      asset: 'USDT',
+      amount: '10000',
+      projection_result: 'applied',
+      ledger_balanced: true,
+      occurred_at: '2026-08-13T00:00:00Z',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await tradingAPI.fundingRequest('starter/v1 usdt')
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      '/api/v1/trading/account/funding/starter%2Fv1%20usdt',
+    )
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('account_id')
+  })
+
   it('surfaces the bounded JSON error message', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       code: 'trading_unavailable',

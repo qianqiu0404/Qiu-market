@@ -42,6 +42,85 @@ func New(pool *pgxpool.Pool, market domain.Market) (*Reader, error) {
 	return &Reader{pool: pool, market: market}, nil
 }
 
+func (r *Reader) GetFundingRequest(
+	ctx context.Context,
+	accountID domain.AccountID,
+	requestID string,
+) (query.FundingRequest, bool, error) {
+	if accountID == "" || requestID == "" {
+		return query.FundingRequest{}, false, fmt.Errorf(
+			"%w: account and funding request are required", ErrInvalidQuery,
+		)
+	}
+	var commandPayload, resultPayload []byte
+	var sequence int64
+	var occurredAt time.Time
+	err := r.pool.QueryRow(ctx, `
+		SELECT sequence, command_payload, result_payload, created_at
+		FROM trading_event_batch
+		WHERE market_id=$1 AND account_id=$2 AND operation=$3 AND request_id=$4
+	`, r.market.ID, accountID, domain.CommandKindFund, requestID).Scan(
+		&sequence, &commandPayload, &resultPayload, &occurredAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return query.FundingRequest{}, false, nil
+	}
+	if err != nil {
+		return query.FundingRequest{}, false, fmt.Errorf("query funding request: %w", err)
+	}
+	var command domain.Command
+	var result domain.Result
+	if json.Unmarshal(commandPayload, &command) != nil || json.Unmarshal(resultPayload, &result) != nil ||
+		sequence <= 0 || command.Sequence != uint64(sequence) || result.Sequence != uint64(sequence) ||
+		command.Kind != domain.CommandKindFund || command.Fund == nil ||
+		command.RequestID != requestID || command.Fund.RequestID != requestID ||
+		command.Fund.AccountID != accountID || command.RequestKey.AccountID != accountID ||
+		command.RequestKey.MarketID != r.market.ID ||
+		command.RequestKey.Operation != domain.CommandKindFund ||
+		command.RequestKey.RequestID != requestID || command.Fund.Amount <= 0 {
+		return query.FundingRequest{}, false, fmt.Errorf("%w: funding event identity mismatch", ErrIntegrity)
+	}
+	eventIndex := uint32(0)
+	for _, event := range result.Events {
+		if event.Type == domain.EventAccountFunded && event.AccountID == accountID &&
+			event.Asset == command.Fund.Asset && event.Amount == command.Fund.Amount {
+			if eventIndex != 0 || event.Sequence != uint64(sequence) || event.Index == 0 {
+				return query.FundingRequest{}, false, fmt.Errorf("%w: ambiguous funding event", ErrIntegrity)
+			}
+			eventIndex = event.Index
+		}
+	}
+	if eventIndex == 0 {
+		return query.FundingRequest{}, false, fmt.Errorf("%w: funding event is missing", ErrIntegrity)
+	}
+	transactionID := fmt.Sprintf("fund:%020d", sequence)
+	reference := "virtual-funding:" + requestID
+	var entryCount int
+	var netAmount int64
+	var userAmount int64
+	err = r.pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(sum(amount),0),
+		       COALESCE(sum(amount) FILTER (WHERE account=$1),0)
+		FROM trading_ledger_entry
+		WHERE market_id=$2 AND sequence=$3 AND transaction_id=$4 AND reference=$5
+	`, ledger.UserAvailable(accountID), r.market.ID, sequence, transactionID, reference).Scan(
+		&entryCount, &netAmount, &userAmount,
+	)
+	if err != nil {
+		return query.FundingRequest{}, false, fmt.Errorf("audit funding ledger: %w", err)
+	}
+	balanced := entryCount >= 2 && netAmount == 0 && userAmount == command.Fund.Amount
+	if !balanced {
+		return query.FundingRequest{}, false, fmt.Errorf("%w: funding ledger is not balanced", ErrIntegrity)
+	}
+	return query.FundingRequest{
+		MarketID: r.market.ID, RequestID: requestID,
+		FundingEventID: fmt.Sprintf("%d:%d", sequence, eventIndex),
+		Sequence:       uint64(sequence), Asset: command.Fund.Asset, Amount: command.Fund.Amount,
+		LedgerBalanced: true, OccurredAt: occurredAt.UTC(),
+	}, true, nil
+}
+
 func (r *Reader) GetOrder(
 	ctx context.Context,
 	accountID domain.AccountID,

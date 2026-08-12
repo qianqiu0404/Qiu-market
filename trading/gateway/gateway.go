@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,20 +23,24 @@ import (
 	postgresstore "github.com/the-web3/s78-market-services/trading/store/postgres"
 )
 
+const practiceOwnerMarker = "qiu-market/trading-practice/v1"
+
 type Config struct {
-	PostgresURL        string
-	GRPCAddress        string
-	BindAddress        string
-	AllowedOrigins     []string
-	LocalAuth          bool
-	SecureCookies      bool
-	GitHubClientID     string
-	GitHubSecret       string
-	GitHubRedirect     string
-	DiskPath           string
-	MinWriteBytes      int64
-	RecoveryGate       bool
-	RecoveryProvenance recovery.Provenance
+	PostgresURL             string
+	PracticeMode            bool
+	VirtualLiquidityEnabled bool
+	GRPCAddress             string
+	BindAddress             string
+	AllowedOrigins          []string
+	LocalAuth               bool
+	SecureCookies           bool
+	GitHubClientID          string
+	GitHubSecret            string
+	GitHubRedirect          string
+	DiskPath                string
+	MinWriteBytes           int64
+	RecoveryGate            bool
+	RecoveryProvenance      recovery.Provenance
 }
 
 // Gateway owns browser authentication and protocol adaptation, but no trading
@@ -76,6 +81,14 @@ func New(ctx context.Context, config Config) (*Gateway, error) {
 	if err := postgresstore.VerifySchema(ctx, pool); err != nil {
 		return nil, err
 	}
+	if config.PracticeMode {
+		var marker string
+		if err := pool.QueryRow(ctx, `
+			SELECT owner_key FROM qiu_trading_practice_owner WHERE singleton=TRUE
+		`).Scan(&marker); err != nil || marker != practiceOwnerMarker {
+			return nil, fmt.Errorf("trading state PostgreSQL ownership marker is missing or invalid")
+		}
+	}
 
 	connection, err := grpc.NewClient(
 		config.GRPCAddress,
@@ -114,6 +127,8 @@ func New(ctx context.Context, config Config) (*Gateway, error) {
 	httpConfig.LocalMode = config.LocalAuth
 	httpConfig.SecureCookies = config.SecureCookies
 	httpConfig.RecoveryGate = config.RecoveryGate
+	httpConfig.PracticeMode = config.PracticeMode
+	httpConfig.VirtualLiquidityEnabled = config.VirtualLiquidityEnabled
 	server, err := httpapi.New(
 		tradingv1.NewTradingServiceClient(connection),
 		sessions,
@@ -160,6 +175,19 @@ func validateConfig(config Config) error {
 	}
 	if !netutil.IsIPLoopbackAddress(config.GRPCAddress) {
 		return fmt.Errorf("trading gateway may connect only to an explicit IP loopback address")
+	}
+	if config.PracticeMode {
+		if !netutil.IsIPLoopbackAddress(config.BindAddress) || !config.LocalAuth ||
+			config.SecureCookies || config.GitHubClientID != "" || config.GitHubSecret != "" ||
+			config.GitHubRedirect != "" {
+			return fmt.Errorf("practice mode requires loopback HTTP, local auth, insecure loopback cookies, and OAuth disabled")
+		}
+		for _, origin := range config.AllowedOrigins {
+			parsed, err := url.Parse(origin)
+			if err != nil || parsed.Host == "" || !netutil.IsIPLoopbackAddress(parsed.Host) {
+				return fmt.Errorf("practice mode allows only explicit IP loopback browser origins")
+			}
+		}
 	}
 	if len(config.AllowedOrigins) == 0 {
 		return fmt.Errorf("at least one trading browser origin is required")

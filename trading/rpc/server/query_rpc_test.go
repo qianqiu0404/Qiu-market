@@ -183,6 +183,40 @@ func TestFormatSignedDecimalHandlesInt64Minimum(t *testing.T) {
 	}
 }
 
+func TestFundingRequestRPCIsAccountScopedAndExact(t *testing.T) {
+	now := time.Date(2026, 8, 13, 1, 2, 3, 0, time.UTC)
+	reader := fundingRPCReader{value: query.FundingRequest{
+		MarketID: "BTC-USDT", RequestID: "starter-v1-usdt", FundingEventID: "7:1",
+		Sequence: 7, Asset: "USDT", Amount: 10_000_000_000,
+		LedgerBalanced: true, OccurredAt: now,
+	}}
+	server := &Server{engine: queryRPCMarketEngine{}, funding: reader}
+	response, err := server.GetFundingRequest(context.Background(), &tradingv1.GetFundingRequestRequest{
+		MarketId: "BTC-USDT", AccountId: "alice", RequestId: "starter-v1-usdt",
+	})
+	if err != nil || response.GetFundingEventId() != "7:1" || response.GetAmount() != "10000" ||
+		response.GetProjectionResult() != "applied" || !response.GetLedgerBalanced() {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+	_, err = server.GetFundingRequest(context.Background(), &tradingv1.GetFundingRequestRequest{
+		MarketId: "BTC-USDT", AccountId: "mallory", RequestId: "starter-v1-usdt",
+	})
+	if status.Code(err) != codes.NotFound || status.Convert(err).Message() != "funding_request_not_found" {
+		t.Fatalf("cross-account error = %v", err)
+	}
+}
+
+type fundingRPCReader struct{ value query.FundingRequest }
+
+func (r fundingRPCReader) GetFundingRequest(
+	_ context.Context, account domain.AccountID, requestID string,
+) (query.FundingRequest, bool, error) {
+	if account != "alice" || requestID != r.value.RequestID {
+		return query.FundingRequest{}, false, nil
+	}
+	return r.value, true, nil
+}
+
 type queryRPCMarketEngine struct{ Engine }
 
 func (queryRPCMarketEngine) Market() (domain.Market, error) {
