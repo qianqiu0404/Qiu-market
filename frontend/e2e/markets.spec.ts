@@ -1003,7 +1003,7 @@ test('DEX tabs expose 50 identity-verified listed assets without inventing quote
   }
 })
 
-test('DEX route and reference stay in separate lanes after route expiry', async ({ page }) => {
+test('DEX rows use one truthful selected fact in the standard market table', async ({ page }) => {
   const observedAt = Date.now() - 2_000
   const routeFact = {
     ...marketPriceFact('64211.10', 'dex_route', 'uniswap', observedAt),
@@ -1084,8 +1084,40 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
             dex_route_price: unavailablePriceFact(),
             display_price: marketReference,
           },
+          {
+            ...asset,
+            rank: 3,
+            asset_id: 'asset-cex-reference',
+            asset_symbol: 'CEXREF',
+            asset_name: 'CEX Reference',
+            price_usd: unavailable,
+            change_24h_pct: unavailable,
+            covered_turnover_24h_usd: unavailable,
+            available: false,
+            freshness_status: 'unavailable',
+            dex_route_available: false,
+            dex_route_count: 0,
+            dex_route_price: unavailablePriceFact(),
+            display_price: compositeReference,
+          },
+          {
+            ...asset,
+            rank: 4,
+            asset_id: 'asset-no-dex-fact',
+            asset_symbol: 'NONE',
+            asset_name: 'No DEX Fact',
+            price_usd: unavailable,
+            change_24h_pct: unavailable,
+            covered_turnover_24h_usd: unavailable,
+            available: false,
+            freshness_status: 'unavailable',
+            dex_route_available: false,
+            dex_route_count: 0,
+            dex_route_price: unavailablePriceFact(),
+            display_price: unavailablePriceFact(),
+          },
         ],
-        total: 2,
+        total: 4,
         universe: 'provider_top50',
       }),
     })
@@ -1094,71 +1126,193 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
   await page.goto('/markets?venue=uniswap')
 
   const freshRow = page.locator('tbody tr').filter({ hasText: 'Fresh Route' })
-  await expect(freshRow.getByTestId('dex-route-price')).toContainText('$64,211.10')
-  await expect(freshRow.getByTestId('dex-route-price')).toContainText('Uniswap route')
-  await expect(freshRow.getByTestId('dex-route-price')).toContainText(/fresh · \d+s old/)
-  await expect(freshRow.getByTestId('dex-reference-price')).toContainText('$64,203.13')
-  await expect(freshRow.getByTestId('dex-reference-price')).toContainText('CEX composite')
-  await expect(freshRow.getByTestId('dex-reference-price')).toContainText(/fresh · \d+s old/)
-  await expect(freshRow.getByTestId('dex-route-change')).toContainText('0.42%')
-  await expect(freshRow.getByTestId('dex-reference-change')).toContainText('1.25%')
-  await expect(freshRow.getByTestId('dex-route-quality')).toContainText('Route · Verified')
-  await expect(freshRow.getByTestId('dex-reference-quality')).toContainText('Reference · High')
+  await expect(freshRow.getByTestId('dex-selected-price')).toContainText('$64,211.10')
+  await expect(freshRow.getByTestId('dex-selected-price')).toContainText(
+    /Route · Uniswap · fresh · \d+s old/,
+  )
+  await expect(freshRow.getByTestId('dex-selected-price')).not.toContainText('$64,203.13')
+  await expect(freshRow.locator('td').nth(3)).toContainText('0.42%')
+  await expect(freshRow.locator('td').nth(3)).not.toContainText('1.25%')
+  await expect(freshRow.getByTestId('dex-selected-quality')).toHaveCount(1)
+  await expect(freshRow.getByTestId('dex-selected-quality')).toContainText('Route · Verified')
 
   const expiredRow = page.locator('tbody tr').filter({ hasText: 'Expired Route' })
-  await expect(expiredRow.getByTestId('dex-route-price')).toContainText('Route unavailable')
-  await expect(expiredRow.getByTestId('dex-route-price')).not.toContainText('Uniswap')
-  await expect(expiredRow.getByTestId('dex-route-price')).not.toContainText('$63,999.00')
-  await expect(expiredRow.getByTestId('dex-route-change')).not.toContainText('9.50%')
-  await expect(expiredRow.getByTestId('dex-route-quality')).toContainText('Route · Unavailable')
-  await expect(expiredRow.getByTestId('dex-reference-price')).toContainText('$64,100.00')
-  await expect(expiredRow.getByTestId('dex-reference-price')).toContainText(
-    'CoinGecko market reference',
+  await expect(expiredRow.getByTestId('dex-selected-price')).toContainText('$64,100.00')
+  await expect(expiredRow.getByTestId('dex-selected-price')).toContainText(
+    /Reference · CoinGecko · fresh · \d+s old/,
   )
-  await expect(expiredRow.getByTestId('dex-reference-price')).toContainText(/fresh · \d+s old/)
-  await expect(expiredRow.getByTestId('dex-reference-quality')).toContainText(
-    'Reference · Unavailable',
+  await expect(expiredRow.getByTestId('dex-selected-price')).not.toContainText('$63,999.00')
+  await expect(expiredRow.locator('td').nth(3)).not.toContainText('9.50%')
+  await expect(expiredRow.getByTestId('dex-selected-quality')).toHaveCount(1)
+  await expect(expiredRow.getByTestId('dex-selected-quality')).toContainText('Reference · Unavailable')
+  await expect(expiredRow.getByRole('button', { name: 'Open OLD markets' })).toContainText('0 routes')
+
+  const cexReferenceRow = page.locator('tbody tr').filter({ hasText: 'CEX Reference' })
+  await expect(cexReferenceRow.getByTestId('dex-selected-price')).toContainText('$64,203.13')
+  await expect(cexReferenceRow.getByTestId('dex-selected-price')).toContainText(
+    /Reference · CEX composite · fresh · \d+s old/,
   )
+  await expect(cexReferenceRow.locator('td').nth(3)).toContainText('1.25%')
+  await expect(cexReferenceRow.locator('td').nth(3)).not.toContainText('0.42%')
+  await expect(cexReferenceRow.getByTestId('dex-selected-quality')).toContainText('Reference · High')
+
+  const unavailableRow = page.locator('tbody tr').filter({ hasText: 'No DEX Fact' })
+  await expect(unavailableRow.getByTestId('dex-selected-price')).toContainText('—')
+  await expect(unavailableRow.getByTestId('dex-selected-price')).toContainText(
+    'Unavailable · route and reference unavailable',
+  )
+  await expect(unavailableRow.getByTestId('dex-selected-quality')).toHaveCount(1)
+  await expect(unavailableRow.getByTestId('dex-selected-quality')).toContainText('Unavailable')
 
   for (const width of [2048, 1440, 390, 320]) {
     await page.setViewportSize({ width, height: width <= 390 ? 844 : 1000 })
-    const layout = await freshRow.evaluate((row) => {
-      const priceLanes = row.querySelector<HTMLElement>('[data-testid="dex-price-lanes"]')
-      const qualityLanes = row.querySelector<HTMLElement>('[data-testid="dex-quality-lanes"]')
-      const changeLanes = row.querySelector<HTMLElement>('.dex-change-lanes')
-      const tableScroll = row.closest('.table-scroll') as HTMLElement | null
-      if (!priceLanes || !qualityLanes || !changeLanes || !tableScroll) {
-        throw new Error('DEX row lanes are incomplete')
-      }
-      const sameLine = (container: HTMLElement): boolean => {
-        const children = [...container.children] as HTMLElement[]
-        if (children.length !== 2) return false
-        const first = children[0].getBoundingClientRect()
-        const second = children[1].getBoundingClientRect()
-        return Math.abs(first.top - second.top) <= 1 && Math.abs(first.bottom - second.bottom) <= 1
-      }
-      const priceFacts = [...priceLanes.children] as HTMLElement[]
+    await page.getByRole('button', { name: 'Uniswap', exact: true }).click()
+    await expect(freshRow).toBeVisible()
+    const dexLayout = await page.locator('.market-list table').evaluate((table) => {
+      const tableScroll = table.closest('.table-scroll') as HTMLElement | null
+      const headers = [...table.querySelectorAll<HTMLTableCellElement>('thead th')]
       return {
-        rowHeight: row.getBoundingClientRect().height,
-        priceSameLine: sameLine(priceLanes),
-        changeSameLine: sameLine(changeLanes),
-        qualitySameLine: sameLine(qualityLanes),
-        priceFactsNoWrap: priceFacts.every((fact) => getComputedStyle(fact).whiteSpace === 'nowrap'),
-        priceFactsComplete: priceFacts.every((fact) => fact.scrollWidth <= fact.clientWidth + 1),
-        tableScrollable: tableScroll.scrollWidth > tableScroll.clientWidth,
+        headers: headers.map((header) => header.textContent?.trim().replace(/\s+/g, ' ')),
+        headerClasses: headers.map((header) => header.className),
+        rowCellCount: table.querySelector('tbody tr')?.children.length,
+        minWidth: getComputedStyle(table).minWidth,
+        tableScrollable: Boolean(tableScroll && tableScroll.scrollWidth > tableScroll.clientWidth),
         pageOverflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       }
     })
-    expect(layout).toMatchObject({
-      priceSameLine: true,
-      changeSameLine: true,
-      qualitySameLine: true,
-      priceFactsNoWrap: true,
-      priceFactsComplete: true,
+    expect(dexLayout).toMatchObject({
+      headers: ['#', 'Asset', 'Price', '24h %', 'Market Cap', '24h Volume', 'Markets / Routes', 'Quality'],
       pageOverflows: false,
     })
-    expect(layout.rowHeight).toBeLessThanOrEqual(60)
-    if (width <= 390) expect(layout.tableScrollable).toBe(true)
+
+    await page.getByRole('button', { name: 'PancakeSwap', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'PancakeSwap Assets' })).toBeVisible()
+    await expect(page.getByTestId('dex-selected-price')).toHaveCount(50)
+    await expect(page.getByTestId('dex-selected-quality')).toHaveCount(50)
+    const pancakeLayout = await page.locator('.market-list table').evaluate((table) => {
+      const headers = [...table.querySelectorAll<HTMLTableCellElement>('thead th')]
+      return {
+        headers: headers.map((header) => header.textContent?.trim().replace(/\s+/g, ' ')),
+        headerClasses: headers.map((header) => header.className),
+        rowCellCount: table.querySelector('tbody tr')?.children.length,
+        minWidth: getComputedStyle(table).minWidth,
+      }
+    })
+    expect(pancakeLayout.headers).toEqual(dexLayout.headers)
+    expect(pancakeLayout.headerClasses).toEqual(dexLayout.headerClasses)
+    expect(pancakeLayout.rowCellCount).toBe(8)
+    expect(pancakeLayout.minWidth).toBe(dexLayout.minWidth)
+
+    await page.getByRole('button', { name: 'Coinbase', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Coinbase Spot' })).toBeVisible()
+    const cexLayout = await page.locator('.market-list table').evaluate((table) => {
+      const headers = [...table.querySelectorAll<HTMLTableCellElement>('thead th')]
+      return {
+        headerClasses: headers.map((header) => header.className),
+        rowCellCount: table.querySelector('tbody tr')?.children.length,
+        minWidth: getComputedStyle(table).minWidth,
+      }
+    })
+    expect(dexLayout.headerClasses).toEqual(cexLayout.headerClasses)
+    expect(dexLayout.rowCellCount).toBe(8)
+    expect(dexLayout.rowCellCount).toBe(cexLayout.rowCellCount)
+    expect(dexLayout.minWidth).toBe(cexLayout.minWidth)
+    if (width <= 390) expect(dexLayout.tableScrollable).toBe(true)
+  }
+})
+
+test('DEX selected fact stays row-atomic at the 59 60 61 second route boundary', async ({ page }) => {
+  const now = 1_900_000_000_000
+  await page.clock.install({ time: now })
+  await page.clock.setFixedTime(now)
+  const reference = {
+    ...marketPriceFact(
+      '70000.00',
+      'market_reference',
+      'coingecko',
+      now - 2_000,
+    ),
+    change_24h_pct: available('7.00'),
+    turnover_24h_usd: available('7000000'),
+    quality: 'reference',
+  }
+  const boundaryRows = [59, 60, 61].map((age, index) => ({
+    ...asset,
+    rank: index + 1,
+    asset_id: `asset-route-${age}`,
+    asset_symbol: `R${age}`,
+    asset_name: `Route Age ${age}`,
+    dex_route_available: true,
+    dex_route_count: 1,
+    dex_route_price: {
+      ...marketPriceFact(
+        `${age}000.00`,
+        'dex_route',
+        'uniswap',
+        now - age * 1_000,
+      ),
+      change_24h_pct: available(`0.${age}`),
+      turnover_24h_usd: available(`${age}0000`),
+      freshness_status: 'stale',
+      freshness_age_seconds: age,
+    },
+    display_price: reference,
+  }))
+
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request()) as { venue?: string; snapshot_id?: string }
+    if (request.venue !== 'uniswap') {
+      await route.fallback()
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        ...dashboardSnapshot('uniswap', request.snapshot_id),
+        overview: overviewForVenue('uniswap'),
+        result: boundaryRows,
+        total: boundaryRows.length,
+        universe: 'provider_top50',
+      }),
+    })
+  })
+
+  await page.goto('/markets?venue=uniswap')
+  for (const age of [59, 60]) {
+    const row = page.locator('tbody tr').filter({ hasText: `Route Age ${age}` })
+    await expect(row.getByTestId('dex-selected-price')).toContainText(`$${age},000.00`)
+    await expect(row.getByTestId('dex-selected-price')).toContainText(`stale · ${age}s old`)
+    await expect(row.locator('td').nth(3)).toContainText(`0.${age}%`)
+    await expect(row.locator('td').nth(5)).toContainText(`$${age}0K`)
+    await expect(row.getByTestId('dex-selected-quality')).toContainText('Route · Verified')
+    await expect(row.getByTestId('dex-selected-price')).not.toContainText('Reference')
+  }
+
+  const expired = page.locator('tbody tr').filter({ hasText: 'Route Age 61' })
+  await expect(expired.getByTestId('dex-selected-price')).toContainText('$70,000.00')
+  await expect(expired.getByTestId('dex-selected-price')).toContainText(
+    'Reference · CoinGecko · fresh · 2s old',
+  )
+  await expect(expired.locator('td').nth(3)).toContainText('7.00%')
+  await expect(expired.locator('td').nth(3)).not.toContainText('0.61%')
+  await expect(expired.locator('td').nth(5)).toContainText('$7M')
+  await expect(expired.getByTestId('dex-selected-quality')).toContainText('Reference · Unavailable')
+
+  await page.clock.setFixedTime(now + 2_000)
+  await page.clock.runFor(1_000)
+  for (const age of [59, 60]) {
+    const row = page.locator('tbody tr').filter({ hasText: `Route Age ${age}` })
+    await expect(row.getByTestId('dex-selected-price')).toContainText('$70,000.00')
+    await expect(row.getByTestId('dex-selected-price')).toContainText(
+      'Reference · CoinGecko · fresh · 4s old',
+    )
+    await expect(row.getByTestId('dex-selected-price')).not.toContainText(`$${age},000.00`)
+    await expect(row.locator('td').nth(3)).toContainText('7.00%')
+    await expect(row.locator('td').nth(3)).not.toContainText(`0.${age}%`)
+    await expect(row.locator('td').nth(5)).toContainText('$7M')
+    await expect(row.getByTestId('dex-selected-quality')).toContainText('Reference · Unavailable')
   }
 })
 

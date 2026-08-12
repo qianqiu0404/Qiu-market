@@ -55,12 +55,13 @@ v2 接口：
 contributor count/list 和 version。DEX 页面可以同时展示 route 与 reference，但
 不能把 reference 写回 route，也不能让过期 route 的 change/source 标签附着到
 reference。旧 `price_usd/display_price_usd` 暂时只为旧调用方保留；新前端状态以
-price fact 为准。API 类型化与解析、Markets tick 代次/乱序保护已经完成。DEX
-表格的 Price、24h 与验证状态永久保持 Route / Reference 两个独立事实，但在同一资产行内
-横向并列为一行；价格事实完整保留 value、unavailable reason 或 source/freshness，两个
-Quality badge 也不折叠或上下堆叠。Route 只显示 Verified/Unavailable，Reference 才按 CEX
-contributor 显示 High/Medium/Low；Venue Volume
-在 DEX tab 明确改为 Route Volume，不拿 composite turnover 冒充链上成交额。
+price fact 为准。API 类型化与解析、Markets tick 代次/乱序保护已经完成。DEX 主表与 CEX
+使用相同八列模板，每个资产行只显示一个经过验证的事实：route 可用时选 route；否则只选
+经过验证的 reference，并在 caption 与 Quality 中显式加 `Reference` 前缀。Price、24h、
+24h Volume、caption 与单一 Quality badge 必须来自同一次选择；CoinGecko reference 没有 CEX
+contributor，因此显示 `Reference · Unavailable`，不能伪装成 Low。完整 Route/Reference 与七源
+事实继续保留在资产抽屉，不从 API 删除。同一 render 使用同一个 reactive dashboard clock
+验证 route/reference 并计算 age，避免恰好跨 60 秒边界时一行混入两个事实。
 
 Markets 按 Owner 的视觉偏好显示 `High / Medium / Low / Unavailable`。等级只表达当前
 价格的独立报价支持：High 为 3 家以上、Medium 为 2 家、Low 为 1 家；存在 contributor
@@ -227,7 +228,7 @@ promotion 是否启用必须以真实 Mac mini 配置和公开响应为准，moc
 
 ## 交互与信息层级
 
-资产行固定为 Rank、Asset、Price、24h、Market Cap、Venue Volume、Markets/Routes、Quality。All 的 Price 是 CEX 综合 Spot；CEX tab 是 venue Spot。Quality 显示 High/Medium/Low/Unavailable，freshness 则由价格说明独立表达；DEX tab 的 Route 只显示验证状态，Reference 才显示 CEX 来源等级。All 标题展示 `N/并集数 fresh`；CEX 标题展示 `N/50 fresh · selection vX`。24h 缺失不再只有无解释横杠，而是显示 `24h reference missing`、Stale 或 Source unavailable。无论从哪个 tab 打开资产，右侧报价板都展示全部七个 provider rows；当前部署未发布的来源保留 unavailable 行。1180/1280/1440 不改变核心字段。
+资产行固定为 Rank、Asset、Price、24h、Market Cap、24h/Venue Volume、Markets/Routes、Quality。All 的 Price 是 CEX 综合 Spot；CEX tab 是 venue Spot。Quality 显示 High/Medium/Low/Unavailable，freshness 则由价格说明独立表达；DEX tab 优先显示已验证 route，route unavailable 时显示带 `Reference` 前缀的已验证 CEX/CoinGecko reference，主表不同时堆叠两个价格。All 标题展示 `N/并集数 fresh`；CEX 标题展示 `N/50 fresh · selection vX`。24h 缺失不再只有无解释横杠，而是显示 `24h reference missing`、Stale 或 Source unavailable。无论从哪个 tab 打开资产，右侧报价板都展示全部七个 provider rows；当前部署未发布的来源保留 unavailable 行。1180/1280/1440 不改变核心字段。
 
 资产行与 market identity 不互换：
 
@@ -271,7 +272,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 6. **DEX selection 固定 50，但不伪造 50 条报价。** listed membership 来自 reviewed chain contract 和链上 V2/V3 pool identity；询价按 `$10K → $1K → $100` 逐级尝试，路线最多两跳且可混合协议，仍使用 TVL、成交量、新鲜度、冲击和 spread 门槛。小金额成功必须显示实际金额并降为 Low。代价是 DEX 页仍会同时出现可询价行和 `Not covered` 行，但产品覆盖与价格质量不再互相污染。
 7. **价格事实不在组件内重新拼装。** 被拒绝的是让 `Markets.vue` 从 price/source/time 多个字段猜当前语义；响应稍大，但旧缓存、乱序响应和 route/reference 切换都有同一校验单位。
 8. **generation + 单调事实门，而不是只看 query key。** 被拒绝的是 A→B→A 时复用同 key，也拒绝“最后返回者获胜”；代价是保存一个小型 venue+asset last-good map，但请求竞态不会改写来源。
-9. **DEX 永久双事实横排，而不是选一个“最好看的价格”。** 被拒绝的是 route 新鲜时覆盖 reference、route 过期时再把 reference 改名为 route。桌面完整横排，窄屏由既有 table-scroll 横滑；代价是 DEX 表格更宽，但资产行更矮，链上指示价与市场参考也永远不会静默换口径。
+9. **DEX 主表选择一个事实，但不改名。** 被拒绝的是同时堆叠 Route/Reference，也拒绝把 fallback reference 改名成 route。route 已验证时整行使用 route；否则整行使用带 `Reference` 前缀的已验证 reference。代价是主表不同时比较两个事实；完整比较留在抽屉，收益是 DEX 与 CEX 使用同一标准行高和列模板。
 10. **Quality 等级与 freshness 分维展示。** Owner 选择保留 `High/Medium/Low` 作为视觉等级；等级严格映射独立报价数并在表头解释，stale/last-good 仍只出现在 freshness。代价是必须持续解释两维，收益是保留用户熟悉的视觉语言。
 11. **报价板固定七行。** 被拒绝的是只渲染 API 已返回的市场，因为这会让断线 provider 悄悄消失。缺失来源合成 unavailable 行；Hyperliquid 固定标 Perpetual，两家 AMM 固定标 Public preview，不能假装 Spot。
 12. **使用小型、类型化的本地语言状态，不引入完整翻译框架。** 当前只有两种语言和
@@ -303,7 +304,7 @@ STALE 不能再被 CDN 缓存？为什么预取不能直接替换当前页面？
 2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal、三类 `MarketPriceFact`、DEX identity/时间窗校验与类型归一。
 3. `frontend/src/features/markets/quality-grade.ts`：只把独立 CEX contributor evidence 归一为 High/Medium/Low/Unavailable，不读取 route quality 或 freshness。
 4. `frontend/src/features/markets/venue-quotes.ts`：固定七个 provider 行、选择每家主报价并合成 honest unavailable；AMM 还校验 chain/protocol/path/pool/block identity。
-5. `frontend/src/views/Markets.vue`：概览条、Route/Reference 双栏、tick generation、last-good 降级、3 秒报价抽屉和 venue K 线入口。
+5. `frontend/src/views/Markets.vue`：概览条、DEX 单一事实选择、tick generation、last-good 降级、3 秒报价抽屉和 venue K 线入口。
 6. `frontend/src/api/trading.ts`：十进制字符串 REST、CSRF 和 WebSocket cursor。
 7. `frontend/src/trading/recovery-admission.ts`：把 404、读取失败和权威 recovery
    status 派生成保守的前端准入镜像。
@@ -346,7 +347,7 @@ STALE 不能再被 CDN 缓存？为什么预取不能直接替换当前页面？
 | 24h open 和 provider 百分比都缺失 | 价格可显示，24h 为 `—`，reason=`missing_24h_reference` | adapter 提供任一可信参考后恢复 |
 | 单 market 无稳定币率 | 仍显示原始 quote 价，relative deviation 为 `—` | 参考率刷新 |
 | market 过期 | freshness 显示 Stale/Unavailable，不作为 contributor | 新快照到达 |
-| DEX route 过期、reference 仍新鲜 | route 分栏显示 Unavailable；reference 分栏保持自身来源，不显示链上 change/quality | 新 route 到达后独立恢复 |
+| DEX route 过期、reference 仍新鲜 | 主表整行切到带 `Reference` 前缀的事实；price/change/volume/quality 不混用 route | 新 route 到达后整行恢复 route |
 | tick 请求超时或局部缺项 | 同 venue 五分钟内 last-good 明确降级；无同 venue 事实则 Unavailable | 当前 generation 成功后恢复 Live |
 | 等级与 freshness 变化 | Quality 只随当前事实的去重 CEX contributor identity 变化；route validation 与 fresh/stale/last-good 独立变化 | 新价格事实到达后分别更新三维，不互相推导 |
 | 报价板单 venue 缺失 | 对应固定行显示 Unavailable；其它交易所以 3 秒为刷新目标 | 该 provider 恢复并返回本资产市场后自动出现真实报价 |
@@ -409,13 +410,13 @@ checkout，端口已占用会失败；只有确认既有服务就是同一 check
 | 查询切换竞态 | 快速 Coinbase→Bybit 与 A→B→A 均只显示当前 venue/generation | browser |
 
 Playwright 覆盖七家各 50 资产 selection、All 去重并集、DEX `Not covered`、
-Route/Reference 双栏与 route 过期语义清除、资产抽屉、Unknown 不变 0、显式
+DEX 单一 selected fact 与 route 过期 reference fallback、资产抽屉、Unknown 不变 0、显式
 24h 原因、旧路由重定向和页面级无横向溢出。2026-07-30 Markets 专项在隔离
 端口为 18/18；交易页的登录、虚拟入金、挂单、撤单、市价成交与费用证据仍由其独立
 spec 验收。
 
 - `implemented`：三类 price fact、CEX tick identity/单调门、五分钟同源
-  last-good、DEX 双栏与 60 秒 route 边界存在于当前代码。
+  last-good、DEX selected-fact 与 60 秒 route 边界存在于当前代码。
 - `build-verified`：本轮专项 Vitest 20/20、Markets Playwright 18/18、Vue
   production build 与 `git diff --check` 通过。
 - `integration-verified`：本轮未提供 `S78_TEST_DATABASE_DSN`，不新增真实
@@ -452,7 +453,7 @@ Preview 与本机 runtime 使用同一 exact SHA 并停在用户验收点；Prod
 
 ## Owner 60 秒解释
 
-> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。首屏只发一次 dashboard，请求中的 overview 与 rows 绑定同一 snapshot。切 venue、搜索或排序会取消旧请求，只有最新 generation 能更新页面；回到相同 query 可立即展示五分钟内的本 query last-good，并明确标注刷新中。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact。DEX 的 Route 和 Reference 永远分栏，route 最多读 60 秒，过期会同时失去链上价格、涨跌、成交额、来源和质量；reference 只保留自己的标签。5 秒 CEX tick 同样绑定 generation，再检查 venue identity、version 和 observed time；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。
+> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。首屏只发一次 dashboard，请求中的 overview 与 rows 绑定同一 snapshot。切 venue、搜索或排序会取消旧请求，只有最新 generation 能更新页面；回到相同 query 可立即展示五分钟内的本 query last-good，并明确标注刷新中。Markets 把 venue、DEX route 和 composite/reference 作为不同 price fact。DEX 主表每行只选择一个事实：有效 route 优先，否则使用显式标为 Reference 的已验证 reference；price、24h、volume、caption 和 quality 一起切换，完整双事实留在抽屉。5 秒 CEX tick 同样绑定 generation，再检查 venue identity、version 和 observed time；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。
 
 > Quality badge 保留 High/Medium/Low：分别表示当前价格有 3+、2、1 个独立 CEX Spot 报价支持；freshness 单独回答价签有多新，DEX route 只显示 Verified/Unavailable。点任何资产后，抽屉第一屏固定列 Binance、Coinbase、Bybit、OKX、Hyperliquid、Uniswap 与 PancakeSwap，以 3 秒为刷新目标且不堆积慢请求；缺失来源留在原位显示 Unavailable，Hyperliquid 明确是 Perpetual，AMM 明确是 Public preview。
 
