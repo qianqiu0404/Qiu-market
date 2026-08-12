@@ -390,12 +390,9 @@ async function fetchHedgedMarketRead(
       return second.result
     }
     const attemptsByIndex = [first, second].sort((left, right) => left.index - right.index)
-    const primaryAttempt = attemptsByIndex[0]
     const hedgeAttempt = attemptsByIndex[1]
     if ('result' in hedgeAttempt) return hedgeAttempt.result
-    if (isAbortError(hedgeAttempt.error)) throw hedgeAttempt.error
-    if ('result' in primaryAttempt) return primaryAttempt.result
-    throw 'error' in second ? second.error : hedgeAttempt.error
+    throw hedgeAttempt.error
   } finally {
     clearTimeout(hedgeTimer)
     for (const controller of controllers) controller.abort()

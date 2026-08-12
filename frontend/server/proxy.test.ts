@@ -502,6 +502,20 @@ describe('upstream HMAC replay protection', () => {
 		expect(proxied.result.statusCode).toBe(504)
 	})
 
+	it('returns typed 502 when primary HTTP 503 is followed by hedge transport failure', async () => {
+		const fetchMock = vi.fn()
+			.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+				contractedResponse('{}', request, {}, 503))
+			.mockRejectedValueOnce(new Error('hedge transport failed'))
+		vi.stubGlobal('fetch', fetchMock)
+		const proxied = proxyResponse()
+		await handler(proxyRequest(102) as never, proxied.response as never)
+		expect(proxied.result.statusCode).toBe(502)
+		expect(JSON.parse(proxied.result.body.toString())).toMatchObject({
+			code: 'backend_unavailable',
+		})
+	})
+
 	it('fails within the original 8 second budget when both market hedges stall', async () => {
 		vi.useFakeTimers()
 		const fetchMock = vi.fn((_url: URL, request: RequestInit) =>
@@ -707,6 +721,25 @@ describe('public cache contract boundary', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2)
 		expect(response.result.statusCode).toBe(504)
 		expect(response.result.headers.get('x-qiu-market-cache')).toBeUndefined()
+	})
+
+	it('uses stale after primary HTTP 503 then hedge transport failure', async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date('2026-07-28T04:00:00Z'))
+		vi.stubGlobal('fetch', vi.fn(async (_url: URL, request: RequestInit) =>
+			contractedResponse(payload, request)))
+		await handler(proxyRequest(103) as never, proxyResponse().response as never)
+		await Promise.all([...vercelFunctions.waitTasks])
+		vi.setSystemTime(new Date('2026-07-28T04:00:16Z'))
+		const fetchMock = vi.fn()
+			.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+				contractedResponse('{}', request, {}, 503))
+			.mockRejectedValueOnce(new Error('hedge transport failed'))
+		vi.stubGlobal('fetch', fetchMock)
+		const response = proxyResponse()
+		await handler(proxyRequest(103) as never, response.response as never)
+		expect(response.result.statusCode).toBe(200)
+		expect(response.result.headers.get('x-qiu-market-cache')).toBe('STALE')
 	})
 })
 
