@@ -1348,26 +1348,121 @@ test('Insights uses the seven-provider union for All and stable selections for e
   }
 })
 
-for (const width of [1440, 1280, 1180]) {
-  test(`Markets keeps page-level overflow contained at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 900 })
-    await page.goto('/markets')
-    await expect(page.getByRole('heading', { name: 'Market Overview' })).toBeVisible()
+for (const width of [2048, 1440, 390, 320]) {
+  test(`Markets keeps one locally scrollable control row at ${width}px`, async ({ page }) => {
+    const consoleErrors: string[] = []
+    const pageErrors: string[] = []
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text())
+    })
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+    const directVenue = width <= 320 ? 'pancakeswap' : 'uniswap'
+    await page.setViewportSize({ width, height: width <= 390 ? 844 : 1000 })
+    await page.goto(`/markets?venue=${directVenue}`)
+    await expect(page.getByRole('heading', {
+      name: width <= 320 ? 'PancakeSwap Assets' : 'Uniswap Assets',
+    })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Open BTC markets' })).toBeVisible()
+    const controls = page.getByTestId('market-list-controls')
+    const activeVenue = controls.locator(`[data-market-venue="${directVenue}"]`)
+    await expect(activeVenue).toHaveAttribute('aria-pressed', 'true')
     const visual = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement)
+      const controls = document.querySelector<HTMLElement>('[data-testid="market-list-controls"]')
+      const active = controls?.querySelector<HTMLElement>('[aria-pressed="true"]')
+      const filter = controls?.querySelector<HTMLElement>('[aria-label="Asset filter"]')
+      const search = controls?.querySelector<HTMLElement>('.table-search')
+      if (!controls || !active || !filter || !search) throw new Error('market controls are incomplete')
+      const controlsStyle = getComputedStyle(controls)
+      const activeRect = active.getBoundingClientRect()
+      const controlsRect = controls.getBoundingClientRect()
+      const interactiveRects = [...controls.querySelectorAll<HTMLElement>('button, input')].map((item) => {
+        const rect = item.getBoundingClientRect()
+        return {
+          height: rect.height,
+          visible: rect.width > 0 && rect.height > 0,
+          verticallyContained: rect.top >= controlsRect.top - 1 && rect.bottom <= controlsRect.bottom + 1,
+        }
+      })
       return {
         overflows: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         background: getComputedStyle(document.body).backgroundColor,
         text: getComputedStyle(document.body).color,
         accent: style.getPropertyValue('--accent').trim(),
+        display: controlsStyle.display,
+        nowrap: controlsStyle.whiteSpace,
+        overflowX: controlsStyle.overflowX,
+        filterParent: filter.parentElement === controls,
+        searchParent: search.parentElement === controls,
+        activeVisible: activeRect.left >= controlsRect.left - 1 && activeRect.right <= controlsRect.right + 1,
+        interactiveRects,
+        locallyScrollable: controls.scrollWidth > controls.clientWidth,
       }
     })
-    expect(visual).toEqual({
-      overflows: false,
-      background: 'rgb(245, 245, 247)',
-      text: 'rgb(29, 29, 31)',
-      accent: '#0071e3',
+    expect(visual).toMatchObject({
+      overflows: false, background: 'rgb(245, 245, 247)', text: 'rgb(29, 29, 31)',
+      accent: '#0071e3', display: 'flex', nowrap: 'nowrap', overflowX: 'auto',
+      filterParent: true, searchParent: true, activeVisible: true,
     })
+    expect(visual.interactiveRects.length).toBe(12)
+    for (const rect of visual.interactiveRects) {
+      expect(rect.height).toBeGreaterThanOrEqual(44)
+      expect(rect.visible).toBe(true)
+      expect(rect.verticallyContained).toBe(true)
+    }
+    if (width <= 390) expect(visual.locallyScrollable).toBe(true)
+
+    if (width <= 390) {
+      await controls.evaluate((element) => { element.scrollLeft = element.scrollWidth })
+      await page.getByPlaceholder(`Search ${width <= 320 ? 'PancakeSwap' : 'Uniswap'} selection…`).fill('BTC')
+      await expect(page).toHaveURL(/search=BTC/)
+      await page.getByRole('button', { name: 'Losers', exact: true }).click()
+      await expect(page).toHaveURL(/filter=losers/)
+      await expect(page.getByPlaceholder(/Search .* selection/)).toHaveValue('BTC')
+    }
+    expect(consoleErrors).toEqual([])
+    expect(pageErrors).toEqual([])
   })
 }
+
+test('deep-link controls restore venue and filters across Back and Forward', async ({ page }) => {
+  const dashboardVenues: string[] = []
+  page.on('request', (request) => {
+    if (!request.url().includes('/get_asset_dashboard') &&
+      !request.url().includes('/api/market/default-dashboard')) return
+    dashboardVenues.push(dashboardRequest(request).venue ?? 'all')
+  })
+  await page.setViewportSize({ width: 320, height: 844 })
+  await page.goto('/markets?venue=pancakeswap&filter=losers&search=BTC')
+  const controls = page.getByTestId('market-list-controls')
+  const pancake = controls.locator('[data-market-venue="pancakeswap"]')
+  const all = controls.locator('[data-market-venue="all"]')
+  await expect(pancake).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Losers', exact: true })).toHaveClass(/active/)
+  await expect(page.getByPlaceholder('Search PancakeSwap selection…')).toHaveValue('BTC')
+  await expect.poll(() => dashboardVenues).toEqual(['pancakeswap'])
+
+  const pageScrollBefore = await page.evaluate(() => window.scrollY)
+  await all.click()
+  await expect(page).not.toHaveURL(/venue=pancakeswap/)
+  await expect(all).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => dashboardVenues).toEqual(['pancakeswap', 'all'])
+
+  await page.goBack()
+  await expect(page).toHaveURL(/venue=pancakeswap/)
+  await expect(pancake).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Losers', exact: true })).toHaveClass(/active/)
+  await expect(page.getByPlaceholder('Search PancakeSwap selection…')).toHaveValue('BTC')
+  await expect.poll(() => dashboardVenues).toEqual(['pancakeswap', 'all', 'pancakeswap'])
+  await expect.poll(() => pancake.evaluate((button) => {
+    const controls = button.closest('[data-testid="market-list-controls"]')?.getBoundingClientRect()
+    const active = button.getBoundingClientRect()
+    return Boolean(controls && active.left >= controls.left - 1 && active.right <= controls.right + 1)
+  })).toBe(true)
+  expect(await page.evaluate(() => window.scrollY)).toBe(pageScrollBefore)
+
+  await page.goForward()
+  await expect(page).not.toHaveURL(/venue=pancakeswap/)
+  await expect(all).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => dashboardVenues).toEqual(['pancakeswap', 'all', 'pancakeswap', 'all'])
+})

@@ -225,6 +225,18 @@ promotion 是否启用必须以真实 Mac mini 配置和公开响应为准，moc
 
 ## 交互与信息层级
 
+Markets 的 venue groups、Assets/Gainers/Losers 与搜索框固定在同一个
+`market-list-controls` 单行控制带中。控制带是这一组控件唯一的横向滚动容器：按钮保持
+44px 点击高度且不压缩，搜索框保持有界固定宽度；窄屏隐藏视觉滚动条，但键盘、触控板和
+触摸横滑仍可滚动。页面本身不产生横向溢出，数据表继续使用它自己已有的表格滚动边界。
+
+venue 与 filter 的用户点击使用 history push，搜索、分页和排序继续 replace。直接打开
+Uniswap/PancakeSwap、浏览器前进后退或点击 venue 后，Vue 等待 DOM 更新，再只把 active
+venue 按钮滚到控制带的最近可见位置；页面滚动坐标保持不变，程序不会把整页拉回控制条。
+稳定的 `data-market-venue` 只表达 UI 身份，不改变 API venue、查询 generation 或行情数据
+逻辑。被拒绝的方案是手机端继续拆成两排或压缩按钮：前者重复分隔并占用首屏，后者会破坏
+44px 触控目标；代价是手机上搜索框需要在同一控制带内横滑到达。
+
 资产行固定为 Rank、Asset、Price、24h、Market Cap、Venue Volume、Markets/Routes、Quality。All 的 Price 是 CEX 综合 Spot；CEX tab 是 venue Spot。Quality 显示 High/Medium/Low/Unavailable，freshness 则由价格说明独立表达；DEX tab 的 Route 只显示验证状态，Reference 才显示 CEX 来源等级。All 标题展示 `N/并集数 fresh`；CEX 标题展示 `N/50 fresh · selection vX`。24h 缺失不再只有无解释横杠，而是显示 `24h reference missing`、Stale 或 Source unavailable。无论从哪个 tab 打开资产，右侧报价板都展示全部七个 provider rows；当前部署未发布的来源保留 unavailable 行。1180/1280/1440 不改变核心字段。
 
 资产行与 market identity 不互换：
@@ -488,3 +500,4 @@ Preview 与本机 runtime 使用同一 exact SHA 并停在用户验收点；Prod
 25. 为什么前端必须拒绝超过 JS 安全整数范围的 `runtime_sequence/version` number？
 26. 为什么 High 不能同时解释为 fresh，也不能解释为网站已完成？
 27. 为什么报价板必须保留当前部署 unavailable 的交易所行？
+28. 为什么 Markets 控制带允许局部横滑，但不能让 venue 按钮压缩或让页面整体横向滚动？
