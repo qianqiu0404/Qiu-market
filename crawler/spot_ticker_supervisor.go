@@ -59,8 +59,8 @@ type SpotTickerSupervisor struct {
 func NewSpotTickerSupervisor(db *database.DB, redisClient *redis.Client, _ bool) *SpotTickerSupervisor {
 	client := &http.Client{Timeout: 10 * time.Second}
 	adapters := []spotTickerBatchAdapter{
-		&binanceBatchTickerAdapter{client: client, baseURL: "https://api.binance.com"},
-		&bybitBatchTickerAdapter{client: client, baseURL: "https://api.bybit.com"},
+		&binanceBatchTickerAdapter{client: client, baseURL: binanceMarketDataRESTBaseURL},
+		&bybitBatchTickerAdapter{client: client, baseURL: bybitV5RESTBaseURL},
 		&okxBatchTickerAdapter{client: client, baseURL: "https://www.okx.com"},
 	}
 	streams := []spotTickerStreamAdapter{

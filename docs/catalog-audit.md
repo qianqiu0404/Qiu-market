@@ -29,6 +29,13 @@
 
 `local_preview_enabled` 是与上述状态机正交的本地开发开关。开启时四家 CEX 分别读取自己的激活选币版本，状态源固定为 `spot-tickers-preview`；Hyperliquid 使用 `metaAndAssetCtxs-preview`，两家 AMM 使用 `route-quotes-preview`。正式 mode、Canary 清单、transition/soak 时间和正式 source 计数完全不变。readiness evaluator 会增加硬 blocker，所以预览永远不能晋级。关闭时清空预览成功时间、撤回预览发布范围，再按正式 rollout reconcile，并把正式 feed 观察窗口归零。
 
+Binance 的 catalog、批量 24h ticker、1m K 线与 WebSocket ticker 共用官方
+market-data-only 边界：REST 固定 `https://data-api.binance.vision`，WebSocket 固定
+`wss://data-stream.binance.vision:443/ws`。不得切换到地区镜像、代理或受限交易域来
+提高覆盖；不可达时继续记录当前部署不可用。Bybit 保持官方 V5：REST
+`https://api.bybit.com/v5/**`，Spot WebSocket
+`wss://stream.bybit.com/v5/public/spot`，同样不使用代理绕过 403。
+
 ## 端到端流程
 
 ```text
@@ -144,6 +151,7 @@ Catalog 子命令只注册自己使用的配置。`apply-mappings --dry-run` 只
 2. `cmd/market-services/catalog.go` + `catalog/provider-asset-mappings.yaml` + `catalog/manifest.go`：可从干净 checkout 重建的安全 CLI，以及代码评审过的 Top 200 候选身份授权。
 3. `database/venue_aggregation.go`：原子生成/切换选币版本，保留历史版本和最后成功报价。
 4. `crawler/catalog_supervisor.go` + `crawler/spot_ticker_supervisor.go` + `crawler/spot_ticker_streams.go`：先确保 provider 选择，再启用目录并隔离 WebSocket primary/REST reconcile。
+   `crawler/provider_endpoints.go` 是 Binance market-data-only 与 Bybit V5 默认域的单一代码入口。
 5. `database/market_aggregation.go` + `frontend/src/views/Markets.vue`：`provider_top50` 与 `provider_union` 两种读模型及可解释新鲜度。
 
 ## 故障、降级与恢复
@@ -152,6 +160,7 @@ Catalog 子命令只注册自己使用的配置。`apply-mappings --dry-run` 只
 |---|---|---|
 | CoinGecko 暂时失败 | 保留最后一次成功 metrics/目录 | 5 分钟后重试 |
 | CEX 首次 EOF/429 | 仅该 provider 30s→10min 退避 | 成功后回到 6h 目录周期 |
+| Binance market-data-only 端点 451 / Bybit V5 端点 403 | 标记该 provider 在当前部署不可用；不换地区镜像或代理 | 官方端点在当前部署重新可达后按原 supervisor 重试 |
 | alias ambiguous | candidate 留审计，不创建正式 market | 更新 manifest 并复审 |
 | market 明确下架 | 对应市场 inactive | 上游恢复 tradable 后再启用 |
 | rollout shadow/paused | 正式 venue snapshot 为 unavailable | 通过 CLI 串行恢复 |
@@ -178,6 +187,8 @@ Catalog 子命令只注册自己使用的配置。`apply-mappings --dry-run` 只
 
 > 七个 provider 都先建立身份审核通过的候选，再冻结成一个带版本号的 50 资产选择。All 取七家选择的 `asset_id` 并集，所以 BTC 仍只有一行，再按市值统一排序。Ticker/Quoter 失败不会删成员，而是保留行并从 Fresh 降为 Stale、Unavailable 或 Not covered；只有 Fresh CEX Spot 报价进入综合价和涨跌榜。Catalog CLI 的 dry-run 不连库，正式 rollout 必须通过同一个 readiness evaluator；本地预览只让这套产品立即可看，不会冒充正式灰度验收。
 
+> Binance 四条公开读链路只走官方 market-data-only 域，Bybit 只走官方 V5 域。451/403 是部署可达性证据，不是寻找镜像或代理的授权；恢复依赖原官方端点重新可达。
+
 ## 闭卷自检
 
 1. discovered、resolved、enabled 分别证明了什么？
@@ -202,3 +213,4 @@ Catalog 子命令只注册自己使用的配置。`apply-mappings --dry-run` 只
 20. 为什么 provider 资产 selection 之后还需要独立的 K 线 market selection？
 21. V2/V3 protocol path 为什么必须落入 route 审计，而不能只显示一个最终价格？
 22. 为什么只忽略根目录 `/market-services` 二进制，而不能忽略任意名为 `market-services` 的路径？
+23. 为什么 Binance 451 或 Bybit 403 时不能改用地区镜像或代理？

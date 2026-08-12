@@ -30,8 +30,13 @@ import {
   type MarketVenue,
   type Paged,
 } from '../api/market'
-import { formatAbbr, formatPercent, formatPrice, providerFreshnessVariant } from '../utils/format'
-import { sourceCountBadge, type SourceCountBadge } from '../features/markets/source-count'
+import { formatAbbr, formatPercent, formatPrice, formatTime, providerFreshnessVariant } from '../utils/format'
+import { qualityGradeBadge, type QualityGradeBadge } from '../features/markets/quality-grade'
+import {
+  buildVenueQuoteRows,
+  hasValidDexRouteIdentity,
+  type VenueQuoteRow,
+} from '../features/markets/venue-quotes'
 
 type Fiat = 'USD' | 'CNY' | 'HKD'
 
@@ -95,6 +100,8 @@ const sortDir = ref<'asc' | 'desc'>(route.query.sort_direction === 'asc' ? 'asc'
 const drawerMarkets = ref<AssetMarketV2Item[]>([])
 const drawerLoading = ref(false)
 const drawerError = ref('')
+const drawerRefreshError = ref('')
+const drawerLastUpdated = ref<Date | null>(null)
 
 const selectedAssetID = computed(() =>
   typeof route.query.asset === 'string' ? route.query.asset : '',
@@ -416,28 +423,54 @@ watch(search, () => {
   searchTimer = window.setTimeout(() => void dashboard.refresh(), 250)
 })
 
-let drawerRequest = 0
-watch([selectedAssetID, venue], async ([assetID, selectedVenue]) => {
-  const requestID = ++drawerRequest
+watch(selectedAssetID, (assetID, _previousAssetID, onCleanup) => {
+  let active = true
+  let inFlight = false
   drawerMarkets.value = []
   drawerError.value = ''
+  drawerRefreshError.value = ''
+  drawerLastUpdated.value = null
   if (!assetID) return
   drawerLoading.value = true
-  try {
-    const markets = await getAssetVenuesV2(assetID, selectedVenue)
-    if (requestID === drawerRequest) drawerMarkets.value = markets
-  } catch (error) {
-    if (requestID === drawerRequest) {
-      drawerError.value = error instanceof Error ? error.message : 'Unable to load markets'
+
+  const load = async (initial: boolean): Promise<void> => {
+    if (!active || inFlight) return
+    inFlight = true
+    try {
+      const markets = await getAssetVenuesV2(assetID, 'all')
+      if (!active) return
+      drawerMarkets.value = markets
+      drawerError.value = ''
+      drawerRefreshError.value = ''
+      drawerLastUpdated.value = new Date()
+    } catch (error) {
+      if (!active) return
+      const message = error instanceof Error ? error.message : 'Unable to load exchange quotes'
+      if (initial || drawerMarkets.value.length === 0) drawerError.value = message
+      else drawerRefreshError.value = message
+    } finally {
+      if (active) drawerLoading.value = false
+      inFlight = false
     }
-  } finally {
-    if (requestID === drawerRequest) drawerLoading.value = false
   }
+
+  void load(true)
+  const refreshWhenVisible = (): void => {
+    if (!document.hidden) void load(false)
+  }
+  const timer = window.setInterval(refreshWhenVisible, 3_000)
+  document.addEventListener('visibilitychange', refreshWhenVisible)
+  onCleanup(() => {
+    active = false
+    window.clearInterval(timer)
+    document.removeEventListener('visibilitychange', refreshWhenVisible)
+  })
 }, { immediate: true })
 
 const spotMarkets = computed(() => drawerMarkets.value.filter((market) => market.market_type === 'spot'))
 const perpMarkets = computed(() => drawerMarkets.value.filter((market) => market.market_type === 'perp'))
 const dexRoutes = computed(() => drawerMarkets.value.filter((market) => market.market_type === 'dex_route'))
+const venueQuoteRows = computed(() => buildVenueQuoteRows(drawerMarkets.value))
 
 const selectedVenueLabel = computed(() =>
   VENUE_GROUPS.flatMap((group) => group.venues).find((item) => item.value === venue.value)?.label ?? 'All',
@@ -530,16 +563,84 @@ function dexReferenceFact(asset: AssetDashboardV2Item): MarketPriceFact {
   return validatedDisplayReferencePriceFact(asset.display_price)
 }
 
-function priceFactSourceBadge(fact: MarketPriceFact): SourceCountBadge {
-  return sourceCountBadge(fact)
+function priceFactQualityBadge(fact: MarketPriceFact): QualityGradeBadge {
+  return qualityGradeBadge(fact)
 }
 
-function assetSourceBadge(asset: AssetDashboardV2Item): SourceCountBadge {
+function assetQualityBadge(asset: AssetDashboardV2Item): QualityGradeBadge {
   if (REALTIME_VENUES.has(venue.value)) {
     const resolved = resolveRealtimePrice(asset)
-    return sourceCountBadge(resolved.fact)
+    return qualityGradeBadge(resolved.fact)
   }
-  return sourceCountBadge(asset.display_price)
+  return qualityGradeBadge(asset.display_price)
+}
+
+function routeValidationLabel(market: AssetMarketV2Item): string {
+  return hasValidDexRouteIdentity(market) && market.available && market.price.available
+    ? 'Route verified'
+    : 'Route unavailable'
+}
+
+function routeValidationVariant(market: AssetMarketV2Item): 'live' | 'offline' {
+  return hasValidDexRouteIdentity(market) && market.available && market.price.available
+    ? 'live'
+    : 'offline'
+}
+
+function routeIsVerified(market: AssetMarketV2Item): boolean {
+  return hasValidDexRouteIdentity(market) && market.available && market.price.available
+}
+
+function dashboardRouteValidationLabel(fact: MarketPriceFact): string {
+  return fact.available ? 'Route · Verified' : 'Route · Unavailable'
+}
+
+function dashboardRouteValidationVariant(fact: MarketPriceFact): 'live' | 'offline' {
+  return fact.available ? 'live' : 'offline'
+}
+
+function quoteStatusVariant(status: VenueQuoteRow['status']): 'live' | 'stale' | 'offline' {
+  if (status === 'live') return 'live'
+  if (status === 'stale') return 'stale'
+  return 'offline'
+}
+
+function quoteStatusLabel(status: VenueQuoteRow['status']): string {
+  if (status === 'live') return 'Live'
+  if (status === 'stale') return 'Stale'
+  return 'Unavailable'
+}
+
+function quoteProductLabel(quote: VenueQuoteRow): string {
+  return quote.product === 'DEX Route' ? 'DEX Route · Public preview' : quote.product
+}
+
+function quoteMarketDetail(quote: VenueQuoteRow): string {
+  const market = quote.market
+  if (!market) return quote.reason
+  if (quote.status === 'unavailable') return quote.reason
+  if (quote.product !== 'DEX Route') {
+    const deviation = market.relative_deviation_pct.available
+      ? ` · ${formatPercent(market.relative_deviation_pct.value ?? 0)} vs composite`
+      : ''
+    return `${market.symbol}${deviation}`
+  }
+  const details = [market.chain, market.protocol]
+  if (market.quote_notional_usd.available && market.quote_notional_usd.value != null) {
+    details.push(`${formatAbbr(market.quote_notional_usd.value, '$')} quote`)
+  }
+  if (market.route.length > 0) details.push(market.route.join(' → '))
+  if (market.relative_deviation_pct.available) {
+    details.push(`${formatPercent(market.relative_deviation_pct.value ?? 0)} vs composite`)
+  }
+  return details.filter(Boolean).join(' · ') || market.symbol || quote.reason
+}
+
+function quoteObservedAt(quote: VenueQuoteRow): number {
+  if (!quote.market) return 0
+  return quote.product === 'DEX Route'
+    ? quote.market.block_timestamp || quote.market.provider_updated_at
+    : quote.market.provider_updated_at
 }
 
 function isDexVenue(): boolean {
@@ -856,8 +957,8 @@ function coverageReasonLabel(reason: string): string {
         </label>
       </div>
 
-      <p class="source-freshness-note">
-        Source count shows independent price contributors. Freshness is a separate dimension shown with each price.
+      <p class="quality-freshness-note">
+        Quality: High = 3+ independent quotes, Medium = 2, Low = 1. Freshness is shown separately with each price.
       </p>
 
       <ErrorState
@@ -910,7 +1011,7 @@ function coverageReasonLabel(reason: string): string {
                 </button>
               </th>
               <th class="align-center">Markets / Routes</th>
-              <th class="align-center">{{ isDexVenue() ? 'Route / Ref Sources' : 'Sources' }}</th>
+              <th class="align-center">{{ isDexVenue() ? 'Route / Ref Quality' : 'Quality' }}</th>
             </tr>
           </thead>
           <tbody v-if="assets.length">
@@ -1014,19 +1115,19 @@ function coverageReasonLabel(reason: string): string {
                 <div v-if="isDexVenue()" class="dex-quality-lanes">
                   <StatusBadge
                     data-testid="dex-route-quality"
-                    :variant="priceFactSourceBadge(dexRouteFact(asset)).variant"
-                    :label="`Route · ${priceFactSourceBadge(dexRouteFact(asset)).label}`"
+                    :variant="dashboardRouteValidationVariant(dexRouteFact(asset))"
+                    :label="dashboardRouteValidationLabel(dexRouteFact(asset))"
                   />
                   <StatusBadge
                     data-testid="dex-reference-quality"
-                    :variant="priceFactSourceBadge(dexReferenceFact(asset)).variant"
-                    :label="`Reference · ${priceFactSourceBadge(dexReferenceFact(asset)).label}`"
+                    :variant="priceFactQualityBadge(dexReferenceFact(asset)).variant"
+                    :label="`Reference · ${priceFactQualityBadge(dexReferenceFact(asset)).label}`"
                   />
                 </div>
                 <StatusBadge
                   v-else
-                  :variant="assetSourceBadge(asset).variant"
-                  :label="assetSourceBadge(asset).label"
+                  :variant="assetQualityBadge(asset).variant"
+                  :label="assetQualityBadge(asset).label"
                 />
               </td>
             </tr>
@@ -1068,7 +1169,7 @@ function coverageReasonLabel(reason: string): string {
           <AssetLogo :src="selectedAsset.logo" :name="selectedAsset.asset_symbol" :size="36" />
           <span>
             <strong>{{ selectedAsset.asset_name }}</strong>
-            <small>{{ selectedAsset.asset_symbol }} · {{ selectedVenueLabel }} · {{ selectedAsset.coverage_status }}</small>
+            <small>{{ selectedAsset.asset_symbol }} · Cross-exchange quotes · {{ selectedAsset.coverage_status }}</small>
           </span>
         </div>
         <div v-else>
@@ -1086,9 +1187,58 @@ function coverageReasonLabel(reason: string): string {
       </div>
       <ErrorState v-else-if="drawerError" :message="drawerError" />
       <template v-else>
+        <section class="drawer-section venue-quote-board" data-testid="venue-quote-board">
+          <div class="drawer-section-title">
+            <h3>Exchange Quotes</h3>
+            <span>3s refresh target</span>
+          </div>
+          <p class="drawer-disclosure">
+            Spot quotes are comparable across CEX venues. Hyperliquid is a perpetual mark and is kept separate.
+            Uniswap and PancakeSwap are read-only indicative routes from public-preview endpoints.
+            Missing venues stay visible as unavailable instead of borrowing another provider's price.
+          </p>
+          <p v-if="drawerRefreshError" class="drawer-refresh-warning" role="status">
+            Live refresh delayed — showing the last successful quote board.
+          </p>
+          <div class="venue-quote-list">
+            <article
+              v-for="quote in venueQuoteRows"
+              :key="quote.provider"
+              class="venue-quote-row"
+              :data-provider="quote.provider"
+            >
+              <div class="venue-quote-provider">
+                <strong>{{ quote.label }}</strong>
+                <small>
+                  {{ quoteProductLabel(quote) }}<template v-if="quote.marketCount > 1"> · {{ quote.marketCount }} {{ quote.product === 'DEX Route' ? 'routes' : 'markets' }}</template>
+                </small>
+              </div>
+              <div class="venue-quote-price">
+                <strong v-if="quote.status !== 'unavailable' && quote.market?.price.available" class="num">
+                  {{ formatPrice(quote.market.price.value ?? 0) }} {{ quote.market.quote_asset }}
+                </strong>
+                <strong v-else>—</strong>
+                <small>{{ quoteMarketDetail(quote) }}</small>
+              </div>
+              <div class="venue-quote-state">
+                <StatusBadge
+                  :variant="quoteStatusVariant(quote.status)"
+                  :label="quoteStatusLabel(quote.status)"
+                />
+                <small v-if="quoteObservedAt(quote)">
+                  {{ quote.product === 'DEX Route' ? 'Block ' : '' }}{{ formatTime(quoteObservedAt(quote)) }}
+                </small>
+              </div>
+            </article>
+          </div>
+          <p class="venue-quote-updated">
+            Quote board refreshed {{ drawerLastUpdated ? formatTime(drawerLastUpdated) : '—' }}
+          </p>
+        </section>
+
         <section class="drawer-section">
           <div class="drawer-section-title">
-            <h3>Spot Markets</h3>
+            <h3>Spot Market Details</h3>
             <span>{{ spotMarkets.length }}</span>
           </div>
           <article v-for="market in spotMarkets" :key="market.market_id" class="drawer-market">
@@ -1157,18 +1307,18 @@ function coverageReasonLabel(reason: string): string {
               </span>
               <span class="drawer-market-statuses">
                 <StatusBadge
-                  :variant="market.available ? 'accent' : 'offline'"
-                  :label="market.available ? '1 route source' : 'Unavailable'"
+                  :variant="routeValidationVariant(market)"
+                  :label="routeValidationLabel(market)"
                 />
                 <StatusBadge
-                  v-if="market.available"
+                  v-if="routeIsVerified(market)"
                   :variant="providerFreshnessVariant(market.freshness_status)"
                   :label="market.freshness_status || 'Unknown freshness'"
                 />
               </span>
             </div>
             <dl>
-              <div><dt>{{ quoteNotionalLabel(market) }}</dt><dd class="num">{{ market.price.available ? `$${formatPrice(market.price.value ?? 0)}` : '—' }}</dd></div>
+              <div><dt>{{ quoteNotionalLabel(market) }}</dt><dd class="num">{{ routeIsVerified(market) ? `$${formatPrice(market.price.value ?? 0)}` : '—' }}</dd></div>
               <div><dt>Protocol path</dt><dd>{{ market.protocol || '—' }}</dd></div>
               <div><dt>Pools</dt><dd class="num">{{ market.pool_addresses.length }}</dd></div>
               <div><dt>Validation</dt><dd>{{ quoteReferenceLabel(market.quote_reference_kind) }}</dd></div>
@@ -1178,7 +1328,9 @@ function coverageReasonLabel(reason: string): string {
               <div><dt>TVL</dt><dd class="num">{{ market.tvl_usd.available ? formatAbbr(market.tvl_usd.value ?? 0, '$') : '—' }}</dd></div>
               <div><dt>Block time</dt><dd class="num">{{ market.block_timestamp ? new Date(market.block_timestamp).toLocaleTimeString() : '—' }}</dd></div>
             </dl>
-            <p v-if="market.unavailable_reason" class="route-reason">{{ market.unavailable_reason }}</p>
+            <p v-if="market.unavailable_reason || !routeIsVerified(market)" class="route-reason">
+              {{ market.unavailable_reason || 'Route identity or block freshness is not verified' }}
+            </p>
           </article>
           <p v-if="dexRoutes.length === 0" class="drawer-empty">No reviewed DEX route is available.</p>
         </section>
@@ -1261,7 +1413,7 @@ function coverageReasonLabel(reason: string): string {
   border-radius: var(--radius-sm);
 }
 .table-search:focus-within { border-color: var(--accent); }
-.source-freshness-note {
+.quality-freshness-note {
   margin: 0;
   padding: 8px 16px;
   color: var(--text-3);
@@ -1456,6 +1608,49 @@ th {
   font-size: 11px;
   line-height: 1.5;
 }
+.drawer-refresh-warning {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  color: var(--warn);
+  background: #fff8e8;
+  border: 1px solid #f2d697;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+.venue-quote-list {
+  overflow: hidden;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+.venue-quote-row {
+  display: grid;
+  grid-template-columns: minmax(82px, .75fr) minmax(160px, 1.6fr) minmax(86px, auto);
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.venue-quote-row:last-child { border-bottom: 0; }
+.venue-quote-provider,
+.venue-quote-price,
+.venue-quote-state {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+.venue-quote-price strong { font-size: 13px; }
+.venue-quote-provider small,
+.venue-quote-price small,
+.venue-quote-state small,
+.venue-quote-updated {
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.venue-quote-state { align-items: flex-end; text-align: right; }
+.venue-quote-updated { margin: 8px 2px 0; text-align: right; }
 .drawer-market {
   margin-bottom: 9px;
   padding: 16px;
@@ -1485,6 +1680,20 @@ th {
   margin: 10px 0 0;
   color: var(--warn);
   font-size: 10px;
+}
+
+@media (max-width: 420px) {
+  .venue-quote-row {
+    grid-template-areas:
+      "provider state"
+      "price price";
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 11px 10px;
+  }
+  .venue-quote-provider { grid-area: provider; }
+  .venue-quote-price { grid-area: price; }
+  .venue-quote-state { grid-area: state; }
 }
 
 @media (max-width: 1280px) {

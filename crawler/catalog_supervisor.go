@@ -159,7 +159,7 @@ func (s *CatalogSupervisor) refreshProviderCatalog(ctx context.Context, adapter 
 	s.reporter.Attempt(provider, sourceKey, attemptedAt)
 	discovered, err := adapter.Discover(ctx)
 	if err != nil {
-		s.reporter.Failure(provider, sourceKey, time.Now().UTC(), err, 0)
+		s.reporter.Failure(provider, sourceKey, time.Now().UTC(), err, httpStatusFromError(err))
 		return err
 	}
 	approved, err := s.db.MarketAggregation.QueryApprovedAliases(provider)

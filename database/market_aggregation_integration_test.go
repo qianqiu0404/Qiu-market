@@ -796,9 +796,9 @@ func TestIntegrationMarketAggregationCatalogLifecycleAndDashboard(t *testing.T) 
 	klineMarkets, err := NewExchangeSymbolDB(tx).QueryProviderKlineMarkets("coinbase")
 	require.NoError(t, err)
 	require.Empty(t, klineMarkets)
-	require.NoError(t, tx.Table("exchange_symbol").
-		Where("guid = ?", market.MarketID).
-		Update("kline_enabled", true).Error)
+	klineMarkets, err = NewExchangeSymbolDB(tx).ReconcileProviderKlineSelection("coinbase")
+	require.NoError(t, err)
+	require.Len(t, klineMarkets, 1)
 	klineMarkets, err = NewExchangeSymbolDB(tx).QueryProviderKlineMarkets("coinbase")
 	require.NoError(t, err)
 	require.Len(t, klineMarkets, 1)

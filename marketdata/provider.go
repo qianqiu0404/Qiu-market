@@ -85,6 +85,8 @@ func (r *ProviderReporter) NextRetry(provider, sourceKey string, at time.Time) {
 
 func ClassifyProviderError(err error, statusCode int) string {
 	switch {
+	case statusCode == http.StatusForbidden || statusCode == http.StatusUnavailableForLegalReasons:
+		return "restricted"
 	case statusCode == http.StatusTooManyRequests:
 		return "rate_limited"
 	case statusCode >= 500:

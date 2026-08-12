@@ -199,7 +199,7 @@ func (b *BinanceTickerCrawler) fetchAndStore() {
 		attemptedAt := time.Now().UTC()
 		b.reporter.Attempt("binance", sourceKey, attemptedAt)
 
-		url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/24hr?symbol=%s", symbol)
+		url := fmt.Sprintf(binanceMarketDataRESTBaseURL+"/api/v3/ticker/24hr?symbol=%s", symbol)
 		resp, err := client.Get(url)
 		if err != nil {
 			b.reporter.Failure("binance", sourceKey, time.Now().UTC(), err, 0)
@@ -508,7 +508,7 @@ func (b *BinanceTickerCrawler) fetchKlines(symbol, interval string, startTime, e
 	sourceKey := "kline:" + symbol + ":" + interval
 	attemptedAt := time.Now().UTC()
 	b.reporter.Attempt("binance", sourceKey, attemptedAt)
-	url := fmt.Sprintf("https://api.binance.com/api/v3/klines?symbol=%s&interval=%s&limit=%d", symbol, interval, limit)
+	url := fmt.Sprintf(binanceMarketDataRESTBaseURL+"/api/v3/klines?symbol=%s&interval=%s&limit=%d", symbol, interval, limit)
 	if startTime > 0 {
 		url += fmt.Sprintf("&startTime=%d", startTime)
 	}

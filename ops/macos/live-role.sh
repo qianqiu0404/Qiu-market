@@ -15,6 +15,35 @@ if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
   exit 0
 fi
 
+load_provider_readonly_config() {
+  local file="$runtime/config/provider-readonly.env" line value=false seen=false
+  [ "$role" = dex ] || { export MARKET_DEX_PUBLIC_FALLBACK=false; return; }
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    release_private_file "$file" || {
+      echo 'provider read-only runtime config is unavailable or unsafe' >&2
+      return 1
+    }
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        ''|'#'*) ;;
+        MARKET_DEX_PUBLIC_FALLBACK=true|MARKET_DEX_PUBLIC_FALLBACK=false)
+          [ "$seen" = false ] || {
+            echo 'provider read-only runtime config is malformed' >&2
+            return 1
+          }
+          value="${line#*=}"
+          seen=true
+          ;;
+        *)
+          echo 'provider read-only runtime config is malformed' >&2
+          return 1
+          ;;
+      esac
+    done < "$file"
+  fi
+  export MARKET_DEX_PUBLIC_FALLBACK="$value"
+}
+
 database_env="$runtime/config/database.env"
 redis_secret_file="$runtime/secrets/redis-password"
 for file in "$database_env" "$redis_secret_file"; do
@@ -38,6 +67,7 @@ export MARKET_MULTI_VENUE_ENABLED='true'
 export MARKET_ETHEREUM_RPC_URL='' MARKET_BSC_RPC_URL=''
 export MARKET_UNISWAP_V3_SUBGRAPH_URL='' MARKET_PANCAKE_V3_SUBGRAPH_URL=''
 export MARKET_DEX_PUBLIC_FALLBACK='false' MARKET_RESEARCH_SIGNALS_ENABLED='false' MARKET_DORIS_HOST=''
+load_provider_readonly_config
 unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
 export NO_PROXY='127.0.0.1,localhost,::1' no_proxy='127.0.0.1,localhost,::1'
 cd "$active_release_source_path"

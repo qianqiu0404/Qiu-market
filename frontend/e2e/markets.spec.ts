@@ -136,6 +136,8 @@ const liveBTCPrices: Record<string, string> = {
   hyperliquid: '64220.12',
 }
 
+const routeObservedAt = Date.now()
+
 const markets = [
   {
     market_id: 'market-binance-btc-usdt',
@@ -149,7 +151,7 @@ const markets = [
     change_24h_pct: available('1.46'),
     turnover_24h: available('12000000000'),
     freshness_status: 'Healthy',
-    provider_updated_at: 1784880000000,
+    provider_updated_at: routeObservedAt,
     confidence: 'high',
     has_kline: true,
   },
@@ -196,7 +198,42 @@ const markets = [
     price_impact_pct: available('0.1'),
     round_trip_spread_pct: available('0.2'),
     block_number: 23000000,
-    block_timestamp: 1784880000000,
+    block_timestamp: routeObservedAt,
+    available: true,
+    unavailable_reason: '',
+  },
+  {
+    market_id: '',
+    market_code: '',
+    provider: 'pancakeswap',
+    symbol: 'BTCB/USDT',
+    market_type: 'dex_route',
+    quote_asset: 'USD',
+    price: available('65690'),
+    relative_deviation_pct: available('-0.0229'),
+    change_24h_pct: unavailable,
+    turnover_24h: unavailable,
+    freshness_status: 'Healthy',
+    provider_updated_at: routeObservedAt,
+    confidence: 'medium',
+    quality: 'medium',
+    has_kline: false,
+    venue_kind: 'dex_route',
+    chain: 'BNB Chain',
+    protocol: 'pancakeswap-v2 → pancakeswap-v3',
+    route_key: 'btcb-wbnb-usdt',
+    route: ['BTCB', 'WBNB', 'USDT'],
+    pool_addresses: [
+      '0x0000000000000000000000000000000000000002',
+      '0x0000000000000000000000000000000000000003',
+    ],
+    quote_notional_usd: available('1000'),
+    quote_reference_kind: 'cex_correlated',
+    tvl_usd: available('18000000'),
+    price_impact_pct: available('0.2'),
+    round_trip_spread_pct: available('0.3'),
+    block_number: 115428588,
+    block_timestamp: routeObservedAt,
     available: true,
     unavailable_reason: '',
   },
@@ -341,24 +378,71 @@ test('composite asset drawer is URL-addressable and keeps perpetuals out of the 
   await page.goto('/markets')
   await expect(page.getByRole('heading', { name: 'Market Overview' })).toBeVisible()
   await expect(page.getByText('$64,203.13')).toBeVisible()
-  await expect(page.getByRole('columnheader', { name: 'Sources' })).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: 'Quality' })).toBeVisible()
   const bitcoinRow = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
-  await expect(bitcoinRow).toContainText('3+ sources')
-  await expect(bitcoinRow).not.toContainText(/\b(high|medium|low)\b/i)
-  await expect(page.getByText(/Freshness is a separate dimension/)).toBeVisible()
+  await expect(bitcoinRow).toContainText('High')
+  await expect(page.getByText(/High = 3\+ independent quotes, Medium = 2, Low = 1/)).toBeVisible()
+  const quoteRequest = page.waitForRequest((request) => request.url().includes('/get_asset_venues'))
   await page.getByRole('button', { name: 'Open BTC markets' }).click()
+  expect(JSON.parse((await quoteRequest).postData() ?? '{}')).toMatchObject({
+    asset_id: 'asset-btc',
+    venue: 'all',
+  })
 
   await expect(page).toHaveURL(/asset=asset-btc/)
   await expect(page.getByRole('dialog', { name: 'BTC markets' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Spot Markets' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Exchange Quotes' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Spot Market Details' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Perpetual Markets' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'DEX Routes' })).toBeVisible()
+  const quoteBoard = page.getByTestId('venue-quote-board')
+  await expect(quoteBoard.locator('[data-provider="binance"]')).toContainText('65,700.00 USDT')
+  await expect(quoteBoard.locator('[data-provider="coinbase"]')).toContainText('Unavailable')
+  await expect(quoteBoard.locator('[data-provider="bybit"]')).toContainText('Unavailable')
+  await expect(quoteBoard.locator('[data-provider="okx"]')).toContainText('Unavailable')
+  await expect(quoteBoard.locator('[data-provider="hyperliquid"]')).toContainText('65,720.00 USD')
+  await expect(quoteBoard.locator('[data-provider="uniswap"]')).toContainText('65,710.00 USD')
+  await expect(quoteBoard.locator('[data-provider="uniswap"]')).toContainText('$10K quote')
+  await expect(quoteBoard.locator('[data-provider="pancakeswap"]')).toContainText('65,690.00 USD')
+  await expect(quoteBoard.locator('[data-provider="pancakeswap"]')).toContainText('Public preview')
+  await expect(quoteBoard.locator('[data-provider="pancakeswap"]')).toContainText('BTCB → WBNB → USDT')
+  await expect(quoteBoard).toContainText(/3s refresh target/i)
   await expect(page.getByText(/never contribute to the composite spot index/)).toBeVisible()
   await expect(page.getByText(/not executable orders or arbitrage signals/)).toBeVisible()
   await expect(page.getByRole('button', { name: /Open venue chart/ })).toHaveCount(1)
 
   await page.reload()
   await expect(page.getByRole('dialog', { name: 'BTC markets' })).toBeVisible()
+})
+
+test('an asset without published markets still shows every provider as unavailable', async ({ page }) => {
+  await page.route('**/api/v2/get_asset_venues', async (route) => {
+    const request = JSON.parse(route.request().postData() ?? '{}') as { asset_id?: string }
+    if (request.asset_id !== 'asset-2') {
+      await route.fallback()
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 2000, result: [] }),
+    })
+  })
+
+  await page.goto('/markets?asset=asset-2')
+  const quoteBoard = page.getByTestId('venue-quote-board')
+  await expect(quoteBoard.locator('.venue-quote-row')).toHaveCount(7)
+  await expect(quoteBoard.getByText('Unavailable', { exact: true })).toHaveCount(7)
+  for (const provider of ['binance', 'coinbase', 'bybit', 'okx', 'hyperliquid']) {
+    await expect(quoteBoard.locator(`[data-provider="${provider}"]`)).toContainText(
+      'Unavailable in the current deployment',
+    )
+  }
+  for (const provider of ['uniswap', 'pancakeswap']) {
+    await expect(quoteBoard.locator(`[data-provider="${provider}"]`)).toContainText(
+      'No reviewed route in the current public preview',
+    )
+  }
 })
 
 test('venue selection is URL-addressable without changing asset row grain', async ({ page }) => {
@@ -371,7 +455,7 @@ test('venue selection is URL-addressable without changing asset row grain', asyn
   await expect(page).toHaveURL(/venue=coinbase/)
   const coinbaseBitcoinRow = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
   await expect(coinbaseBitcoinRow).toHaveCount(1)
-  await expect(coinbaseBitcoinRow).toContainText('1 source')
+  await expect(coinbaseBitcoinRow).toContainText('Low')
 
   await page.getByRole('button', { name: 'Uniswap', exact: true }).click()
   await expect(page).toHaveURL(/venue=uniswap/)
@@ -881,6 +965,7 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
       'composite_reference',
       'cex_composite',
       observedAt,
+      ['binance', 'coinbase', 'okx'],
     ),
     change_24h_pct: available('1.25'),
     quality: 'high',
@@ -962,21 +1047,21 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
   await expect(freshRow.getByTestId('dex-reference-price')).toContainText('CEX composite')
   await expect(freshRow.getByTestId('dex-route-change')).toContainText('0.42%')
   await expect(freshRow.getByTestId('dex-reference-change')).toContainText('1.25%')
-  await expect(freshRow.getByTestId('dex-route-quality')).toContainText('Route · 1 source')
-  await expect(freshRow.getByTestId('dex-reference-quality')).toContainText('Reference · 1 source')
+  await expect(freshRow.getByTestId('dex-route-quality')).toContainText('Route · Verified')
+  await expect(freshRow.getByTestId('dex-reference-quality')).toContainText('Reference · High')
 
   const expiredRow = page.locator('tbody tr').filter({ hasText: 'Expired Route' })
   await expect(expiredRow.getByTestId('dex-route-price')).toContainText('Route unavailable')
   await expect(expiredRow.getByTestId('dex-route-price')).not.toContainText('Uniswap')
   await expect(expiredRow.getByTestId('dex-route-price')).not.toContainText('$63,999.00')
   await expect(expiredRow.getByTestId('dex-route-change')).not.toContainText('9.50%')
-  await expect(expiredRow.getByTestId('dex-route-quality')).toContainText('Route · unavailable')
+  await expect(expiredRow.getByTestId('dex-route-quality')).toContainText('Route · Unavailable')
   await expect(expiredRow.getByTestId('dex-reference-price')).toContainText('$64,100.00')
   await expect(expiredRow.getByTestId('dex-reference-price')).toContainText(
     'CoinGecko market reference',
   )
   await expect(expiredRow.getByTestId('dex-reference-quality')).toContainText(
-    'Reference · 1 source',
+    'Reference · Unavailable',
   )
 })
 

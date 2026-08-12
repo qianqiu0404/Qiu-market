@@ -55,7 +55,7 @@ var (
 	uniswapAMMConfig          = ammProviderConfig{
 		Provider: "uniswap", ChainID: 1,
 		V2FactoryAddress: "0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f",
-		V2RouterAddress:  "0x7a250d5630b4cf539739df2c5dacab4c659f2488d",
+		V2RouterAddress:  "0x7a250d5630b4cf539739df2c5dacb4c659f2488d",
 		V3FactoryAddress: "0x1f98431c8ad98523631ae4a59f267346ea31f984",
 		V3QuoterAddress:  "0x61ffe014ba17989e743c5f6cb21bf9697530b21e",
 		StableAddress:    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
@@ -103,6 +103,7 @@ func isDexIdentityError(err error) bool {
 type DexSupervisor struct {
 	hyperliquid *DexCrawler
 	adapters    []*AMMAdapter
+	configErr   error
 	stopped     atomic.Bool
 }
 
@@ -114,7 +115,39 @@ func NewDexSupervisor(db *database.DB, redisClient *redis.Client, cfg *config.Co
 			NewAMMAdapter(db, adapters[0]),
 			NewAMMAdapter(db, adapters[1]),
 		},
+		configErr: validateAMMProviderConfigs(adapters),
 	}
+}
+
+func validateAMMProviderConfigs(configs [2]ammProviderConfig) error {
+	for _, cfg := range configs {
+		if err := validateAMMProviderConfig(cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateAMMProviderConfig(cfg ammProviderConfig) error {
+	addresses := []struct {
+		label string
+		value string
+	}{
+		{label: "V2 factory", value: cfg.V2FactoryAddress},
+		{label: "V2 router", value: cfg.V2RouterAddress},
+		{label: "V3 factory", value: cfg.V3FactoryAddress},
+		{label: "V3 quoter", value: cfg.V3QuoterAddress},
+		{label: "stable token", value: cfg.StableAddress},
+		{label: "bridge token", value: cfg.BridgeAddress},
+	}
+	for _, address := range addresses {
+		if !strings.HasPrefix(address.value, "0x") ||
+			!common.IsHexAddress(address.value) ||
+			common.HexToAddress(address.value) == (common.Address{}) {
+			return fmt.Errorf("%s %s address is invalid", cfg.Provider, address.label)
+		}
+	}
+	return nil
 }
 
 func buildAMMProviderConfigs(cfg *config.Config) [2]ammProviderConfig {
@@ -144,6 +177,9 @@ func buildAMMProviderConfigs(cfg *config.Config) [2]ammProviderConfig {
 }
 
 func (s *DexSupervisor) Start(ctx context.Context) error {
+	if s.configErr != nil {
+		return s.configErr
+	}
 	if err := s.hyperliquid.Start(ctx); err != nil {
 		return err
 	}

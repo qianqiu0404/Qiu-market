@@ -152,6 +152,20 @@ make dex
 
 日常本地开发直接执行 `make dev`。启动器会显式打开 DEX Local Preview；若没有私有端点，`dev-role.sh` 只在本地为 `dex` 角色启用公共只读回退。直接运行二进制或正式验收时，公共回退默认关闭。
 
+Mac live runtime 也保持默认关闭。若 owner 明确选择内置公共只读 RPC/DEX Screener
+fallback，只能在 runtime 私有文件
+`config/provider-readonly.env` 写一行：
+
+```text
+MARKET_DEX_PUBLIC_FALLBACK=true
+```
+
+`ops/macos/live-role.sh` 只为 `dex` 读取该文件，且要求它是当前用户拥有的普通文件、
+非软链、权限精确为 `0600`。解析器只接受上述键以及 `true/false`，不 `source` 文件、
+不读取 worktree `.env`、不输出值；文件缺失时仍为 `false`。crawler/worker 不消费该
+配置。被拒绝的是从 world-readable worktree 环境或任意 shell 内容注入 runtime；代价
+是配置格式刻意很窄，但公开 fallback 的权限与来源可审计且不会扩张 secret 边界。
+
 正式环境建议私下配置以下变量；空值且未显式打开公共回退时只显示 Unavailable，Hyperliquid 与 CEX 继续：
 
 ```text
@@ -179,6 +193,12 @@ MARKET_DEX_PUBLIC_FALLBACK=1 \
 ```
 
 它验证 chain ID、最新区块不超过 60 秒、V2 Factory/Router 与 V3 Factory/QuoterV2 都存在合约代码，并验证 Subgraph `_meta` 或 DEX Screener 候选池能通过链上版本化身份复核。错误经过脱敏，命令输出不会回显 endpoint 或 API key；该检查不需要私钥、助记词、钱包或签名权限。
+
+进程启动和 endpoint-check 在任何 RPC 调用前都会校验两家 AMM 的 V2 Factory、V2
+Router、V3 Factory、QuoterV2、Stable 与 Bridge 共 12 个地址：必须是 `0x` 开头的
+40 位 hex 且非零。任一地址拼写错误会 fail closed，Hyperliquid/AMM supervisor 都不
+启动；不会再由 `HexToAddress` 静默截断。Uniswap V2 Router02 固定为官方 40 位
+`0x7a250d5630b4cf539739df2c5dacb4c659f2488d`。
 
 观察 System：
 
@@ -218,6 +238,9 @@ WHERE es.market_code LIKE 'hyperliquid:%';
 | Graph 429 / malformed response | 对应 AMM 独立退避 30s→10min | 下一次 discovery 成功 |
 | DEX Screener 或公共 RPC 限流 | 只影响对应本地 AMM，保留稳定选择并让报价自然降级 | 限流退避后重新发现/询价，或配置私有端点 |
 | RPC 首次连接失败或 chain id 不符 | 不打印 endpoint，记录下一次重试并按 30s→10min 退避 | endpoint 恢复/修正后自动建立 session |
+| 任一 Factory/Router/Quoter/Stable/Bridge 地址非 40 位 hex 或为零地址 | dex 启动前失败关闭，不启动任何 provider loop | 修正代码评审配置并重新构建候选 |
+| `provider-readonly.env` 缺失 | live DEX 公共 fallback 保持 false，私有端点也为空时 AMM 明确 unavailable | owner 创建合规 0600 文件并受控重启 dex |
+| `provider-readonly.env` 是软链、非 0600、含未知/重复键 | dex wrapper 拒绝启动，错误不回显内容 | 修正 owner/mode/唯一布尔键后受控重启 |
 | token decimals、protocol version 或 pool factory 不符 | 不发布该 provider 路线 | 修正 reviewed manifest/上游 |
 | block 超过 60 秒 | 本轮 route `available=false` | 新区块和下一轮 quote |
 | `$10K` Quoter/impact/spread 未通过 | 依次尝试 `$1K`、`$100`；成功则 Low 并展示实际名义 | 流动性恢复后下一轮自动优先回到 `$10K` |
@@ -238,6 +261,8 @@ WHERE es.market_code LIKE 'hyperliquid:%';
 
 > `dex` 进程里有三个隔离 supervisor。Hyperliquid 是 Perp；Uniswap/Pancake 用 canonical asset、chain、contract、protocol version 和 Factory 认池，允许 V2/V3 直连或最多两跳混合路线。每一跳只读询价，先问 `$10K`，不合格再降到 `$1K/$100`；没有 CEX 参考但链上双向门槛通过时标 On-chain only，不能给 High。当前 cycle 会权威撤回失败路线。Perp/AMM 永不贡献 All 综合现货价，也不声称可执行套利。
 
+> live DEX 公共 fallback 默认关闭；唯一开关来自 runtime 内 owner-only 0600 普通文件，wrapper 只解析一个布尔键，不执行文件，也不读 checkout `.env`。二进制在启动 provider loop 前校验两家 AMM 共 12 个合约/token 地址，任一不是 40 位非零 hex 就整体失败关闭。
+
 ## 闭卷自检
 
 1. 为什么 Hyperliquid quote 是 USD，而 USDC 不能冒充 quote？
@@ -257,3 +282,5 @@ WHERE es.market_code LIKE 'hyperliquid:%';
 15. 为什么目录发现价不能作为 15 秒 Quoter 的当前 impact 基准？
 16. 一条 V2→V3 mixed route 如何决定每一跳调用哪个只读合约？
 17. 为什么本轮 route 失败后要把公开 snapshot 置为 unavailable，而不能永久保留旧 available？
+18. 为什么 `provider-readonly.env` 不能被 shell source，也不能放在 worktree？
+19. 为什么一个错误 AMM 地址要在启动任何 provider loop 前失败，而不是等到 RPC 调用时再报错？

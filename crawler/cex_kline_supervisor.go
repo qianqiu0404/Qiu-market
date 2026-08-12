@@ -42,13 +42,13 @@ func NewCEXKlineSupervisor(db *database.DB) *CEXKlineSupervisor {
 		reporter: marketdata.NewProviderReporter(db.ProviderStatus),
 		adapters: []cexKlineAdapter{
 			&binanceKlineAdapter{baseCEXKlineAdapter{
-				client: client, baseURL: "https://api.binance.com",
+				client: client, baseURL: binanceMarketDataRESTBaseURL,
 			}},
 			&coinbaseKlineAdapter{baseCEXKlineAdapter{
 				client: client, baseURL: "https://api.exchange.coinbase.com",
 			}},
 			&bybitKlineAdapter{baseCEXKlineAdapter{
-				client: client, baseURL: "https://api.bybit.com",
+				client: client, baseURL: bybitV5RESTBaseURL,
 			}},
 			&okxKlineAdapter{baseCEXKlineAdapter{
 				client: client, baseURL: "https://www.okx.com",
@@ -170,6 +170,7 @@ func (s *CEXKlineSupervisor) syncProvider(
 	var received, written, successfulMarkets int64
 	var latestSource *time.Time
 	var failures []string
+	failureStatus := 0
 	for _, market := range markets {
 		if ctx.Err() != nil {
 			return
@@ -177,6 +178,7 @@ func (s *CEXKlineSupervisor) syncProvider(
 		count, last, err := s.syncMarket(ctx, adapter, market, now)
 		if err != nil {
 			failures = append(failures, market.SourceSymbol+": "+err.Error())
+			failureStatus = preferredProviderHTTPStatus(failureStatus, err)
 		} else {
 			successfulMarkets++
 			received += int64(count)
@@ -195,7 +197,7 @@ func (s *CEXKlineSupervisor) syncProvider(
 		if len(failures) > 0 {
 			err = fmt.Errorf("%w: %s", err, strings.Join(failures[:minInt(3, len(failures))], "; "))
 		}
-		s.reporter.Failure(provider, "klines", time.Now().UTC(), err, 0)
+		s.reporter.Failure(provider, "klines", time.Now().UTC(), err, failureStatus)
 		return
 	}
 	s.reporter.SuccessWithDetails(
@@ -217,6 +219,17 @@ func (s *CEXKlineSupervisor) syncProvider(
 		log.Info("CEX K-line cycle complete",
 			"provider", provider, "markets", successfulMarkets, "candles", received)
 	}
+}
+
+func preferredProviderHTTPStatus(current int, err error) int {
+	status := httpStatusFromError(err)
+	if status == http.StatusForbidden || status == http.StatusUnavailableForLegalReasons {
+		return status
+	}
+	if current == 0 {
+		return status
+	}
+	return current
 }
 
 func (s *CEXKlineSupervisor) syncMarket(

@@ -14,7 +14,7 @@ type BinanceSpotAdapter struct {
 }
 
 func NewBinanceSpotAdapter(client *http.Client) *BinanceSpotAdapter {
-	return &BinanceSpotAdapter{client: client, baseURL: "https://api.binance.com"}
+	return &BinanceSpotAdapter{client: client, baseURL: binanceMarketDataRESTBaseURL}
 }
 
 func (*BinanceSpotAdapter) Provider() string { return "binance" }
@@ -89,7 +89,7 @@ type BybitSpotAdapter struct {
 }
 
 func NewBybitSpotAdapter(client *http.Client) *BybitSpotAdapter {
-	return &BybitSpotAdapter{client: client, baseURL: "https://api.bybit.com"}
+	return &BybitSpotAdapter{client: client, baseURL: bybitV5RESTBaseURL}
 }
 
 func (*BybitSpotAdapter) Provider() string { return "bybit" }

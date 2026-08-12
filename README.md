@@ -184,7 +184,8 @@ Qiu Market 前端在 2026-07 完成整体重设计，当前形态：
 
 - **四项主导航 + 行情详情**：Markets、Trade、Insights、System。`/trade/BTC-USDT` 是虚拟交易终端；`/` 与 `/dashboard` 回到 Markets，旧 `/analytics` 到 Insights，旧 `/klines` 到 Markets。Assets / Exchanges / Symbols 作为 System 内的 Catalog 标签，旧 URL 重定向并保留 tab。
 - **Markets 聚合首页**：七个 provider 各展示自己带版本号的 50 资产选择；All 展示七张选择按 canonical identity 去重后的并集并按市值排序。单 venue 与 All 都保持一项资产一行，短暂断线或 DEX 询价失败不会删行，而会保留成员并显示 Stale/Unavailable/Not covered。
-- **按需市场/路线抽屉**：点击数量后才请求 CEX Spot、Hyperliquid Perp 和 DEX routes；Perp/DEX 明确排除综合价。只有 `has_kline=true` 的具体市场显示图表入口。
+- **七源报价抽屉**：点击资产后，第一屏固定列出 Binance、Coinbase、Bybit、OKX Spot、Hyperliquid Perpetual、Uniswap 与 PancakeSwap 七行，按单资产以 3 秒为刷新目标且不重叠慢请求；AMM 行显示链、protocol path、实际询价档位、区块时间并明确标注 Public preview。当前部署缺失的来源保留 Unavailable 行，不借用其它 venue 的价格。详细 Spot/Perp/DEX routes 继续按需展示，Perp/DEX 明确排除综合价；只有 `has_kline=true` 的具体市场显示图表入口。
+- **Quality 视觉等级**：Markets 按 Owner 偏好显示 High/Medium/Low/Unavailable，分别表示当前价格有 3+/2/1/0 个独立报价支持；Fresh/Stale/Last-good 独立显示，不能由等级推断新鲜度。
 - **七源稳定选择**：四家 CEX 各冻结 50 个审核现货资产；Hyperliquid 冻结 50 个身份确认的 Perp 资产；Uniswap/PancakeSwap 各冻结 50 个链上身份已复核的 listed assets。是否入选和是否已有合格路线报价是两个状态；AMM 使用 V2/V3 直连或最多两跳 mixed route，按 `$10K → $1K → $100` 询价并显示实际金额和 protocol path，全部失败才显示 `Not covered`。
 - **蓝白视觉系统**：页面、卡片、图表和抽屉统一为 `#f5f5f7 / #ffffff / #0071e3`，沿用 Apple 平台字体、清晰层级、44px 主要点击目标与 reduced-motion；涨跌仍保留独立红绿语义。
 - **真实状态驱动**：System 同时展示 Redis 心跳形成的 process status 与 `market_provider_status` 形成的 source status。两者是独立事实。
@@ -349,7 +350,7 @@ grpcurl -plaintext -d '{"page":1,"page_size":3}' 127.0.0.1:9091 dapplink.xyz.Mar
 
 - 默认进入 Markets，按 rank 展示七家 selection 的 canonical 去重并集；没有新鲜报价的资产仍保留并显示明确原因；
 - `/trade/BTC-USDT` 展示可信参考、真实 venue K 线、虚拟订单簿和交易操作；缺失行情时明确 unavailable，不生成假图；
-- All 只展示 CEX Spot 综合价，切换七个 venue 后仍保持一项资产一行，多市场和路线从右侧抽屉按需查看；
+- All 只展示 CEX Spot 综合价，切换七个 venue 后仍保持一项资产一行；点任意资产后，右侧先比较七个 provider 的独立报价或不可用原因，再查看具体市场和路线；
 - System 的 Processes 与 Data sources 分开；crawler 运行不等于 Binance 必然 Healthy；
 - 停掉 `make api` 后，前端各页面进入 Offline 错误态（可重试），这是设计行为。
 

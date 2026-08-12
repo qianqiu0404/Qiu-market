@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -62,6 +63,15 @@ func TestSpotCatalogAdaptersNormalizeProviderSpecificPayloads(t *testing.T) {
 	}
 }
 
+func TestDefaultProviderEndpointsKeepBinanceMarketDataOnlyAndBybitV5(t *testing.T) {
+	require.Equal(t, "https://data-api.binance.vision", binanceMarketDataRESTBaseURL)
+	require.Equal(t, "wss://data-stream.binance.vision:443/ws", binanceMarketDataWebSocketURL)
+	require.Equal(t, "https://api.bybit.com", bybitV5RESTBaseURL)
+	require.Equal(t, "wss://stream.bybit.com/v5/public/spot", bybitV5SpotWebSocketURL)
+	require.Equal(t, binanceMarketDataRESTBaseURL, NewBinanceSpotAdapter(http.DefaultClient).baseURL)
+	require.Equal(t, bybitV5RESTBaseURL, NewBybitSpotAdapter(http.DefaultClient).baseURL)
+}
+
 func TestBybitSpotCatalogDoesNotUseUnsupportedPagination(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -102,6 +112,64 @@ func TestProviderHTTPBoundaryRejectsRateLimitAndMalformedJSON(t *testing.T) {
 				require.Equal(t, http.StatusTooManyRequests, httpStatusFromError(err))
 			}
 		})
+	}
+}
+
+func TestRestrictedProviderHTTPStatusPropagatesAcrossCatalogTickerAndKline(t *testing.T) {
+	providers := []struct {
+		name    string
+		catalog func(*http.Client, string) CatalogAdapter
+		ticker  func(*http.Client, string) spotTickerBatchAdapter
+		kline   func(*http.Client, string) cexKlineAdapter
+	}{
+		{
+			name: "binance",
+			catalog: func(client *http.Client, endpoint string) CatalogAdapter {
+				return &BinanceSpotAdapter{client: client, baseURL: endpoint}
+			},
+			ticker: func(client *http.Client, endpoint string) spotTickerBatchAdapter {
+				return &binanceBatchTickerAdapter{client: client, baseURL: endpoint}
+			},
+			kline: func(client *http.Client, endpoint string) cexKlineAdapter {
+				return &binanceKlineAdapter{baseCEXKlineAdapter{client: client, baseURL: endpoint}}
+			},
+		},
+		{
+			name: "bybit",
+			catalog: func(client *http.Client, endpoint string) CatalogAdapter {
+				return &BybitSpotAdapter{client: client, baseURL: endpoint}
+			},
+			ticker: func(client *http.Client, endpoint string) spotTickerBatchAdapter {
+				return &bybitBatchTickerAdapter{client: client, baseURL: endpoint}
+			},
+			kline: func(client *http.Client, endpoint string) cexKlineAdapter {
+				return &bybitKlineAdapter{baseCEXKlineAdapter{client: client, baseURL: endpoint}}
+			},
+		},
+	}
+	for _, status := range []int{http.StatusForbidden, http.StatusUnavailableForLegalReasons} {
+		for _, provider := range providers {
+			t.Run(provider.name+"/"+http.StatusText(status), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+					http.Error(writer, "deployment unavailable", status)
+				}))
+				defer server.Close()
+
+				_, catalogErr := provider.catalog(server.Client(), server.URL).Discover(context.Background())
+				require.Error(t, catalogErr)
+				require.Equal(t, status, httpStatusFromError(catalogErr))
+
+				_, tickerErr := provider.ticker(server.Client(), server.URL).Fetch(context.Background())
+				require.Error(t, tickerErr)
+				require.Equal(t, status, httpStatusFromError(tickerErr))
+
+				start := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+				_, klineErr := provider.kline(server.Client(), server.URL).
+					Fetch1m(context.Background(), "BTCUSDT", start, start.Add(time.Minute), 1)
+				require.Error(t, klineErr)
+				require.Equal(t, status, httpStatusFromError(klineErr))
+			})
+		}
 	}
 }
 

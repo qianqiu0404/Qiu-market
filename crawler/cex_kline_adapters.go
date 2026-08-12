@@ -51,7 +51,7 @@ func (a baseCEXKlineAdapter) get(
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, response.Body)
-		return fmt.Errorf("K-line HTTP %d", response.StatusCode)
+		return &providerHTTPError{host: request.URL.Host, status: response.StatusCode}
 	}
 	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
 		return fmt.Errorf("decode K-line payload: %w", err)

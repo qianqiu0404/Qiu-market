@@ -35,6 +35,9 @@ func CheckAMMEndpoints(
 	if err != nil {
 		return nil, err
 	}
+	if err := validateAMMProviderConfig(config); err != nil {
+		return nil, err
+	}
 	usePublicFallback := len(publicFallback) > 0 && publicFallback[0]
 	if usePublicFallback {
 		if strings.TrimSpace(rpcURL) == "" {

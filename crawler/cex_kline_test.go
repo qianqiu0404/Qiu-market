@@ -3,6 +3,7 @@ package crawler
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -103,6 +104,19 @@ func TestAggregateOneMinuteBucketAcceptsPostgresNumericScale(t *testing.T) {
 func TestScaledIntegerRejectsFractionalScaledValue(t *testing.T) {
 	_, err := scaledInteger("12.000000000000000001")
 	require.ErrorContains(t, err, "fractional component")
+}
+
+func TestPreferredProviderHTTPStatusPrioritizesRestricted(t *testing.T) {
+	require.Equal(t, http.StatusForbidden, preferredProviderHTTPStatus(
+		0, &providerHTTPError{host: "provider.invalid", status: http.StatusForbidden},
+	))
+	require.Equal(t, http.StatusUnavailableForLegalReasons, preferredProviderHTTPStatus(
+		http.StatusBadGateway,
+		&providerHTTPError{host: "provider.invalid", status: http.StatusUnavailableForLegalReasons},
+	))
+	require.Equal(t, http.StatusBadGateway, preferredProviderHTTPStatus(
+		http.StatusBadGateway, fmt.Errorf("later decode failure"),
+	))
 }
 
 func TestAggregateOneMinuteBucketRejectsHistoricalGap(t *testing.T) {

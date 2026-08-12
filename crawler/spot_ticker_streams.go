@@ -230,7 +230,7 @@ func (a *binanceTickerStreamAdapter) Stream(
 ) error {
 	url := a.URL
 	if url == "" {
-		url = "wss://stream.binance.com:443/ws"
+		url = binanceMarketDataWebSocketURL
 	}
 	allowed := stringSet(symbols)
 	params := make([]string, 0, len(symbols))
@@ -393,7 +393,7 @@ func (a *bybitTickerStreamAdapter) Stream(
 ) error {
 	url := a.URL
 	if url == "" {
-		url = "wss://stream.bybit.com/v5/public/spot"
+		url = bybitV5SpotWebSocketURL
 	}
 	args := make([]string, 0, len(symbols))
 	for _, symbol := range symbols {

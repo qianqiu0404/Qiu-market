@@ -371,3 +371,50 @@ func TestNewDexSupervisorUsesPublicFallbackOnlyWhenExplicitlyEnabled(t *testing.
 	require.Empty(t, disabled[0].RPCURL)
 	require.False(t, disabled[0].PublicDiscovery)
 }
+
+func TestAMMProviderContractAddressesAreValid(t *testing.T) {
+	configs := [2]ammProviderConfig{uniswapAMMConfig, pancakeAMMConfig}
+	require.NoError(t, validateAMMProviderConfigs(configs))
+	require.Equal(t,
+		"0x7a250d5630b4cf539739df2c5dacb4c659f2488d",
+		uniswapAMMConfig.V2RouterAddress,
+	)
+}
+
+func TestDexSupervisorRejectsInvalidAddressBeforeStartingProviders(t *testing.T) {
+	supervisor := &DexSupervisor{configErr: fmt.Errorf("invalid AMM address")}
+	require.EqualError(t, supervisor.Start(context.Background()), "invalid AMM address")
+}
+
+func TestAMMProviderContractAddressValidationFailsClosed(t *testing.T) {
+	setters := []struct {
+		name string
+		set  func(*ammProviderConfig, string)
+	}{
+		{name: "V2 factory", set: func(cfg *ammProviderConfig, value string) { cfg.V2FactoryAddress = value }},
+		{name: "V2 router", set: func(cfg *ammProviderConfig, value string) { cfg.V2RouterAddress = value }},
+		{name: "V3 factory", set: func(cfg *ammProviderConfig, value string) { cfg.V3FactoryAddress = value }},
+		{name: "V3 quoter", set: func(cfg *ammProviderConfig, value string) { cfg.V3QuoterAddress = value }},
+		{name: "stable", set: func(cfg *ammProviderConfig, value string) { cfg.StableAddress = value }},
+		{name: "bridge", set: func(cfg *ammProviderConfig, value string) { cfg.BridgeAddress = value }},
+	}
+	for _, base := range []ammProviderConfig{uniswapAMMConfig, pancakeAMMConfig} {
+		for _, setter := range setters {
+			t.Run(base.Provider+"/"+setter.name+"/wrong-length", func(t *testing.T) {
+				candidate := base
+				setter.set(&candidate, "0x1234")
+				require.Error(t, validateAMMProviderConfig(candidate))
+			})
+			t.Run(base.Provider+"/"+setter.name+"/non-hex", func(t *testing.T) {
+				candidate := base
+				setter.set(&candidate, "0xzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+				require.Error(t, validateAMMProviderConfig(candidate))
+			})
+			t.Run(base.Provider+"/"+setter.name+"/zero", func(t *testing.T) {
+				candidate := base
+				setter.set(&candidate, "0x0000000000000000000000000000000000000000")
+				require.Error(t, validateAMMProviderConfig(candidate))
+			})
+		}
+	}
+}
