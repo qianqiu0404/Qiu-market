@@ -8,9 +8,13 @@ import (
 	"time"
 
 	"github.com/the-web3/s78-market-services/trading/domain"
+	"github.com/the-web3/s78-market-services/trading/exchange"
 )
 
-var ErrUnsafeReference = errors.New("reference price is unsafe")
+var (
+	ErrUnsafeReference = errors.New("reference price is unsafe")
+	ErrQuoteBlocked    = errors.New("virtual liquidity quote is blocked by a resting order")
+)
 
 const VirtualLiquidityProvider = "Qiu Virtual Liquidity"
 
@@ -84,6 +88,7 @@ type Engine interface {
 	Submit(context.Context, domain.NewOrder) (domain.Result, error)
 	Cancel(context.Context, domain.CancelOrder) (domain.Result, error)
 	Orders(domain.AccountID, bool) ([]domain.Order, error)
+	Depth(int) (exchange.OrderBookView, error)
 }
 
 type Config struct {
@@ -158,7 +163,8 @@ func New(
 }
 
 func (m *Maker) Run(ctx context.Context) error {
-	if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) {
+	if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) &&
+		!errors.Is(err, ErrQuoteBlocked) {
 		m.recordPaused("virtual liquidity infrastructure is unavailable", time.Time{})
 		return err
 	}
@@ -177,7 +183,8 @@ func (m *Maker) Run(ctx context.Context) error {
 			m.recordRecovering("virtual liquidity process stopped")
 			return nil
 		case <-ticker.C:
-			if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) {
+			if err := m.refresh(ctx); err != nil && !errors.Is(err, ErrUnsafeReference) &&
+				!errors.Is(err, ErrQuoteBlocked) {
 				m.recordPaused("virtual liquidity infrastructure is unavailable", time.Time{})
 				return err
 			}
@@ -239,53 +246,109 @@ func (m *Maker) refresh(ctx context.Context) error {
 	if err := m.cancelAll(ctx); err != nil {
 		return fmt.Errorf("cancel previous demo-maker quotes: %w", err)
 	}
+	quotes, err := m.quotePlan(reference.Price)
+	if err != nil {
+		return m.pauseUnsafe(ctx, err)
+	}
+	depth, err := m.engine.Depth(1)
+	if err != nil {
+		return fmt.Errorf("read market depth before demo-maker quote: %w", err)
+	}
+	if quotePlanWouldCross(quotes, depth) {
+		m.recordQuoteBlocked(reference, "resting user order temporarily blocks safe post-only quotes")
+		return ErrQuoteBlocked
+	}
 
-	for _, spread := range m.config.SpreadsBPS {
-		bid, ask, err := m.quotePrices(reference.Price, spread)
-		if err != nil {
-			return m.pauseUnsafe(ctx, err)
-		}
-		for _, quote := range []struct {
-			side  domain.Side
-			price int64
-			label string
-		}{
-			{side: domain.SideBuy, price: bid, label: "bid"},
-			{side: domain.SideSell, price: ask, label: "ask"},
-		} {
-			m.counter++
-			requestID := fmt.Sprintf(
-				"%s-%s-%04dbps-%020d",
-				m.config.RequestPrefix,
-				quote.label,
-				spread,
-				m.counter,
-			)
-			result, submitErr := m.engine.Submit(ctx, domain.NewOrder{
-				ClientOrderID: requestID,
-				AccountID:     m.config.AccountID,
-				Side:          quote.side,
-				Type:          domain.OrderTypeLimit,
-				TimeInForce:   domain.TimeInForceGTC,
-				PostOnly:      true,
-				Price:         quote.price,
-				Quantity:      m.config.Quantity,
-			})
-			if submitErr != nil || result.Status != domain.OrderStatusOpen {
-				cancelContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = m.cancelAll(cancelContext)
-				cancel()
-				if submitErr != nil {
-					return fmt.Errorf("submit demo-maker %s: %w", quote.label, submitErr)
-				}
-				return fmt.Errorf("submit demo-maker %s rejected with status %s",
-					quote.label, result.Status)
+	for _, quote := range quotes {
+		m.counter++
+		requestID := fmt.Sprintf(
+			"%s-%s-%04dbps-%020d",
+			m.config.RequestPrefix,
+			quote.label,
+			quote.spread,
+			m.counter,
+		)
+		result, submitErr := m.engine.Submit(ctx, domain.NewOrder{
+			ClientOrderID: requestID,
+			AccountID:     m.config.AccountID,
+			Side:          quote.side,
+			Type:          domain.OrderTypeLimit,
+			TimeInForce:   domain.TimeInForceGTC,
+			PostOnly:      true,
+			Price:         quote.price,
+			Quantity:      m.config.Quantity,
+		})
+		if submitErr != nil || result.Status != domain.OrderStatusOpen {
+			cancelContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cleanupErr := m.cancelAll(cancelContext)
+			cancel()
+			if cleanupErr != nil {
+				return errors.Join(
+					fmt.Errorf("clean up partial demo-maker quote set: %w", cleanupErr),
+					submitErr,
+				)
 			}
+			if submitErr != nil {
+				return fmt.Errorf("submit demo-maker %s: %w", quote.label, submitErr)
+			}
+			if postOnlyWouldCross(result) {
+				m.recordQuoteBlocked(reference, "resting user order temporarily blocked a post-only quote")
+				return fmt.Errorf("%w: submit demo-maker %s status %s",
+					ErrQuoteBlocked, quote.label, result.Status)
+			}
+			return fmt.Errorf("submit demo-maker %s rejected with status %s",
+				quote.label, result.Status)
 		}
 	}
 	m.previousPrice = reference.Price
 	m.recordActive(reference)
 	return nil
+}
+
+func postOnlyWouldCross(result domain.Result) bool {
+	if result.Status != domain.OrderStatusRejected {
+		return false
+	}
+	for _, event := range result.Events {
+		if event.Type == domain.EventOrderRejected && event.Reason == "post_only_would_cross" {
+			return true
+		}
+	}
+	return false
+}
+
+type plannedQuote struct {
+	side   domain.Side
+	price  int64
+	label  string
+	spread int64
+}
+
+func (m *Maker) quotePlan(referencePrice int64) ([]plannedQuote, error) {
+	quotes := make([]plannedQuote, 0, 2*len(m.config.SpreadsBPS))
+	for _, spread := range m.config.SpreadsBPS {
+		bid, ask, err := m.quotePrices(referencePrice, spread)
+		if err != nil {
+			return nil, err
+		}
+		quotes = append(quotes,
+			plannedQuote{side: domain.SideBuy, price: bid, label: "bid", spread: spread},
+			plannedQuote{side: domain.SideSell, price: ask, label: "ask", spread: spread},
+		)
+	}
+	return quotes, nil
+}
+
+func quotePlanWouldCross(quotes []plannedQuote, depth exchange.OrderBookView) bool {
+	for _, quote := range quotes {
+		if quote.side == domain.SideBuy && len(depth.Asks) > 0 && quote.price >= depth.Asks[0].Price {
+			return true
+		}
+		if quote.side == domain.SideSell && len(depth.Bids) > 0 && quote.price <= depth.Bids[0].Price {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Maker) shouldReprice(referencePrice int64) bool {
@@ -374,6 +437,13 @@ func (m *Maker) recordActive(reference Reference) {
 func (m *Maker) recordRecovering(reason string) {
 	m.config.Status.update(LiquidityStatus{
 		State: LiquidityRecovering, Reason: reason, LastRefreshAt: m.now().UTC(),
+	})
+}
+
+func (m *Maker) recordQuoteBlocked(reference Reference, reason string) {
+	m.config.Status.update(LiquidityStatus{
+		State: LiquidityRecovering, Reason: reason,
+		ReferenceObservedAt: reference.ObservedAt.UTC(), LastRefreshAt: m.now().UTC(),
 	})
 }
 

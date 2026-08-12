@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/the-web3/s78-market-services/trading/auth"
 	"github.com/the-web3/s78-market-services/trading/gateway"
+	"github.com/the-web3/s78-market-services/trading/marketmaker"
 	tradingv1 "github.com/the-web3/s78-market-services/trading/rpc/pb"
 )
 
@@ -96,12 +98,38 @@ func TestPracticeDeterministicMakerPartialCancelReplayAndRestart(t *testing.T) {
 	var trades tradingv1.ListAccountTradesResponse
 	practiceJSON(t, client, http.MethodGet, first.server.URL+"/api/v1/trading/account/trades?limit=100", nil, "", http.StatusOK, &trades)
 	assertPracticeTrades(t, trades.Trades)
+	closureDeadline := time.Now().Add(10 * time.Second)
+	for {
+		liquidity := first.backend.liquidityStatus.Status()
+		if liquidity.State == marketmaker.LiquidityRecovering && strings.Contains(liquidity.Reason, "resting user order") {
+			break
+		}
+		if time.Now().After(closureDeadline) {
+			t.Fatalf("maker did not enter recoverable quote-blocked state: %+v", liquidity)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !first.backend.makerRunning() {
+		t.Fatal("maker goroutine terminated while user remainder blocked post-only quotes")
+	}
 
 	cancelBody := map[string]any{"request_id": "practice-user-cancel-v1"}
 	practiceJSON(t, client, http.MethodPost, first.server.URL+"/api/v1/trading/orders/"+submitted.OrderId+"/cancel", cancelBody, csrf, http.StatusOK, &tradingv1.CommandResult{})
 	practiceJSON(t, client, http.MethodGet, first.server.URL+"/api/v1/trading/orders/"+submitted.OrderId, nil, "", http.StatusOK, &order)
 	if order.Status != "canceled" || order.HeldAmount != "0" || order.HeldAsset != "" {
 		t.Fatalf("canceled order=%+v", &order)
+	}
+	closureDeadline = time.Now().Add(10 * time.Second)
+	for {
+		practiceJSON(t, client, http.MethodGet, first.server.URL+"/api/v1/trading/markets/BTC-USDT/status", nil, "", http.StatusOK, &status)
+		practiceJSON(t, client, http.MethodGet, first.server.URL+"/api/v1/trading/markets/BTC-USDT/orderbook", nil, "", http.StatusOK, &book)
+		if status.GetVirtualLiquidity().GetState() == "active" && len(book.Bids) == 3 && len(book.Asks) == 3 {
+			break
+		}
+		if time.Now().After(closureDeadline) {
+			t.Fatalf("maker did not replenish six levels after user cancel: liquidity=%+v book=%+v", status.GetVirtualLiquidity(), &book)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	pool, err := pgxpool.New(ctx, stateDSN)
