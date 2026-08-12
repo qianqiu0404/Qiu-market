@@ -21,6 +21,15 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 	if err != nil {
 		return nil, err
 	}
+	result := marketOverviewFromSnapshot(snapshot, venue)
+	return &model.MarketOverviewResponse{
+		Code: 2000, Message: "get market overview success", Result: result,
+		SnapshotID: snapshot.ID, SnapshotAsOf: snapshot.Read.AsOf.UnixMilli(),
+		SnapshotSchema: MarketSnapshotSchema,
+	}, nil
+}
+
+func marketOverviewFromSnapshot(snapshot *marketSnapshot, venue string) model.MarketOverviewResult {
 	summary := &snapshot.Read.Summary
 	global := snapshot.Read.Global
 	result := model.MarketOverviewResult{
@@ -48,10 +57,8 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 		PreviewCoveredCount:         summary.PreviewCoveredCount,
 		Universe:                    dashboardUniverse(venue),
 	}
-	if venue != "all" {
-		if selection, selectionErr := h.marketAggregationView.QueryProviderAssetSelectionState(venue); selectionErr == nil && selection != nil {
-			result.SelectionVersion = selection.ActiveVersion
-		}
+	if venue != "all" && len(snapshot.Read.Rows) > 0 {
+		result.SelectionVersion = snapshot.Read.Rows[0].SelectionVersion
 	}
 	if summary.AssetCount > 0 {
 		value := decimal.NewFromInt(summary.PricedAssetCount).
@@ -82,11 +89,7 @@ func (h HandleSvc) GetMarketOverview(request *model.MarketOverviewRequest) (*mod
 			result.ProviderUpdatedAt = global.ObservedAt.UnixMilli()
 		}
 	}
-	return &model.MarketOverviewResponse{
-		Code: 2000, Message: "get market overview success", Result: result,
-		SnapshotID: snapshot.ID, SnapshotAsOf: snapshot.Read.AsOf.UnixMilli(),
-		SnapshotSchema: MarketSnapshotSchema,
-	}, nil
+	return result
 }
 
 func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (*model.AssetDashboardV2Response, error) {
@@ -178,7 +181,8 @@ func (h HandleSvc) GetAssetDashboardV2(request *model.AssetDashboardV2Request) (
 	}
 	return &model.AssetDashboardV2Response{
 		Code: 2000, Message: "get asset dashboard v2 success", Result: result,
-		Total: total, Universe: expectedUniverse,
+		Overview: marketOverviewFromSnapshot(snapshot, venue),
+		Total:    total, Universe: expectedUniverse,
 		SnapshotID: snapshot.ID, SnapshotAsOf: snapshot.Read.AsOf.UnixMilli(),
 		SnapshotSchema: MarketSnapshotSchema,
 	}, nil

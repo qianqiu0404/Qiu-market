@@ -147,6 +147,7 @@ type AssetDashboardV2Response struct {
 	Code           uint64                 `json:"code"`
 	Message        string                 `json:"message"`
 	Result         []AssetDashboardV2Item `json:"result"`
+	Overview       MarketOverviewResult   `json:"overview"`
 	Total          int64                  `json:"total"`
 	Universe       string                 `json:"universe"`
 	SnapshotID     string                 `json:"snapshot_id"`

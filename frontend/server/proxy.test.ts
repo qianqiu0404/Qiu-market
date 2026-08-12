@@ -231,7 +231,7 @@ describe('releaseProvenance', () => {
 })
 
 describe('isRetryableUpstreamRequest', () => {
-  it('retries only explicitly safe GET reads', () => {
+  it('retries only explicitly safe reads', () => {
     expect(
       isRetryableUpstreamRequest(
         'GET',
@@ -243,7 +243,10 @@ describe('isRetryableUpstreamRequest', () => {
     ).toBe(true)
     expect(
       isRetryableUpstreamRequest('POST', '/api/v2/get_asset_dashboard'),
-    ).toBe(false)
+    ).toBe(true)
+		expect(
+			isRetryableUpstreamRequest('POST', '/api/v2/get_market_price_ticks'),
+		).toBe(true)
   })
 
   it('never retries OAuth navigation or callback requests', () => {
@@ -265,6 +268,7 @@ describe('isRetryableUpstreamRequest', () => {
     expect(isRetryableUpstreamRequest('GET', '/api/v1/future-write')).toBe(false)
     expect(isRetryableUpstreamRequest('HEAD', '/api/v1/future-write')).toBe(false)
     expect(isRetryableUpstreamRequest('POST', '/api/v1/trading/orders')).toBe(false)
+		expect(isRetryableUpstreamRequest('POST', '/api/v1/trading/fund')).toBe(false)
   })
 })
 
@@ -339,6 +343,33 @@ describe('upstream HMAC replay protection', () => {
     expect(new Set(nonces).size).toBe(2)
   })
 
+  it('re-signs a read-only market POST retry with a new nonce', async () => {
+		const payload = JSON.stringify({
+			code: 2000, result: [], total: 0, overview: {
+				venue: 'all', asset_count: 1, priced_asset_count: 0,
+				fresh_asset_count: 0, stale_asset_count: 0, unavailable_asset_count: 1,
+			},
+			snapshot_id: 'snp_00000000000000000000000000000001',
+			snapshot_as_of: 1785196800000,
+			snapshot_schema: 'qiu.market-snapshot.v1',
+		})
+		const fetchMock = vi.fn()
+			.mockResolvedValueOnce(new Response('{}', { status: 504 }))
+			.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+				contractedResponse(payload, request))
+		vi.stubGlobal('fetch', fetchMock)
+
+		const proxied = proxyResponse()
+		await handler(proxyRequest(89) as never, proxied.response as never)
+		expect(proxied.result.statusCode).toBe(200)
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		const nonces = fetchMock.mock.calls.map(([, request]) =>
+			new Headers((request as RequestInit).headers).get('X-Qiu-Market-Nonce'))
+		expect(nonces[0]).toMatch(/^[0-9a-f]{32}$/)
+		expect(nonces[1]).toMatch(/^[0-9a-f]{32}$/)
+		expect(nonces[0]).not.toBe(nonces[1])
+	})
+
   it('keeps upstream failures non-cacheable', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ code: 'backend_failed' }), {
@@ -364,6 +395,10 @@ describe('public cache contract boundary', () => {
     code: 2000,
     result: [],
     total: 0,
+		overview: {
+			venue: 'all', asset_count: 1, priced_asset_count: 0,
+			fresh_asset_count: 0, stale_asset_count: 0, unavailable_asset_count: 1,
+		},
     snapshot_id: 'snp_00000000000000000000000000000001',
 		snapshot_as_of: 1785196800000,
     snapshot_schema: 'qiu.market-snapshot.v1',
@@ -454,7 +489,7 @@ describe('public cache contract boundary', () => {
     await handler(proxyRequest(94) as never, proxyResponse().response as never)
     await Promise.all([...vercelFunctions.waitTasks])
     vi.setSystemTime(new Date('2026-07-28T02:00:16Z'))
-    fetchMock.mockRejectedValueOnce(new Error('transport down'))
+    fetchMock.mockRejectedValue(new Error('transport down'))
     const stale = proxyResponse()
     await handler(proxyRequest(94) as never, stale.response as never)
     expect(stale.result.statusCode).toBe(200)

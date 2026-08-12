@@ -18,10 +18,19 @@ export interface PollingResult<T> {
 
 /**
  * Generic polling composable: immediate fetch + setInterval, pauses while the
- * document is hidden, cleans up on unmount. Overlapping requests are skipped.
+ * document is hidden, cleans up on unmount. Manual refreshes abort an older
+ * request and only the newest result is allowed to update state.
  */
 export function usePolling<T>(
+  fetcher: (signal: AbortSignal) => Promise<T>,
+  options?: PollingOptions,
+): PollingResult<T>
+export function usePolling<T>(
   fetcher: () => Promise<T>,
+  options?: PollingOptions,
+): PollingResult<T>
+export function usePolling<T>(
+  fetcher: ((signal: AbortSignal) => Promise<T>) | (() => Promise<T>),
   options: PollingOptions = {},
 ): PollingResult<T> {
   const interval = options.interval ?? 30_000
@@ -36,22 +45,34 @@ export function usePolling<T>(
   let inFlight = false
   let rerunRequested = false
   let stopped = false
+  let activeController: AbortController | null = null
+  let activeGeneration = 0
 
   const run = async (queueIfBusy: boolean): Promise<void> => {
     if (stopped) return
     if (inFlight) {
-      if (queueIfBusy) rerunRequested = true
+      if (queueIfBusy) {
+        rerunRequested = true
+        activeController?.abort()
+      }
       return
     }
     inFlight = true
+    const controller = new AbortController()
+    activeController = controller
+    const generation = ++activeGeneration
     if (data.value === null) loading.value = true
     try {
-      data.value = await fetcher()
+      const next = await (fetcher as (signal: AbortSignal) => Promise<T>)(controller.signal)
+      if (controller.signal.aborted || stopped || generation !== activeGeneration) return
+      data.value = next
       error.value = null
       lastUpdated.value = new Date()
     } catch (e) {
+      if (controller.signal.aborted) return
       error.value = e instanceof Error ? e.message : 'Unknown error'
     } finally {
+      if (activeController === controller) activeController = null
       loading.value = false
       inFlight = false
       if (rerunRequested && !stopped) {
@@ -83,6 +104,8 @@ export function usePolling<T>(
   onUnmounted(() => {
     stopped = true
     rerunRequested = false
+    activeController?.abort()
+    activeGeneration += 1
     if (timer !== undefined) window.clearInterval(timer)
     document.removeEventListener('visibilitychange', handleVisibilityChange)
   })

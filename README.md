@@ -98,7 +98,7 @@ Crawler 启动时载入 CoinGecko Top 200 候选池、provider 代码评审清�
 
 Overview 与 dashboard 必须从同一 selection union 对账：display predicate 为真的资产计为 priced/displayed，其余（包括 LEFT JOIN 后没有 snapshot、SQL 值为 NULL 的资产）统一计为 unpriced；守恒条件是 `displayed_asset_count + unpriced_asset_count = asset_count`。零 catalog 是 provider 当前部署不可用，不是内部 SQL 错误；Binance 451、Bybit 403 保留原状态且不得经代理或其它 provider 绕过。Markets 搜索只有当前 query key 成功返回空集合后才显示 empty，慢请求显示 loading，`published_asset_count=0` 显示 deployment unavailable。计数、降级和复现入口见 [Market data quality](docs/market-data-quality.md)。
 
-R2E 把公开 overview/dashboard 固定到同一个不可变行情快照：PostgreSQL 在一次 read-only `REPEATABLE READ` 事务中使用同一 `CURRENT_TIMESTAMP` 读取 summary、global metric 与完整资产行，Redis 再以 15 秒 bucket、5 分钟 TTL、最多 64 个完整值做跨 API 实例的单一 authority。响应必须携带 `snapshot_id`、`snapshot_as_of`、`qiu.market-snapshot.v1`；All universe 是七家 provider 选择的 canonical union，cardinality 会随合法 selection 变化，但必须在 Top-200 边界内满足 `1 <= asset_count <= 200`、`asset_count = fresh + stale + unavailable` 与 `priced = fresh + stale`。`106 / 61 / 45` 是 R2I 历史验收切片，不是永久 API 合同；覆盖验收仍分别报告 Top20/50/106，避免 universe 扩大掩盖原有资产质量。显式 snapshot dashboard 不进入 BFF cache，ticks 继续实时且不缓存。BFF 同时核对 backend/edge exact release SHA、`data_mode=live`、`restricted-no-bypass.v1`、contract/snapshot schema 与本次 nonce；wrong SHA、旧 deterministic replay、direct `18080`、损坏或过期 snapshot 都 fail closed，不能回退 stale cache。Mac live lane 固定经独立 `com.qiu-market.d1r1.frontdoor` 的 pure frontdoor `18084 -> 18080`，business stack 仍由 `com.qiu-market.d1r1.stack` 管理；selector、tunnel、Redis generation owner 与失败回滚流程见 [Vercel + Mac mini 上线手册](docs/qiu-market-vercel-mac.md#r2e-行情读取合同与原子切换)。
+R2E 把公开 overview/dashboard 固定到同一个不可变行情快照：PostgreSQL 在一次 read-only `REPEATABLE READ` 事务中使用同一 `CURRENT_TIMESTAMP` 读取 summary、global metric 与完整资产行，Redis 再以 15 秒 bucket、5 分钟 TTL、最多 64 个完整值做跨 API 实例的单一 authority。`get_asset_dashboard` 的同一响应直接携带 `overview` 与 rows，二者共享 `snapshot_id`、`snapshot_as_of` 和 `qiu.market-snapshot.v1`，首屏不再串行调用 overview；All universe 是七家 provider 选择的 canonical union，cardinality 会随合法 selection 变化，但必须在 Top-200 边界内满足 `1 <= asset_count <= 200`、`asset_count = fresh + stale + unavailable` 与 `priced = fresh + stale`。`106 / 61 / 45` 是 R2I 历史验收切片，不是永久 API 合同；覆盖验收仍分别报告 Top20/50/106，避免 universe 扩大掩盖原有资产质量。未指定 snapshot 的 dashboard 可在 BFF 缓存 15 秒、传输故障最多回退 240 秒；显式 snapshot dashboard 不缓存，ticks 继续实时且不缓存。BFF 同时核对 backend/edge exact release SHA、`data_mode=live`、`restricted-no-bypass.v1`、contract/snapshot schema 与本次 nonce；wrong SHA、旧 deterministic replay、direct `18080`、损坏或过期 snapshot 都 fail closed，不能回退 stale cache。Mac live lane 固定经独立 `com.qiu-market.d1r1.frontdoor` 的 pure frontdoor `18084 -> 18080`，business stack 仍由 `com.qiu-market.d1r1.stack` 管理；selector、tunnel、Redis generation owner 与失败回滚流程见 [Vercel + Mac mini 上线手册](docs/qiu-market-vercel-mac.md#r2e-行情读取合同与原子切换)。
 
 本机优先运行还必须显式安装登录恢复与防空闲睡眠：
 `ops/macos/manage-live-user-runtime.sh install` 将八个精确、owner-only LaunchAgent
@@ -153,13 +153,13 @@ Q-M7A 把此前分开的交易、研究和质量 golden path 合成一个 produc
 
 行情快照保存 `observed_at` 与可空 `source_time/source_time_kind`。接口返回 `provider_updated_at` 和 `freshness_status`；System 把“进程活着”和“上游数据源健康”分开，不能再用心跳冒充 Binance 可用。页面顶部只写 `Page refreshed`，表示页面何时请求成功，不代表数据源健康。K 线新鲜度按周期归一判定，进行中的蜡烛用虚线 + `LIVE` 价签与已闭合蜡烛区分；这里的 LIVE 也不代表 WebSocket。
 
-V2 资产首页与 3 秒轻量 tick 还返回结构化的 `venue_price`、
+V2 资产首页与 5 秒轻量 tick 还返回结构化的 `venue_price`、
 `dex_route_price`、`display_price`。每个价格事实把 value/change、`source`、
 `source_time`、`observed_at`、freshness、quality、contributors 和 version
 绑在一起；调用方不再从一个裸数值猜来源。`display_price` 是 CEX
 composite 或明确的 market reference 分栏，DEX route 只进入
 `dex_route_price`。原平铺字段暂时保留为兼容层；当前 HTTP/TypeScript
-契约已固化，Markets 的 3 秒 tick 已只消费匹配 venue 的价格事实。DEX 页把
+契约已固化，Markets 的 5 秒 tick 已只消费匹配 venue 的价格事实。DEX 页把
 Route 与 Reference 的价格、24h 和质量永久分栏；route 超过 60 秒后，兼容字段
 也会清空链上价格、涨跌、成交额、来源和质量，reference 只能留在自身栏位。
 
@@ -167,7 +167,7 @@ Route 与 Reference 的价格、24h 和质量永久分栏；route 超过 60 秒�
 
 - **设计令牌**：色彩 / 圆角 / 字体 / 间距全部集中在 `src/style.css` 的 CSS 变量，组件不硬编码颜色；Apple 风格蓝白金融产品主题，数字统一 tabular-nums。
 - **组件化**：DataTable（排序 / 搜索 / 分页）、StatusBadge、AssetLogo、StatCard、骨架屏、ErrorState、EmptyState 等共享组件，页面只组合不复制样式。
-- **数据层**：`usePolling` 组合式函数统一慢速快照轮询（Markets 15s、System 15s，其余通常 30s），页面隐藏自动暂停，卸载自动清理；Markets 另有 3 秒轻量 tick，按 query generation、venue identity、version 与 observed time 拒绝旧响应。失败时只显示五分钟内并明确标记的同 venue last-good，不回退综合价。API 层对后端"数字序列化为字符串"的情况统一做类型兜底。
+- **数据层**：`usePolling` 组合式函数统一慢速快照轮询（Markets 15s、System 15s，其余通常 30s），页面隐藏自动暂停，卸载自动清理；Markets 另有 5 秒轻量 tick，按 query generation、venue identity、version 与 observed time 拒绝旧响应。失败时只显示五分钟内并明确标记的同 venue last-good，不回退综合价。API 层对后端"数字序列化为字符串"的情况统一做类型兜底。
 - **类型与构建**：全部页面 `<script setup lang="ts">`，TS strict + noUnusedLocals，`npm run build` 先过 vue-tsc 再构建；ECharts 按需引入且仅行情详情 / Insights 加载（独立 chunk）。
 
 ### 不使用 Mock 行情兜底

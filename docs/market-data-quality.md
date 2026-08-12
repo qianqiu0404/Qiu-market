@@ -29,6 +29,12 @@ Markets 搜索按当前 query key 表达三个互斥状态：当前请求尚未�
 期间也不能先显示“无结果”。每个价格仍必须携带 provider、时间和 freshness；这些 UI 状态
 只解释查询进度与来源可用性，不制造价格。
 
+切 venue、搜索或排序会立即取消旧 dashboard/tick 请求，迟到响应必须同时匹配完整 query
+key 与 generation 才能落屏。每个 query 最多保留五分钟 last-good；缓存命中必须标注
+刷新中和年龄，瞬时 502/504 不清空表格，且绝不能借用另一 venue 的 rows。dashboard 的
+overview 与 rows 由同一次 API 响应、同一 Redis snapshot 提供，页面不再先 overview 后
+dashboard 串行等待。
+
 关键入口按顺序是：
 
 1. `database/market_aggregation.go`：从同一 union 计算 displayed/unpriced 守恒计数；

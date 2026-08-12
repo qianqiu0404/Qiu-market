@@ -533,6 +533,10 @@ export interface Paged<T> {
 	snapshot_schema?: string
 }
 
+export interface AssetDashboardV2Page extends Paged<AssetDashboardV2Item> {
+	overview: MarketOverviewV2
+}
+
 /* ===== Coercion helpers (backend may send numbers as strings) ===== */
 
 function toNum(value: unknown): number {
@@ -860,15 +864,19 @@ export async function getSystemOverview(): Promise<SystemOverview> {
   }
 }
 
-export async function getMarketOverviewV2(venue: MarketVenue = 'all'): Promise<MarketOverviewV2> {
-	const response = await request<Record<string, unknown>>('/api/v2/get_market_overview', { venue })
-	const { result } = response
-	const item = result ?? {}
-	const snapshotID = toStr(response.snapshot_id)
-	const snapshotAsOf = toNum(response.snapshot_as_of)
-	const snapshotSchema = toStr(response.snapshot_schema)
-	if (!MARKET_SNAPSHOT_ID_PATTERN.test(snapshotID) || snapshotAsOf <= 0 ||
-		snapshotSchema !== MARKET_SNAPSHOT_SCHEMA) {
+function parseMarketOverviewV2(
+	result: unknown,
+	venue: MarketVenue,
+	snapshotID: string,
+	snapshotAsOf: number,
+	snapshotSchema: string,
+): MarketOverviewV2 {
+	if (!result || typeof result !== 'object' || Array.isArray(result)) {
+		throw new ApiError('Market overview returned an invalid result')
+	}
+		const item = (result ?? {}) as Record<string, unknown>
+		if (!MARKET_SNAPSHOT_ID_PATTERN.test(snapshotID) || snapshotAsOf <= 0 ||
+			snapshotSchema !== MARKET_SNAPSHOT_SCHEMA) {
 		throw new ApiError('Market overview returned an invalid snapshot contract')
 	}
   const assetCount = toNum(item.asset_count)
@@ -934,7 +942,18 @@ export async function getMarketOverviewV2(venue: MarketVenue = 'all'): Promise<M
     preview_covered_count: toNum(item.preview_covered_count),
     universe: toStr(item.universe),
     selection_version: toNum(item.selection_version),
-  }
+	}
+}
+
+export async function getMarketOverviewV2(venue: MarketVenue = 'all'): Promise<MarketOverviewV2> {
+	const response = await request<Record<string, unknown>>('/api/v2/get_market_overview', { venue })
+	return parseMarketOverviewV2(
+		response.result,
+		venue,
+		toStr(response.snapshot_id),
+		toNum(response.snapshot_as_of),
+		toStr(response.snapshot_schema),
+	)
 }
 
 export async function getAssetDashboardV2(
@@ -947,10 +966,11 @@ export async function getAssetDashboardV2(
     sortBy?: 'rank' | 'market_cap' | 'turnover24h' | 'change24h' | 'price' | 'symbol'
     sortDirection?: 'asc' | 'desc'
     includeUncovered?: boolean
-    universe?: 'provider_top50' | 'provider_union' | 'legacy_top50'
-		snapshotID?: string
-  } = {},
-): Promise<Paged<AssetDashboardV2Item>> {
+		universe?: 'provider_top50' | 'provider_union' | 'legacy_top50'
+			snapshotID?: string
+		signal?: AbortSignal
+	  } = {},
+	): Promise<AssetDashboardV2Page> {
   const requestedVenue = options.venue ?? 'all'
   const strictDexDisplay =
     requestedVenue === 'uniswap' || requestedVenue === 'pancakeswap'
@@ -965,7 +985,7 @@ export async function getAssetDashboardV2(
     include_uncovered: options.includeUncovered ?? true,
     universe: options.universe ?? (requestedVenue === 'all' ? 'provider_union' : 'provider_top50'),
 		snapshot_id: options.snapshotID ?? '',
-  })
+		  }, { signal: options.signal })
 	const { result, total } = response
 	const snapshotID = toStr(response.snapshot_id)
 	const snapshotAsOf = toNum(response.snapshot_as_of)
@@ -973,8 +993,15 @@ export async function getAssetDashboardV2(
 	if (!MARKET_SNAPSHOT_ID_PATTERN.test(snapshotID) || snapshotAsOf <= 0 ||
 		snapshotSchema !== MARKET_SNAPSHOT_SCHEMA ||
 		(options.snapshotID != null && snapshotID !== options.snapshotID)) {
-		throw new ApiError('Market dashboard returned a mismatched snapshot contract')
-	}
+			throw new ApiError('Market dashboard returned a mismatched snapshot contract')
+		}
+	const overview = parseMarketOverviewV2(
+		response.overview,
+		requestedVenue,
+		snapshotID,
+		snapshotAsOf,
+		snapshotSchema,
+	)
   const items = toArray(result).map((raw): AssetDashboardV2Item => {
     const item = (raw ?? {}) as Record<string, unknown>
     const rank = item.rank == null ? null : toNum(item.rank)
@@ -1072,14 +1099,16 @@ export async function getAssetDashboardV2(
 		items,
 		total: typeof total === 'number' ? total : items.length,
 		snapshot_id: snapshotID,
-		snapshot_as_of: snapshotAsOf,
-		snapshot_schema: snapshotSchema,
-	}
+			snapshot_as_of: snapshotAsOf,
+			snapshot_schema: snapshotSchema,
+			overview,
+		}
 }
 
 export async function getMarketPriceTicks(
   venue: MarketVenue,
   assetIDs: string[],
+	signal?: AbortSignal,
 ): Promise<MarketPriceTickSnapshot> {
   const uniqueAssetIDs = [...new Set(assetIDs.map((value) => value.trim()).filter(Boolean))]
   if (uniqueAssetIDs.length > 100) {
@@ -1088,7 +1117,7 @@ export async function getMarketPriceTicks(
   const response = await request<unknown>('/api/v2/get_market_price_ticks', {
     venue,
     asset_ids: uniqueAssetIDs,
-  })
+	  }, { signal })
   const responseVenue = (toStr(response.venue) || venue) as MarketVenue
   return {
     venue: responseVenue,

@@ -7,12 +7,10 @@ import StatusBadge from '../components/StatusBadge.vue'
 import ErrorState from '../components/ErrorState.vue'
 import AppIcon from '../components/AppIcon.vue'
 import { usePolling } from '../composables/usePolling'
-import { ApiError } from '../api/common'
 import {
   getAssetDashboardV2,
   getAssetVenuesV2,
   getFiatRates,
-  getMarketOverviewV2,
   getMarketPriceTicks,
   marketTickCacheKey,
   mergeMarketPriceTickSnapshot,
@@ -20,6 +18,7 @@ import {
   validatedDexRoutePriceFact,
   validatedDisplayReferencePriceFact,
   type AssetDashboardV2Item,
+  type AssetDashboardV2Page,
   type AssetFilter,
   type AssetMarketV2Item,
   type AvailableDecimal,
@@ -28,7 +27,6 @@ import {
   type MarketPriceTickSnapshot,
   type MarketTickState,
   type MarketVenue,
-  type Paged,
 } from '../api/market'
 import { formatAbbr, formatPercent, formatPrice, formatTime, providerFreshnessVariant } from '../utils/format'
 import { qualityGradeBadge, type QualityGradeBadge } from '../features/markets/quality-grade'
@@ -37,6 +35,13 @@ import {
   hasValidDexRouteIdentity,
   type VenueQuoteRow,
 } from '../features/markets/venue-quotes'
+import {
+  isDashboardLastGoodCurrent,
+  isCurrentDashboardRequest,
+  readDashboardLastGood,
+  writeDashboardLastGood,
+  type DashboardLastGood,
+} from '../features/markets/dashboard-cache'
 
 type Fiat = 'USD' | 'CNY' | 'HKD'
 
@@ -116,18 +121,6 @@ const requestedUniverse = computed<'provider_top50' | 'provider_union'>(() => {
   if (venue.value === 'all') return 'provider_union'
   return 'provider_top50'
 })
-const overview = usePolling(async () => {
-  const requestedVenue = venue.value
-  return {
-    venue: requestedVenue,
-    data: await getMarketOverviewV2(requestedVenue),
-  }
-}, { interval: 30_000 })
-const pollingOverview = computed<MarketOverviewV2 | null>(() => {
-  const snapshot = overview.data.value
-  return snapshot?.venue === venue.value ? snapshot.data : null
-})
-
 interface DashboardQuery {
   venue: MarketVenue
   page: number
@@ -141,13 +134,7 @@ interface DashboardQuery {
 
 interface DashboardSnapshot {
   queryKey: string
-  data: Paged<AssetDashboardV2Item>
-	overview: MarketOverviewV2
-}
-
-interface DashboardFailure {
-  queryKey: string
-  message: string
+  data: AssetDashboardV2Page
 }
 
 function readDashboardQuery(): DashboardQuery {
@@ -169,65 +156,120 @@ function dashboardQueryKey(query: DashboardQuery): string {
 
 const currentDashboardQueryKey = computed(() =>
   dashboardQueryKey(readDashboardQuery()))
-const dashboardFailure = ref<DashboardFailure | null>(null)
-const dashboard = usePolling(
-  async (): Promise<DashboardSnapshot> => {
-    const query = readDashboardQuery()
-    const queryKey = dashboardQueryKey(query)
-    try {
-		let boundOverview = await getMarketOverviewV2(query.venue)
-		const loadDashboard = (): Promise<Paged<AssetDashboardV2Item>> =>
-			getAssetDashboardV2(query.page, query.pageSize, {
-				venue: query.venue,
-				search: query.search,
-				filter: query.filter,
-				sortBy: query.sortBy,
-				sortDirection: query.sortDirection,
-				includeUncovered: true,
-				universe: query.universe,
-				snapshotID: boundOverview.snapshot_id,
-			})
-		let data: Paged<AssetDashboardV2Item>
-		try {
-			data = await loadDashboard()
-		} catch (error) {
-			if (!(error instanceof ApiError) || error.status !== 409) throw error
-			boundOverview = await getMarketOverviewV2(query.venue)
-			data = await loadDashboard()
-		}
-      if (dashboardFailure.value?.queryKey === queryKey) {
-        dashboardFailure.value = null
-      }
-		return { queryKey, data, overview: boundOverview }
-    } catch (error) {
-      dashboardFailure.value = {
-        queryKey,
-        message: error instanceof Error ? error.message : 'Unable to load market results',
-      }
-      throw error
+const dashboardData = ref<DashboardSnapshot | null>(null)
+const dashboardLastUpdated = ref<Date | null>(null)
+const dashboardLoading = ref(false)
+const dashboardRefreshing = ref(false)
+const dashboardFailure = ref('')
+const dashboardRefreshError = ref('')
+const dashboardCache = new Map<string, DashboardLastGood<DashboardSnapshot>>()
+const dashboardCacheStoredAt = ref(0)
+const dashboardClock = ref(Date.now())
+let dashboardController: AbortController | null = null
+let dashboardGeneration = 0
+let dashboardPollTimer: number | undefined
+let dashboardClockTimer: number | undefined
+
+function restoreDashboardLastGood(queryKey: string): boolean {
+  const cached = readDashboardLastGood(dashboardCache, queryKey)
+  if (!cached) {
+    dashboardData.value = null
+    dashboardLastUpdated.value = null
+    dashboardCacheStoredAt.value = 0
+    return false
+  }
+  dashboardData.value = cached.value
+  dashboardLastUpdated.value = new Date(cached.storedAt)
+  dashboardCacheStoredAt.value = cached.storedAt
+  return true
+}
+
+async function refreshDashboard(restoreLastGood = false): Promise<void> {
+  const query = readDashboardQuery()
+  const queryKey = dashboardQueryKey(query)
+  const hasLastGood = restoreLastGood
+    ? restoreDashboardLastGood(queryKey)
+    : dashboardData.value?.queryKey === queryKey
+  dashboardController?.abort()
+  const controller = new AbortController()
+  dashboardController = controller
+  const generation = ++dashboardGeneration
+  dashboardFailure.value = ''
+  dashboardRefreshError.value = ''
+  dashboardLoading.value = !hasLastGood
+  dashboardRefreshing.value = hasLastGood
+  try {
+    const data = await getAssetDashboardV2(query.page, query.pageSize, {
+      venue: query.venue,
+      search: query.search,
+      filter: query.filter,
+      sortBy: query.sortBy,
+      sortDirection: query.sortDirection,
+      includeUncovered: true,
+      universe: query.universe,
+      signal: controller.signal,
+    })
+    if (!isCurrentDashboardRequest(
+      generation,
+      dashboardGeneration,
+      queryKey,
+      currentDashboardQueryKey.value,
+    )) return
+    const snapshot = { queryKey, data }
+    const cached = writeDashboardLastGood(dashboardCache, queryKey, snapshot)
+    dashboardData.value = snapshot
+    dashboardLastUpdated.value = new Date(cached.storedAt)
+    dashboardCacheStoredAt.value = cached.storedAt
+  } catch (error) {
+    if (controller.signal.aborted) return
+    if (!isCurrentDashboardRequest(
+      generation,
+      dashboardGeneration,
+      queryKey,
+      currentDashboardQueryKey.value,
+    )) return
+    const message = error instanceof Error ? error.message : 'Unable to load market results'
+    if (dashboardData.value?.queryKey === queryKey) dashboardRefreshError.value = message
+    else dashboardFailure.value = message
+  } finally {
+    if (generation === dashboardGeneration) {
+      dashboardLoading.value = false
+      dashboardRefreshing.value = false
+      if (dashboardController === controller) dashboardController = null
     }
-  },
-  { interval: 15_000 },
-)
+  }
+}
+
+const dashboard = {
+  data: dashboardData,
+  lastUpdated: dashboardLastUpdated,
+  refresh: (): Promise<void> => refreshDashboard(false),
+}
 
 const currentOverview = computed<MarketOverviewV2 | null>(() => {
-	const snapshot = dashboard.data.value
-	if (snapshot?.queryKey === currentDashboardQueryKey.value) return snapshot.overview
-	return pollingOverview.value
+		const snapshot = dashboard.data.value
+		return snapshot?.queryKey === currentDashboardQueryKey.value
+			&& isDashboardLastGoodCurrent(dashboardCacheStoredAt.value, dashboardClock.value)
+			? snapshot.data.overview
+			: null
 })
 const currentDashboard = computed(() => {
-  const snapshot = dashboard.data.value
-  return snapshot?.queryKey === currentDashboardQueryKey.value
-	&& snapshot.data.snapshot_id === currentOverview.value?.snapshot_id
+	  const snapshot = dashboard.data.value
+	  return snapshot?.queryKey === currentDashboardQueryKey.value
+		&& isDashboardLastGoodCurrent(dashboardCacheStoredAt.value, dashboardClock.value)
+		&& snapshot.data.snapshot_id === currentOverview.value?.snapshot_id
     ? snapshot.data
     : null
 })
 const currentDashboardError = computed(() =>
-  dashboardFailure.value?.queryKey === currentDashboardQueryKey.value
-    ? dashboardFailure.value.message
+  currentDashboard.value === null && dashboardFailure.value
+    ? dashboardFailure.value
     : null)
 const currentDashboardLoading = computed(() =>
   currentDashboard.value === null && currentDashboardError.value === null)
+const dashboardLastGoodAgeSeconds = computed(() => dashboardCacheStoredAt.value > 0
+  ? Math.max(0, Math.floor((dashboardClock.value - dashboardCacheStoredAt.value) / 1_000))
+  : 0)
 const assets = computed(() => currentDashboard.value?.items ?? [])
 const total = computed(() => currentDashboard.value?.total ?? 0)
 interface PriceTickSnapshot {
@@ -255,7 +297,7 @@ const priceTickFailure = ref<PriceTickFailure | null>(null)
 const lastGoodTickFacts = ref<Map<string, MarketPriceFact>>(new Map())
 const latestTickStates = ref<Map<string, MarketTickState>>(new Map())
 const priceTicks = usePolling(
-  async (): Promise<PriceTickSnapshot> => {
+  async (signal): Promise<PriceTickSnapshot> => {
     const requestedVenue = venue.value
     const assetIDs = assets.value.map((asset) => asset.asset_id)
     const queryKey = priceTickQueryKey(requestedVenue, assets.value)
@@ -268,7 +310,7 @@ const priceTicks = usePolling(
       }
     }
     try {
-      const data = await getMarketPriceTicks(requestedVenue, assetIDs)
+      const data = await getMarketPriceTicks(requestedVenue, assetIDs, signal)
       if (generation === priceTickGeneration.value &&
         queryKey === currentPriceTickQueryKey.value) {
         priceTickFailure.value = null
@@ -283,7 +325,7 @@ const priceTicks = usePolling(
       throw error
     }
   },
-  { interval: 3_000 },
+  { interval: 5_000 },
 )
 const currentPriceTicks = computed(() => {
   const snapshot = priceTicks.data.value
@@ -362,6 +404,13 @@ const rangeEnd = computed(() => Math.min(total.value, (page.value - 1) * pageSiz
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
+	dashboardPollTimer = window.setInterval(() => {
+		if (!document.hidden) void refreshDashboard(false)
+	}, 15_000)
+	dashboardClockTimer = window.setInterval(() => {
+		dashboardClock.value = Date.now()
+	}, 1_000)
+	void refreshDashboard(true)
   try {
     rates.value = (await getFiatRates()).rates
   } catch {
@@ -372,6 +421,9 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   if (searchTimer !== undefined) window.clearTimeout(searchTimer)
+	dashboardController?.abort()
+	if (dashboardPollTimer !== undefined) window.clearInterval(dashboardPollTimer)
+	if (dashboardClockTimer !== undefined) window.clearInterval(dashboardClockTimer)
 })
 
 const rate = computed(() => {
@@ -399,11 +451,10 @@ function syncRoute(): void {
 }
 
 watch([venue, filter, page, pageSize, sortKey, sortDir], ([nextVenue, nextFilter], [previousVenue, previousFilter]) => {
-  if (nextVenue !== previousVenue || nextFilter !== previousFilter) page.value = 1
+	  if (nextVenue !== previousVenue || nextFilter !== previousFilter) page.value = 1
   syncRoute()
-  void overview.refresh()
-  void dashboard.refresh()
-})
+	  void refreshDashboard(true)
+}, { flush: 'sync' })
 
 watch(
   currentPriceTickQueryKey,
@@ -419,8 +470,15 @@ let searchTimer: number | undefined
 watch(search, () => {
   page.value = 1
   syncRoute()
+	dashboardController?.abort()
+	dashboardController = null
+	dashboardGeneration += 1
+	dashboardFailure.value = ''
+	dashboardRefreshError.value = ''
+	dashboardLoading.value = true
+	dashboardRefreshing.value = false
   if (searchTimer !== undefined) window.clearTimeout(searchTimer)
-  searchTimer = window.setTimeout(() => void dashboard.refresh(), 250)
+  searchTimer = window.setTimeout(() => void refreshDashboard(true), 250)
 })
 
 watch(selectedAssetID, (assetID, _previousAssetID, onCleanup) => {
@@ -957,9 +1015,26 @@ function coverageReasonLabel(reason: string): string {
         </label>
       </div>
 
-      <p class="quality-freshness-note">
-        Quality: High = 3+ independent quotes, Medium = 2, Low = 1. Freshness is shown separately with each price.
-      </p>
+	  <p class="quality-freshness-note">
+		Quality: High = 3+ independent quotes, Medium = 2, Low = 1. Freshness is shown separately with each price.
+	  </p>
+	  <p
+		v-if="currentDashboard && dashboardRefreshing"
+		class="market-refresh-state"
+		role="status"
+		aria-live="polite"
+	  >
+		Refreshing {{ selectedVenueLabel }} · showing this query's last successful snapshot
+		({{ dashboardLastGoodAgeSeconds }}s old)
+	  </p>
+	  <p
+		v-else-if="currentDashboard && dashboardRefreshError"
+		class="market-refresh-state degraded"
+		role="status"
+	  >
+		Live refresh was delayed. Keeping this query's last successful snapshot
+		({{ dashboardLastGoodAgeSeconds }}s old).
+	  </p>
 
       <ErrorState
         v-if="currentDashboardError && assets.length === 0"
@@ -1421,6 +1496,18 @@ function coverageReasonLabel(reason: string): string {
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   font-size: 10px;
+}
+.market-refresh-state {
+	margin: 0;
+	padding: 8px 16px;
+	color: var(--accent);
+	background: var(--accent-soft);
+	border-bottom: 1px solid var(--border);
+	font-size: 11px;
+}
+.market-refresh-state.degraded {
+	color: var(--warn);
+	background: #fff8e8;
 }
 .table-search input {
   width: 100%;

@@ -43,6 +43,37 @@ describe('usePolling', () => {
     app.unmount()
   })
 
+  it('aborts the old request and rejects its late result when refreshed', async () => {
+    let finishFirst: ((value: string) => void) | undefined
+    let firstSignal: AbortSignal | undefined
+    const fetcher = vi.fn()
+      .mockImplementationOnce((signal: AbortSignal) => {
+        firstSignal = signal
+        return new Promise<string>((resolve) => { finishFirst = resolve })
+      })
+      .mockResolvedValueOnce('latest')
+    let polling: PollingResult<string> | undefined
+    const host = document.createElement('div')
+    document.body.append(host)
+    const app = createApp({
+      setup() {
+        polling = usePolling(fetcher, { immediate: false, interval: 60_000 })
+        return () => h('div')
+      },
+    })
+    app.mount(host)
+
+    const first = polling?.refresh()
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce())
+    await polling?.refresh()
+    expect(firstSignal?.aborted).toBe(true)
+    finishFirst?.('late-old-value')
+    await first
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(polling?.data.value).toBe('latest'))
+    app.unmount()
+  })
+
   it('skips interval ticks while a slow request is in flight', async () => {
     vi.useFakeTimers()
     let finish: ((value: string) => void) | undefined

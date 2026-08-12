@@ -18,6 +18,7 @@ import (
 
 	"github.com/the-web3/s78-market-services/database"
 	qredis "github.com/the-web3/s78-market-services/redis"
+	"github.com/the-web3/s78-market-services/services/http/model"
 )
 
 type snapshotFixtureSource struct {
@@ -169,6 +170,30 @@ func TestMarketSnapshotRedisAuthorityAcrossInstances(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, first.ID, readBack.ID)
 	require.Equal(t, first.Contract.ReleaseCommit, readBack.Contract.ReleaseCommit)
+}
+
+func TestAssetDashboardCarriesOverviewFromTheSameRedisSnapshot(t *testing.T) {
+	client, _ := startIsolatedRedis(t)
+	store := newMarketSnapshotStore(
+		&snapshotFixtureSource{marker: "atomic-dashboard"},
+		client,
+		snapshotFixtureContract(),
+	)
+	store.now = func() time.Time { return time.Date(2026, 8, 12, 2, 3, 4, 0, time.UTC) }
+	handle := HandleSvc{marketSnapshots: store}
+	response, err := handle.GetAssetDashboardV2(&model.AssetDashboardV2Request{
+		Venue: "all", Universe: "provider_union", Page: 1, PageSize: 50,
+	})
+	require.NoError(t, err)
+	require.Len(t, response.Result, 50)
+	require.EqualValues(t, 106, response.Total)
+	require.EqualValues(t, 106, response.Overview.AssetCount)
+	require.EqualValues(t, 40, response.Overview.FreshAssetCount)
+	require.EqualValues(t, 21, response.Overview.StaleAssetCount)
+	require.EqualValues(t, 45, response.Overview.UnavailableAssetCount)
+	require.EqualValues(t, response.Overview.AssetCount,
+		response.Overview.FreshAssetCount+response.Overview.StaleAssetCount+response.Overview.UnavailableAssetCount)
+	require.Equal(t, store.bucketID("all", store.now().Truncate(marketSnapshotCurrentFor)), response.SnapshotID)
 }
 
 func TestMarketSnapshotCardinalityUsesBoundedTop200Union(t *testing.T) {

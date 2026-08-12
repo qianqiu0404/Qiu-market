@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/shopspring/decimal"
 
 	"github.com/the-web3/s78-market-services/database"
@@ -81,12 +82,18 @@ func newMarketSnapshotStore(
 }
 
 func (s *marketSnapshotStore) resolve(venue, requestedID string) (*marketSnapshot, error) {
+	started := time.Now()
 	venue = strings.ToLower(strings.TrimSpace(venue))
 	if s.redis == nil {
 		return nil, ErrMarketSnapshotUnavailable
 	}
 	if requestedID != "" {
-		return s.read(strings.TrimSpace(requestedID), venue)
+		redisStarted := time.Now()
+		entry, err := s.read(strings.TrimSpace(requestedID), venue)
+		log.Info("Market snapshot read timing", "venue", venue, "source", "redis_explicit",
+			"snapshot_id", strings.TrimSpace(requestedID), "redis_read_ms", time.Since(redisStarted).Milliseconds(),
+			"postgres_build_ms", 0, "redis_store_ms", 0, "total_ms", time.Since(started).Milliseconds())
+		return entry, err
 	}
 
 	// The 15-second bucket is the current pointer. Every API instance derives
@@ -95,14 +102,25 @@ func (s *marketSnapshotStore) resolve(venue, requestedID string) (*marketSnapsho
 	now := s.now().UTC()
 	bucket := now.Truncate(marketSnapshotCurrentFor)
 	id := s.bucketID(venue, bucket)
+	redisStarted := time.Now()
 	if existing, err := s.read(id, venue); err == nil {
+		log.Info("Market snapshot read timing", "venue", venue, "source", "redis_current",
+			"snapshot_id", id, "redis_read_ms", time.Since(redisStarted).Milliseconds(),
+			"postgres_build_ms", 0, "redis_store_ms", 0, "total_ms", time.Since(started).Milliseconds())
 		return existing, nil
 	} else if !errors.Is(err, ErrMarketSnapshotExpired) {
 		return nil, err
 	}
 
+	redisReadDuration := time.Since(redisStarted)
+	postgresStarted := time.Now()
 	read, err := s.source.QueryMarketReadSnapshot(venue)
+	postgresDuration := time.Since(postgresStarted)
 	if err != nil {
+		log.Error("Market snapshot read timing", "venue", venue, "source", "postgres_error",
+			"snapshot_id", id, "redis_read_ms", redisReadDuration.Milliseconds(),
+			"postgres_build_ms", postgresDuration.Milliseconds(), "redis_store_ms", 0,
+			"total_ms", time.Since(started).Milliseconds(), "error_class", "snapshot_build")
 		return nil, err
 	}
 	entry := &marketSnapshot{
@@ -116,16 +134,28 @@ func (s *marketSnapshotStore) resolve(venue, requestedID string) (*marketSnapsho
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode snapshot: %v", ErrMarketSnapshotInvalid, err)
 	}
+	storeStarted := time.Now()
 	created, err := s.store(id, payload, now)
+	storeDuration := time.Since(storeStarted)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrMarketSnapshotUnavailable, err)
 	}
 	if created {
+		log.Info("Market snapshot read timing", "venue", venue, "source", "postgres_winner",
+			"snapshot_id", id, "redis_read_ms", redisReadDuration.Milliseconds(),
+			"postgres_build_ms", postgresDuration.Milliseconds(), "redis_store_ms", storeDuration.Milliseconds(),
+			"total_ms", time.Since(started).Milliseconds())
 		return entry, nil
 	}
 	// Another instance won this bucket. Redis is the authority: discard our
 	// database read and return the winner's complete immutable value.
-	return s.read(id, venue)
+	winnerStarted := time.Now()
+	winner, winnerErr := s.read(id, venue)
+	log.Info("Market snapshot read timing", "venue", venue, "source", "redis_winner",
+		"snapshot_id", id, "redis_read_ms", (redisReadDuration + time.Since(winnerStarted)).Milliseconds(),
+		"postgres_build_ms", postgresDuration.Milliseconds(), "redis_store_ms", storeDuration.Milliseconds(),
+		"total_ms", time.Since(started).Milliseconds())
+	return winner, winnerErr
 }
 
 func (s *marketSnapshotStore) bucketID(venue string, bucket time.Time) string {

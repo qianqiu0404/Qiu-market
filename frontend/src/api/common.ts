@@ -33,6 +33,7 @@ export interface RequestOutcome<T> {
 export async function request<T>(
   path: string,
   data: Record<string, unknown> = {},
+  options: { signal?: AbortSignal } = {},
 ): Promise<RequestOutcome<T>> {
   let res: Response
   try {
@@ -40,8 +41,10 @@ export async function request<T>(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ consumer_token: 'frontend-dashboard', ...data }),
+      signal: options.signal,
     })
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error
     throw new ApiError('Network error: the API is unreachable')
   }
 

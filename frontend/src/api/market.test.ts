@@ -22,6 +22,14 @@ const SNAPSHOT_META = {
 	snapshot_id: 'snp_00000000000000000000000000000001',
 	snapshot_as_of: 1785200000000,
 	snapshot_schema: 'qiu.market-snapshot.v1',
+	overview: {
+		asset_count: 1,
+		priced_asset_count: 1,
+		displayed_asset_count: 1,
+		fresh_asset_count: 1,
+		stale_asset_count: 0,
+		unavailable_asset_count: 0,
+	},
 }
 const priceFact = (
   value: string,
@@ -164,6 +172,12 @@ describe('getAssetDashboardV2', () => {
     expect(result.items[0]?.dex_route_available).toBe(false)
     expect(result.items[0]?.coverage_reason).toBe('missing_24h_reference')
     expect(result.items[0]).not.toHaveProperty('markets')
+		expect(result.overview).toMatchObject({
+			snapshot_id: SNAPSHOT_META.snapshot_id,
+			venue: 'binance',
+			asset_count: 1,
+			fresh_asset_count: 1,
+		})
   })
 
   it('never falls back to five-minute raw route fields for a DEX display', async () => {

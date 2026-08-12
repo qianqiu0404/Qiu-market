@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -26,6 +27,27 @@ const (
 )
 
 var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+type requestStartedKey struct{}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *responseRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *responseRecorder) Write(body []byte) (int, error) {
+	if r.status == 0 {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(body)
+}
+
+func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 type activeRelease struct {
 	SchemaVersion       string `json:"schema_version"`
@@ -186,9 +208,24 @@ func newFrontdoorWithTransport(
 		response.Header.Set("X-Qiu-Market-Edge-Release-Commit", release.Commit)
 		response.Header.Set("X-Qiu-Market-Edge-Data-Mode", liveDataMode)
 		response.Header.Set("X-Qiu-Market-Edge-Contract-Schema", edgeContractSchema)
+		if started, ok := response.Request.Context().Value(requestStartedKey{}).(time.Time); ok {
+			response.Header.Add("Server-Timing", fmt.Sprintf("qiu_frontdoor;dur=%d", time.Since(started).Milliseconds()))
+		}
 		return nil
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		started := time.Now()
+		recorder := &responseRecorder{ResponseWriter: w}
+		w = recorder
+		request = request.WithContext(context.WithValue(request.Context(), requestStartedKey{}, started))
+		defer func() {
+			event, _ := json.Marshal(map[string]any{
+				"event": "qiu_frontdoor_timing", "request_id": strings.TrimSpace(request.Header.Get("X-Request-ID")),
+				"route": request.URL.Path, "status": recorder.status,
+				"frontdoor_api_ms": time.Since(started).Milliseconds(),
+			})
+			fmt.Fprintln(os.Stdout, string(event))
+		}()
 		if _, err := authority.load(); err != nil {
 			if release, loadErr := authority.loadRelease(); loadErr == nil {
 				setSyntheticContractHeaders(w, request, release)

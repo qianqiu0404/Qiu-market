@@ -173,7 +173,7 @@ const windowValue = ref<MomentumWindow>('7d')
 
 const realtime = usePolling(getMarketInsights, { interval: 30_000 })
 const venues = usePolling(getTop50VenueInsights, { interval: 30_000 })
-const researchEvents = usePolling(getResearchSignalEvents, { interval: 60_000 })
+const researchEvents = usePolling(() => getResearchSignalEvents(), { interval: 60_000 })
 const researchSummary = usePolling(getResearchSignalSummary, { interval: 60_000 })
 const dataQuality = usePolling(getDataQualitySummary, { interval: 60_000 })
 

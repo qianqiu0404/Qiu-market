@@ -213,6 +213,28 @@ function sendCachedResponse(
   )
 }
 
+function logMarketReadTiming(fields: {
+  requestID: string
+  route: string
+  status: number
+  cacheState: string
+  cacheMs: number
+  tunnelMs: number
+  totalMs: number
+}): void {
+  console.info(JSON.stringify({
+    event: 'qiu_market_read_timing',
+    request_id: fields.requestID,
+    route: fields.route,
+    status: fields.status,
+    cache_state: fields.cacheState,
+    function_region: process.env.VERCEL_REGION?.trim() || 'local',
+    cache_lookup_ms: fields.cacheMs,
+    vercel_tunnel_ms: fields.tunnelMs,
+    total_ms: fields.totalMs,
+  }))
+}
+
 async function bestEffortCacheOperation<T>(
   operation: Promise<T>,
 ): Promise<T | undefined> {
@@ -476,12 +498,32 @@ function validateSnapshotEnvelope(
 	if (requested !== '' && requested !== snapshotID) {
 		throw new BackendContractError('snapshot_id_mismatch')
 	}
+	const overviewValue = pathname === '/api/v2/get_asset_dashboard'
+		? envelope.overview
+		: envelope.result
+	if (!overviewValue || typeof overviewValue !== 'object' || Array.isArray(overviewValue)) {
+		throw new BackendContractError('snapshot_overview_invalid')
+	}
+	const overview = overviewValue as Record<string, unknown>
+	const assetCount = Number(overview.asset_count)
+	const fresh = Number(overview.fresh_asset_count)
+	const stale = Number(overview.stale_asset_count)
+	const unavailable = Number(overview.unavailable_asset_count)
+	if (!Number.isInteger(assetCount) || assetCount < 1 || assetCount > 200 ||
+		![fresh, stale, unavailable].every((value) => Number.isInteger(value) && value >= 0) ||
+		fresh + stale + unavailable !== assetCount) {
+		throw new BackendContractError('snapshot_overview_counts_invalid')
+	}
 }
 
 export function isRetryableUpstreamRequest(
   method: string,
   pathname: string,
 ): boolean {
+  if (method === 'POST') {
+    return isPublicMarketRead(method, pathname) ||
+      pathname === '/api/v2/get_market_price_ticks'
+  }
   if (method !== 'GET') return false
   return RETRYABLE_GET_PATHS.some((pattern) => pattern.test(pathname))
 }
@@ -495,8 +537,12 @@ export default async function handler(
   const requestID = firstHeader(request.headers['x-request-id']) ?? randomUUID()
   const startedAt = Date.now()
   response.setHeader('X-Request-ID', requestID)
+	response.setHeader('X-Qiu-Market-Function-Region', process.env.VERCEL_REGION?.trim() || 'local')
   let staleLookup: PublicReadCacheLookup | undefined
   let cachedPathname = ''
+  let marketRead = false
+  let cacheLookupMs = 0
+  let tunnelStartedAt = 0
   try {
     const backendOrigin = new URL(requiredEnvironment('S78_BACKEND_ORIGIN'))
     const insecureLoopback =
@@ -550,7 +596,8 @@ export default async function handler(
     }
     const digest = createHash('sha256').update(body).digest('hex')
     const method = (request.method ?? 'GET').toUpperCase()
-		const contractRequired = requiresBackendMarketContract(method, upstreamURL.pathname)
+			const contractRequired = requiresBackendMarketContract(method, upstreamURL.pathname)
+			marketRead = contractRequired
 		const explicitSnapshotID = requestedSnapshotID(body)
 		const cacheablePublicRead = isPublicMarketRead(method, upstreamURL.pathname) &&
 			explicitSnapshotID === ''
@@ -561,6 +608,7 @@ export default async function handler(
       ? createHash('sha256').update(publicReadCachePayload(body)).digest('hex')
       : digest
     const cacheKey = `${expectedContract ? `${contractFingerprint(expectedContract)}\n` : ''}${method}\n${upstreamURL.pathname}${upstreamURL.search}\n${cacheDigest}`
+    const cacheStartedAt = Date.now()
     const cacheLookup = cacheablePublicRead
       ? publicReadCache.lookup(cacheKey)
       : undefined
@@ -574,6 +622,7 @@ export default async function handler(
       publicReadCache.put(cacheKey, sharedCacheLookup.entry)
     }
     const effectiveCacheLookup = cacheLookup ?? sharedCacheLookup
+    cacheLookupMs = Math.max(0, Date.now() - cacheStartedAt)
     if (
       effectiveCacheLookup &&
       expectedContract &&
@@ -596,6 +645,11 @@ export default async function handler(
         startedAt,
         cachedPathname,
       )
+      logMarketReadTiming({
+        requestID, route: upstreamURL.pathname, status: effectiveCacheLookup.entry.status,
+        cacheState: 'fresh', cacheMs: cacheLookupMs, tunnelMs: 0,
+        totalMs: Math.max(0, Date.now() - startedAt),
+      })
       return
     }
     if (effectiveCacheLookup?.state === 'stale') {
@@ -628,6 +682,7 @@ export default async function handler(
       secret,
       retryable: retryableRead,
     }
+    tunnelStartedAt = Date.now()
     const {
       response: upstream,
       body: upstreamBody,
@@ -636,6 +691,7 @@ export default async function handler(
       ...upstreamOptions,
       deadline: startedAt + TOTAL_UPSTREAM_TIMEOUT_MS,
     })
+    const tunnelMs = Math.max(0, Date.now() - tunnelStartedAt)
 
     const verifiedContract = expectedContract
       ? backendContract(upstream, upstreamRequestNonce, expectedContract)
@@ -663,14 +719,29 @@ export default async function handler(
       response.setHeader('Age', '0')
       response.setHeader('X-Qiu-Market-Cache', 'MISS')
     }
-    response.setHeader(
-      'Server-Timing',
-      `qiu_backend;dur=${Math.max(0, Date.now() - startedAt)}`,
-    )
+    const upstreamTiming = upstream.headers.get('server-timing')
+    response.setHeader('Server-Timing', [
+      `qiu_cache;dur=${cacheLookupMs}`,
+      `qiu_tunnel;dur=${tunnelMs}`,
+      upstreamTiming,
+    ].filter(Boolean).join(', '))
+    if (marketRead) {
+      logMarketReadTiming({
+        requestID, route: upstreamURL.pathname, status: upstream.status,
+        cacheState: cacheEntry ? 'miss' : 'bypass', cacheMs: cacheLookupMs,
+        tunnelMs, totalMs: Math.max(0, Date.now() - startedAt),
+      })
+    }
     response.status(upstream.status).send(upstreamBody)
   } catch (error) {
     if (staleLookup && !(error instanceof BackendContractError)) {
       sendCachedResponse(response, staleLookup, startedAt, cachedPathname)
+      logMarketReadTiming({
+        requestID, route: cachedPathname, status: staleLookup.entry.status,
+        cacheState: 'stale', cacheMs: cacheLookupMs,
+        tunnelMs: tunnelStartedAt > 0 ? Math.max(0, Date.now() - tunnelStartedAt) : 0,
+        totalMs: Math.max(0, Date.now() - startedAt),
+      })
       return
     }
     if (error instanceof BackendContractError) {
@@ -680,15 +751,32 @@ export default async function handler(
         message: 'Qiu Market backend identity or data contract did not match this release.',
         result: { reason: error.reason },
       })
+      if (marketRead) {
+        logMarketReadTiming({
+          requestID, route: cachedPathname, status: 502, cacheState: 'rejected',
+          cacheMs: cacheLookupMs,
+          tunnelMs: tunnelStartedAt > 0 ? Math.max(0, Date.now() - tunnelStartedAt) : 0,
+          totalMs: Math.max(0, Date.now() - startedAt),
+        })
+      }
       return
     }
     const timeout = error instanceof Error && error.name === 'AbortError'
-    response.status(timeout ? 504 : 502).json({
+    const status = timeout ? 504 : 502
+    response.status(status).json({
       code: timeout ? 'backend_timeout' : 'backend_unavailable',
       message: timeout
         ? 'Qiu Market backend timed out.'
         : 'Qiu Market backend is unavailable.',
     })
+    if (marketRead) {
+      logMarketReadTiming({
+        requestID, route: cachedPathname, status, cacheState: 'error',
+        cacheMs: cacheLookupMs,
+        tunnelMs: tunnelStartedAt > 0 ? Math.max(0, Date.now() - tunnelStartedAt) : 0,
+        totalMs: Math.max(0, Date.now() - startedAt),
+      })
+    }
   }
 }
 

@@ -19,7 +19,7 @@
 | 路由 | 页面 | 主要数据 | 轮询 |
 |---|---|---|---|
 | `/` `/dashboard` | 重定向 `/markets` | — | — |
-| `/markets` | 七家 selection 并集首页与七源切换 | venue-aware v2 overview + asset dashboard + lightweight price ticks | 30s / 15s / 3s |
+| `/markets` | 七家 selection 并集首页与七源切换 | 单次 v2 asset dashboard（含同快照 overview）+ lightweight price ticks | 15s / 5s |
 | `/markets?venue=...&asset=...` | 同页跨交易所报价抽屉 | v2 asset venues；缺失 venue 合成显式 unavailable 行 | 打开时 + 3s 目标 |
 | `/markets/:marketId` | 现有 venue K 线详情 | v1 market + klines | 随周期 |
 | `/trade/BTC-USDT` | 虚拟现货交易终端 | 可信 BTC 参考 + venue K 线 + trading REST/WebSocket | 5s / WS |
@@ -45,7 +45,7 @@ v2 接口：
 
 请求显式携带 `universe=provider_top50|provider_union`；All 接受七源 selection union，单 provider 读取自己的稳定 selection，不能静默回退。响应携带 `selection_version/selection_rank/freshness_status/freshness_age_seconds/last_attempt_at/last_success_at/last_error_class`。数值仍以十进制字符串跨网络，Unknown 使用 `{value:null, available:false}`，不得把缺值变成 `0`。
 
-价格不再靠这些平铺字段临时拼装。Dashboard 与 3 秒 tick 都提供三个同形事实：
+价格不再靠这些平铺字段临时拼装。Dashboard 与 5 秒 tick 都提供三个同形事实：
 
 - `venue_price`：所选 Binance/Coinbase/Bybit/OKX Spot 或 Hyperliquid mark；
 - `dex_route_price`：60 秒内仍成立的 Uniswap/PancakeSwap route；
@@ -98,9 +98,9 @@ asset_price_index / asset_metric_current
 只接受显式 `dex_route_available + dex_route + 同 venue + <=60s` 的旧 route，
 也只接受带独立 observed time 的 composite/market reference。
 
-### 3 秒 tick、请求代次与 last-good
+### 单请求首屏、5 秒 tick、请求代次与 last-good
 
-`Markets.vue` 的快照查询仍负责成员、分页和慢变指标；轻量 tick 只请求当前页
+`Markets.vue` 的单次 dashboard 查询同时返回同一 `snapshot_id/as_of` 的 overview、成员、分页和慢变指标；轻量 tick 只请求当前页
 `asset_id`。一次 tick 的完整身份是 `venue + ordered asset_ids + generation`：
 
 ```text
@@ -123,6 +123,16 @@ composite 填 CEX。页面在 `venue+asset` 边界保留最后接受的事实，
 dashboard 的同 venue fact 选较新者；仅五分钟内可读，且 caption 与 Quality
 明确显示 `last-good` 及 `tick request failed / asset missing / wrong source
 rejected / older tick rejected`。超过五分钟就 Unavailable。
+
+公网读取固定运行在 Vercel `hkg1`，以缩短到当前台湾 tunnel 出口的往返路径。
+未指定 `snapshot_id` 的 dashboard 可缓存 15 秒，普通传输故障最多回退 240 秒；
+显式 snapshot 不缓存。BFF 对公开只读行情 POST 最多重试一次，每次都生成新的
+HMAC nonce，首轮最多 3.5 秒、两轮共享 8 秒总截止；交易、资金、OAuth 写请求不重试。
+每次行情读取以 request ID 关联 BFF cache lookup、Vercel 到 tunnel、frontdoor 到
+API、Redis snapshot read 与 PostgreSQL snapshot build 的分段耗时。这里拒绝“只把
+超时加长”的替代方案：它会让旧 venue 请求占用更久并放大点击排队，却不能修复
+网络抖动；代价是首次失败可能更快进入诚实的 last-good 降级，恢复则由下一次
+15 秒 dashboard 或 5 秒 tick 成功后原子替换。
 
 ### 虚拟交易页契约
 
@@ -291,8 +301,9 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | DEX route | 某链上池组合、带实际名义金额的指示性询价 | 先问 $10K，不行再问 $1K/$100 | DEX drawer |
 | Reference lane | 不改变 route 状态的 CEX composite 或 CoinGecko 市场参考 | 旁边单独挂一张参考价牌，不能改写链上价牌 | `display_price` |
 | Price fact | 把价格、来源、时间、新鲜度和质量绑在一起的状态对象 | 一张不能撕掉店名和打印时间的价签 | dashboard/tick |
-| Request generation | 每次查询身份变化都递增的本地批次号 | 同一道菜重新点单，也要看新单号 | `Markets.vue` tick snapshot |
+| Request generation | 每次查询身份变化都递增的本地批次号 | 同一道菜重新点单，也要看新单号 | `Markets.vue` dashboard/tick snapshot |
 | Last-good | 最近一次通过身份和单调性检查、仍在可读窗口内的事实 | 明说是上一张有效价签，不假装刚打印 | venue+asset tick cache |
+| Same-query last-good | 最多保留五分钟、只属于完整 venue/search/sort/page key 的最后成功表格 | 回到同一家店先看它自己的上一张价目表，同时标注正在刷新 | dashboard query cache |
 | Protocol path | route 每一跳使用的 AMM 版本 | 这条路线先走 V2 还是 V3 | 抽屉 `V2 → V3` |
 | Composite price | 合格 Spot venue 的加权美元参考价 | 多家现货一起支撑的参考价 | main table |
 | Quality grade | 当前价格独立报价支持形成的等级；High≥3、Medium=2、Low=1，和 freshness 分开 | 这张价签有几家店背书，不等于刚刚更新 | Markets Quality |
@@ -323,6 +334,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 | Catalog ambiguous | 只在 Audit 展示原因，不进入首页 | 审核 alias 后刷新 |
 | Doris 不可达 | Insights 历史模块报错；Markets 不受影响 | Doris 模块独立重试 |
 | API 整体失败 | 对应模块 ErrorState + retry，不显示 mock | 服务恢复后轮询/手动重试 |
+| dashboard 瞬时 502/504 且同 query 有 last-good | 保留表格并标注刷新延迟与快照年龄，不借其它 venue 数据 | 下一轮成功后原子替换 |
 | Trading gRPC 不可用 | Trade 显示服务 unavailable；Markets/Insights 正常 | trading 恢复后刷新/WS 重连 |
 | 可信 BTC 参考或 K 线缺失 | 对应卡片显示 unavailable，不生成假图 | 行情源产生新鲜可信数据 |
 | WebSocket 断开 | 显示重连状态并保留 cursor | 新 ticket 建连后补发 |
@@ -416,7 +428,7 @@ Preview 与本机 runtime 使用同一 exact SHA 并停在用户验收点；Prod
 
 ## Owner 60 秒解释
 
-> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact。DEX 的 Route 和 Reference 永远分栏，route 最多读 60 秒，过期会同时失去链上价格、涨跌、成交额、来源和质量；reference 只保留自己的标签。3 秒 CEX tick 绑定 query generation，再检查 venue identity、version 和 observed time；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。
+> 首页一行永远代表 canonical asset，七家各有稳定的 50 资产 selection，All 展示去重并集。首屏只发一次 dashboard，请求中的 overview 与 rows 绑定同一 snapshot。切 venue、搜索或排序会取消旧请求，只有最新 generation 能更新页面；回到相同 query 可立即展示五分钟内的本 query last-good，并明确标注刷新中。Markets 把 venue、DEX route 和 composite/reference 作为三个 price fact。DEX 的 Route 和 Reference 永远分栏，route 最多读 60 秒，过期会同时失去链上价格、涨跌、成交额、来源和质量；reference 只保留自己的标签。5 秒 CEX tick 同样绑定 generation，再检查 venue identity、version 和 observed time；失败只保留五分钟内、明确标为 last-good 的同 venue 事实，绝不拿综合价补 CEX。
 
 > Quality badge 保留 High/Medium/Low：分别表示当前价格有 3+、2、1 个独立 CEX Spot 报价支持；freshness 单独回答价签有多新，DEX route 只显示 Verified/Unavailable。点任何资产后，抽屉第一屏固定列 Binance、Coinbase、Bybit、OKX、Hyperliquid、Uniswap 与 PancakeSwap，以 3 秒为刷新目标且不堆积慢请求；缺失来源留在原位显示 Unavailable，Hyperliquid 明确是 Perpetual，AMM 明确是 Public preview。
 

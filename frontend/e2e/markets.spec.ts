@@ -124,8 +124,44 @@ const snapshotForVenue = (venue: string) => {
 
 const dashboardSnapshot = (venue: string, requestedSnapshotID?: string) => ({
   ...snapshotForVenue(venue),
-  snapshot_id: requestedSnapshotID ?? snapshotForVenue(venue).snapshot_id,
+  snapshot_id: requestedSnapshotID?.trim() || snapshotForVenue(venue).snapshot_id,
 })
+
+const overviewForVenue = (
+  venue: string,
+  overrides: Record<string, unknown> = {},
+) => {
+  const universe = providerAssets[venue] ?? assetUniverse
+  return {
+    global_market_cap_usd: available('2240000000000'),
+    covered_spot_volume_24h_usd: available('62310000000'),
+    btc_dominance_pct: available('58.9'),
+    asset_count: universe.length,
+    ranked_asset_count: universe.length,
+    top50_universe_count: universe.length,
+    eligible_asset_count: 27,
+    published_asset_count: 10,
+    priced_asset_count: 1,
+    displayed_asset_count: 1,
+    unpriced_asset_count: universe.length - 1,
+    fresh_asset_count: 1,
+    stale_asset_count: 0,
+    unavailable_asset_count: universe.length - 1,
+    change_available_count: 1,
+    coverage_ratio_pct: available(String(100 / universe.length)),
+    venue,
+    universe: venue === 'all' ? 'provider_union' : 'provider_top50',
+    selection_version: venue === 'all' ? 0 : 3,
+    advancers: 1,
+    decliners: 0,
+    flat: 0,
+    unknown: 0,
+    advance_ratio_pct: available('100'),
+    provider_updated_at: 1784880000000,
+    index_updated_at: 1784880000000,
+    ...overrides,
+  }
+}
 
 const liveBTCPrices: Record<string, string> = {
   all: '64203.13',
@@ -308,34 +344,7 @@ test.beforeEach(async ({ page }) => {
       body = {
         code: 2000,
         ...snapshotForVenue(venue),
-        result: {
-          global_market_cap_usd: available('2240000000000'),
-          covered_spot_volume_24h_usd: available('62310000000'),
-          btc_dominance_pct: available('58.9'),
-          asset_count: universe.length,
-          ranked_asset_count: universe.length,
-          top50_universe_count: universe.length,
-          eligible_asset_count: 27,
-          published_asset_count: 10,
-          priced_asset_count: 1,
-          displayed_asset_count: 1,
-          unpriced_asset_count: universe.length - 1,
-          fresh_asset_count: 1,
-          stale_asset_count: 0,
-          unavailable_asset_count: universe.length - 1,
-          change_available_count: 1,
-          coverage_ratio_pct: available('2'),
-          venue,
-          universe: venue === 'all' ? 'provider_union' : 'provider_top50',
-          selection_version: venue === 'all' ? 0 : 3,
-          advancers: 1,
-          decliners: 0,
-          flat: 0,
-          unknown: 0,
-          advance_ratio_pct: available('100'),
-          provider_updated_at: 1784880000000,
-          index_updated_at: 1784880000000,
-        },
+        result: overviewForVenue(venue),
       }
     } else if (path.endsWith('/get_asset_markets') || path.endsWith('/get_asset_venues')) {
       body = { code: 2000, result: markets }
@@ -343,6 +352,7 @@ test.beforeEach(async ({ page }) => {
       body = {
         code: 2000,
         ...dashboardSnapshot(venue, request.snapshot_id),
+        overview: overviewForVenue(venue),
         result: universe.slice(pageStart, pageStart + pageSize),
         total: universe.length,
         universe: venue === 'all' ? 'provider_union' : 'provider_top50',
@@ -494,6 +504,12 @@ test('a disabled provider is explicit instead of looking like an empty search', 
       : {
           code: 2000,
           ...dashboardSnapshot('binance', request.snapshot_id),
+          overview: overviewForVenue('binance', {
+				asset_count: 50, eligible_asset_count: 0, published_asset_count: 0,
+				priced_asset_count: 0, displayed_asset_count: 0, unpriced_asset_count: 50,
+				fresh_asset_count: 0, stale_asset_count: 0, unavailable_asset_count: 50,
+				local_preview_enabled: false,
+			}),
           result: [],
           total: 0,
           universe: 'provider_top50',
@@ -546,6 +562,7 @@ test('slow search distinguishes loading from a settled empty result', async ({ p
         body: JSON.stringify({
           code: 2000,
           ...dashboardSnapshot('all', request.snapshot_id),
+          overview: overviewForVenue('all'),
           result: [monero],
           total: 1,
           universe: 'provider_union',
@@ -560,6 +577,7 @@ test('slow search distinguishes loading from a settled empty result', async ({ p
         body: JSON.stringify({
           code: 2000,
           ...dashboardSnapshot('all', request.snapshot_id),
+          overview: overviewForVenue('all'),
           result: [],
           total: 0,
           universe: 'provider_union',
@@ -703,6 +721,7 @@ test('a failed live tick keeps the verified venue snapshot without falling back 
       body: JSON.stringify({
         code: 2000,
         ...dashboardSnapshot('binance', request.snapshot_id),
+        overview: overviewForVenue('binance'),
         result: [{
           ...asset,
           price_usd: available('64111.25'),
@@ -841,6 +860,7 @@ test('one offline asset does not degrade the other assets in the same tick batch
       body: JSON.stringify({
         code: 2000,
         ...dashboardSnapshot('okx', request.snapshot_id),
+        overview: overviewForVenue('okx'),
         result: [{
           ...asset,
           price_usd: available('64200.00'),
@@ -997,6 +1017,7 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
       body: JSON.stringify({
         code: 2000,
         ...dashboardSnapshot('uniswap', request.snapshot_id),
+        overview: overviewForVenue('uniswap'),
         result: [
           {
             ...asset,
@@ -1102,6 +1123,7 @@ test('DEX coverage never reuses a previous search response as the canonical univ
         body: JSON.stringify({
           code: 2000,
           ...dashboardSnapshot('uniswap', request.snapshot_id),
+          overview: overviewForVenue('uniswap'),
           result: [displayRow(asset)],
           total: 1,
         }),
@@ -1117,6 +1139,7 @@ test('DEX coverage never reuses a previous search response as the canonical univ
       body: JSON.stringify({
         code: 2000,
         ...dashboardSnapshot('uniswap', request.snapshot_id),
+        overview: overviewForVenue('uniswap'),
         result: rows,
         total: rows.length,
       }),
@@ -1133,11 +1156,82 @@ test('DEX coverage never reuses a previous search response as the canonical univ
   await fullRequest
   await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' })).toHaveCount(0)
   await expect(coverage.locator('strong')).not.toHaveText('100.0%')
-  await expect(coverage).toContainText('Snapshot only')
+	await expect(page.getByText('Loading market results…')).toBeVisible()
+	await expect(coverage).toContainText('Selected provider assets')
 
   releaseFullResponse?.()
   await expect(page.locator('tbody tr')).toHaveCount(50)
   await expect(coverage.locator('strong')).toHaveText('100.0%')
+})
+
+test('rapid eight-venue switching aborts 3s and 9s responses so the latest click wins', async ({ page }) => {
+	await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+		const request = JSON.parse(route.request().postData() ?? '{}') as { venue?: string }
+		const requestedVenue = request.venue ?? 'all'
+		const delay = requestedVenue === 'binance' ? 3_000
+			: requestedVenue === 'bybit' ? 9_000
+				: requestedVenue === 'pancakeswap' ? 25 : 250
+		await new Promise((resolve) => setTimeout(resolve, delay))
+		const rows = providerAssets[requestedVenue] ?? assetUniverse
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({
+				code: 2000,
+				...dashboardSnapshot(requestedVenue),
+				overview: overviewForVenue(requestedVenue),
+				result: rows.slice(0, 50),
+				total: rows.length,
+				universe: requestedVenue === 'all' ? 'provider_union' : 'provider_top50',
+			}),
+		})
+	})
+
+	await page.goto('/markets')
+	await expect(page.locator('tbody tr')).toHaveCount(50)
+	for (const label of ['Binance', 'Coinbase', 'Bybit', 'OKX', 'Hyperliquid', 'Uniswap', 'All', 'PancakeSwap']) {
+		await page.getByRole('button', { name: label, exact: true }).click()
+	}
+	await expect(page.getByRole('heading', { name: 'PancakeSwap Assets' })).toBeVisible()
+	await expect(page.locator('tbody tr')).toHaveCount(50)
+	await page.waitForTimeout(9_250)
+	await expect(page.getByRole('heading', { name: 'PancakeSwap Assets' })).toBeVisible()
+	await expect(page.locator('tbody tr')).toHaveCount(50)
+})
+
+test('revisited venue restores last-good immediately and keeps it after a 504', async ({ page }) => {
+	let binanceRequests = 0
+	await page.route('**/api/v2/get_asset_dashboard', async (route) => {
+		const request = JSON.parse(route.request().postData() ?? '{}') as { venue?: string }
+		if (request.venue !== 'binance') {
+			await route.fallback()
+			return
+		}
+		binanceRequests += 1
+		if (binanceRequests === 1) {
+			await route.fallback()
+			return
+		}
+		await new Promise((resolve) => setTimeout(resolve, 150))
+		await route.fulfill({
+			status: 504,
+			contentType: 'application/json',
+			body: JSON.stringify({ code: 5040, message: 'Qiu Market backend timed out.' }),
+		})
+	})
+
+	await page.goto('/markets?venue=binance')
+	await expect(page.locator('tbody tr')).toHaveCount(50)
+	await page.getByRole('button', { name: 'Coinbase', exact: true }).click()
+	await expect(page.getByRole('heading', { name: 'Coinbase Spot' })).toBeVisible()
+	const started = Date.now()
+	await page.getByRole('button', { name: 'Binance', exact: true }).click()
+	await expect(page.locator('tbody tr')).toHaveCount(50, { timeout: 200 })
+	expect(Date.now() - started).toBeLessThan(200)
+	await expect(page.getByText(/Refreshing Binance · showing this query's last successful snapshot/)).toBeVisible()
+	await expect(page.getByText(/Live refresh was delayed/)).toBeVisible()
+	await expect(page.locator('tbody tr')).toHaveCount(50)
+	await expect(page.locator('.error-state')).toHaveCount(0)
 })
 
 test('unknown composite values are rendered as unavailable, never fake zero', async ({ page }) => {
@@ -1149,6 +1243,7 @@ test('unknown composite values are rendered as unavailable, never fake zero', as
       body: JSON.stringify({
         code: 2000,
         ...dashboardSnapshot('all', request.snapshot_id),
+        overview: overviewForVenue('all'),
         result: [{ ...asset, change_24h_pct: unavailable }],
         total: 1,
       }),
@@ -1168,6 +1263,7 @@ test('asset name is not repeated when it equals the symbol', async ({ page }) =>
       body: JSON.stringify({
         code: 2000,
         ...dashboardSnapshot('all', request.snapshot_id),
+        overview: overviewForVenue('all'),
         result: [{ ...asset, asset_name: 'BTC', asset_symbol: 'BTC' }],
         total: 1,
       }),

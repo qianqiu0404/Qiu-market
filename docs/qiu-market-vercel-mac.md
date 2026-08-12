@@ -368,7 +368,8 @@ VITE_TRADING_WS_ORIGIN=https://<node>.<tailnet>.ts.net
 ## 4. Vercel
 
 项目名固定为 `qiu-market`，Root Directory 为 `frontend`，Node 为 24.x，Function
-固定运行在 `sfo1`。Preview 与 Production 使用同一组三个后端变量，并设置：
+固定运行在 `hkg1`，以缩短到当前台湾 tunnel 出口的网络路径。Preview 与 Production
+使用同一组三个后端变量，并设置：
 
 ```text
 VITE_TRADING_EVENT_MODE=polling
@@ -379,6 +380,11 @@ QIU_MARKET_RELEASE_COMMIT=<当前精确 40 字符 Git commit>
 WebSocket 已验收。先从本地精确 commit 构建 Preview，完成页面、API、鉴权和恢复
 验收后，再将同一 deployment promote 到 Production，不重新构建。BFF 的完整
 upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请求从不自动重试。
+公开行情 POST 的每次尝试都使用新的 HMAC nonce，首轮最多 3.5 秒，两轮共享同一
+8 秒截止。日志只记录 request ID、route、cache state、Function region 与 cache、
+tunnel、frontdoor、Redis、PostgreSQL 分段耗时，不记录签名、secret 或完整私有配置。
+若当前 Vercel 套餐拒绝 `hkg1`，部署必须停止并保留旧 Preview，不自动购买或切换
+付费能力；不得用延长 Function 超时掩盖 tunnel 传输错误。
 项目必须启用 Vercel 的 System Environment Variables。`VERCEL_DEPLOYMENT_ID` 和
 `VERCEL_URL` 由 Vercel 自动提供，BFF 将两者与受管 release commit 作为不可变
 provenance 响应头。不要手工把 Production alias 当成 immutable deployment URL。
