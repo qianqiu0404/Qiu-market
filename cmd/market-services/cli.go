@@ -209,6 +209,7 @@ func NewCli(GitCommit string, GitData string) *cli.App {
 		Commands: []*cli.Command{
 			catalogCommand(),
 			tradingRecoveryCommand(),
+			marketSnapshotCommand(),
 			{
 				Name:        "migrate",
 				Flags:       flags,
