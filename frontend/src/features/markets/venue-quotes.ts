@@ -24,7 +24,7 @@ const QUOTE_VENUES: Array<Pick<VenueQuoteRow, 'provider' | 'label' | 'product'>>
 
 const QUOTE_PRIORITY: Record<string, number> = { USD: 0, USDT: 1, USDC: 2 }
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/i
-const DEX_ROUTE_MAX_AGE_MS = 60_000
+const DEX_ROUTE_MAX_AGE_MS = 5 * 60_000
 
 function marketScore(market: AssetMarketV2Item): number {
   const freshness = market.freshness_status.trim().toLowerCase()

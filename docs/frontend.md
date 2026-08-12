@@ -77,6 +77,11 @@ route 中优先选择 fresh、质量门通过且档位最大的路线，显示 c
 时固定保留 `No reviewed route in the current public preview`。Hyperliquid 与 AMM 都明确与
 Spot 分开，不能贡献综合现货价或提升 High/Medium/Low。
 
+公共 RPC 的完整询价周期可能超过 60 秒，因此七源报价板对已通过 chain、protocol、route、
+pool 与 block identity 校验的真实 DEX 报价保留五分钟：60 秒到五分钟沿用行情自身的
+freshness 显示 `Stale`，超过五分钟才显示 `Unavailable`。这不改变首页 `dex_route_price`
+兼容栏的 60 秒边界，也不允许 DEX 参与综合 Spot 或 High/Medium/Low。
+
 DEX 读取链路是：
 
 ```text

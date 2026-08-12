@@ -83,6 +83,20 @@ describe('buildVenueQuoteRows', () => {
     })
   })
 
+  it('keeps an identity-verified DEX quote visibly stale until the five-minute cutoff', () => {
+    const now = 1_784_880_000_000
+    const candidate = market({
+      provider: 'uniswap', market_type: 'dex_route', venue_kind: 'dex_route',
+      chain: 'Ethereum', protocol: 'V3', route_key: 'wbtc-usdc', route: ['WBTC', 'USDC'],
+      pool_addresses: ['0x0000000000000000000000000000000000000001'], block_number: 1,
+      block_timestamp: now - 299_000, freshness_status: 'Stale',
+    })
+    expect(hasValidDexRouteIdentity(candidate, now)).toBe(true)
+    expect(buildVenueQuoteRows([candidate], now).find((row) => row.provider === 'uniswap')).toMatchObject({
+      status: 'stale', reason: 'Last known quote — waiting for a fresh provider update',
+    })
+  })
+
   it.each([
     { chain: 'BNB Chain' },
     { protocol: '' },
@@ -90,7 +104,7 @@ describe('buildVenueQuoteRows', () => {
     { route: ['WBTC'] },
     { pool_addresses: ['not-an-address'] },
     { block_number: 0 },
-    { block_timestamp: Date.now() - 61_000 },
+    { block_timestamp: Date.now() - 301_000 },
   ])('fails a malformed or stale DEX identity closed: %o', (invalid) => {
     const candidate = market({
       provider: 'uniswap', market_type: 'dex_route', venue_kind: 'dex_route',
