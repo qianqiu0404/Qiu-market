@@ -258,11 +258,12 @@ overview 新建 snapshot 时，API 在一次 read-only `REPEATABLE READ` Postgre
 完整 dashboard 行。Redis 只保存一个完整 JSON 值：所有 API instance 对同一 15 秒
 bucket 推导相同 ID，以 Lua `SET NX` 竞争，输家丢弃自己的数据库读取并返回 winner；
 没有可与 payload 分离漂移的 current pointer。snapshot 绑定 release/data mode/provider
-policy/schema，TTL 为 5 分钟、namespace 最多 64 项、当前 All 上限 106 行。读取时重新
+policy/schema，TTL 为 5 分钟、namespace 最多 64 项。All cardinality 来自七源 selection
+的 canonical 去重并集，会随合法 selection 变化；快照只接受 Top-200 边界内 1 至 200 行。读取时重新
 核对唯一非空 asset ID、逐行 freshness 与总数，All 必须满足：
 
 ```text
-106 = fresh + stale + unavailable
+asset_count = fresh + stale + unavailable, 1 <= asset_count <= 200
 priced = displayed = fresh + stale
 unpriced = unavailable
 single-venue priced + multi-venue priced = priced
@@ -319,11 +320,16 @@ token 清掉失败候选的 generation key。如果恢复链自身失败，脚�
 - `ops/macos/live-frontdoor.sh`、`live-stack.sh`、`live-release-selector.sh`、`live-cutover.sh`：独立 frontdoor、business stack、私有 selector、PID/Redis owner、原子切换与回滚。
 
 Owner 60 秒说明：浏览器先取 overview snapshot ID，再用它读取 dashboard；PostgreSQL
-一次事务冻结 106 行，Redis 只接受同 bucket 的一个完整 winner，BFF 同时验证 Vercel
+一次事务冻结当时完整的七源 canonical union（`106 / 61 / 45` 只是 R2I 历史切片，不是永久
+合同），Redis 只接受同 bucket 的一个完整 winner，BFF 同时验证 Vercel
 期望 SHA、backend 和 edge 合同。live tunnel 永远只到 pure frontdoor 18084；切换时先
 drain，再验候选 backend，提交 ready 后才恢复 tunnel。restricted provider 仍保持 451/
 403 unavailable，不加入覆盖率；失败时只允许完整恢复旧 release pair，不拼接新旧组件；
 恢复自身失败则保持 tunnel 暂停并留存 `rollback-failed` 证据。
+
+七源选择扩大后，All 可能出现 109 等新的合法总数；contract probe 只接受正数且不超过
+Top-200，并继续检查三态守恒、snapshot schema、exact SHA 与 nonce。发布验收仍固定报告
+Top20/50/106 覆盖与 freshness，使总数变化不会被误读为既有范围质量提升。
 
 闭卷检查：
 

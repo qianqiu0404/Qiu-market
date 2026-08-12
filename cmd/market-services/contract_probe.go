@@ -26,6 +26,8 @@ const (
 	probeSnapshotSchema = "qiu.market-snapshot.v1"
 	probeEdgeSchema     = "qiu.market-edge-contract.v1"
 	probeProviderPolicy = "restricted-no-bypass.v1"
+	probeMinimumAssets  = 1
+	probeMaximumAssets  = 200
 )
 
 var probeReleasePattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -159,7 +161,7 @@ func runContractProbe(ctx context.Context, options contractProbeOptions) error {
 		if err := json.Unmarshal(responseBody, &payload); err != nil || payload.Code != 2000 ||
 			!probeSnapshotIDPattern.MatchString(payload.SnapshotID) ||
 			payload.SnapshotAsOf <= 0 || payload.SnapshotSchema != probeSnapshotSchema ||
-			payload.Result.AssetCount != 106 ||
+			payload.Result.AssetCount < probeMinimumAssets || payload.Result.AssetCount > probeMaximumAssets ||
 			payload.Result.AssetCount != payload.Result.FreshAsset+payload.Result.StaleAsset+payload.Result.UnavailableAsset {
 			return fmt.Errorf("contract probe response snapshot is invalid")
 		}

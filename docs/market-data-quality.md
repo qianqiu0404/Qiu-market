@@ -13,7 +13,9 @@ rollout 边界。`QueryAssetIndexSummary` 对同一个 provider-selection union 
 没有 snapshot 的资产会让 SQL predicate 变成 `NULL`，而 `NOT NULL` 仍是 `NULL`；这些行
 会从 priced 和 unpriced 两边同时消失。真实 PostgreSQL fixture 固定构造 106 个已选择资产，
 其中 61 个有新鲜 composite snapshot、45 个没有 snapshot，并同时对账 overview 与两页
-dashboard。
+dashboard。这个 `106 / 61 / 45` 是历史回归切片，不是生产 cardinality 上限；七源 selection
+加入后 All canonical union 可以增长或收缩，但快照只接受 Top-200 范围内的 1 至 200 行，
+并始终逐行重算三态守恒。验收继续单列 Top20/50/106，防止扩展 universe 稀释原有覆盖问题。
 
 Catalog 与 rollout reconcile 继续分层。`ReconcileResolvedSpotMarkets` 从最新一条成功
 catalog row 读取 `last_seen_at`；零行意味着该 provider 当前部署没有可用 catalog，返回

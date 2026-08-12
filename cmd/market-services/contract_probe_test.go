@@ -29,8 +29,15 @@ func TestRunContractProbeSignsFromPrivateFileAndValidatesContract(t *testing.T) 
 		name        string
 		status      int
 		requireEdge bool
+		assetCount  int64
+		fresh       int64
+		stale       int64
+		unavailable int64
+		wantError   bool
 	}{
-		{name: "direct backend", status: http.StatusOK},
+		{name: "historical 106 asset slice", status: http.StatusOK, assetCount: 106, fresh: 61, unavailable: 45},
+		{name: "expanded 109 asset union", status: http.StatusOK, assetCount: 109, fresh: 61, unavailable: 48},
+		{name: "rejects 201 assets", status: http.StatusOK, assetCount: 201, fresh: 61, unavailable: 140, wantError: true},
 		{name: "drained edge", status: http.StatusServiceUnavailable, requireEdge: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -68,18 +75,26 @@ func TestRunContractProbeSignsFromPrivateFileAndValidatesContract(t *testing.T) 
 				w.Header().Set("Cache-Control", "no-store")
 				w.WriteHeader(test.status)
 				if test.status == http.StatusOK {
-					_, _ = fmt.Fprint(w, `{"code":2000,"snapshot_id":"snp_0123456789abcdef0123456789abcdef","snapshot_as_of":1723000000,"snapshot_schema":"qiu.market-snapshot.v1","result":{"asset_count":106,"fresh_asset_count":61,"stale_asset_count":0,"unavailable_asset_count":45}}`)
+					_, _ = fmt.Fprintf(w, `{"code":2000,"snapshot_id":"snp_0123456789abcdef0123456789abcdef","snapshot_as_of":1723000000,"snapshot_schema":"qiu.market-snapshot.v1","result":{"asset_count":%d,"fresh_asset_count":%d,"stale_asset_count":%d,"unavailable_asset_count":%d}}`,
+						test.assetCount, test.fresh, test.stale, test.unavailable)
 				} else {
 					_, _ = fmt.Fprint(w, `{"code":"edge_generation_unavailable"}`)
 				}
 			})
 
-			if err := runContractProbe(t.Context(), contractProbeOptions{
+			err := runContractProbe(t.Context(), contractProbeOptions{
 				Endpoint: "http://127.0.0.1:18080/api/v2/get_market_overview", SecretFile: secretFile, ExpectedRelease: release,
 				ExpectedStatus: test.status, RequireEdge: test.requireEdge,
 				Client: &http.Client{Transport: probeRoundTripper{handler: handler}},
 				Now:    func() time.Time { return time.Unix(1_723_000_000, 0) },
-			}); err != nil {
+			})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "snapshot is invalid") {
+					t.Fatalf("expected invalid snapshot rejection, got %v", err)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("run contract probe: %v", err)
 			}
 		})

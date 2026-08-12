@@ -22,7 +22,8 @@ const (
 	marketSnapshotTTL          = 5 * time.Minute
 	marketSnapshotCurrentFor   = 15 * time.Second
 	marketSnapshotMaximumItems = 64
-	marketSnapshotMaximumRows  = 106
+	marketSnapshotMinimumRows  = 1
+	marketSnapshotMaximumRows  = 200
 )
 
 var (
@@ -207,7 +208,8 @@ func (s *marketSnapshotStore) validate(entry *marketSnapshot, venue string, now 
 		return ErrMarketSnapshotExpired
 	}
 	read := entry.Read
-	if read.Total < 0 || read.Total > marketSnapshotMaximumRows || int64(len(read.Rows)) != read.Total {
+	if read.Total < marketSnapshotMinimumRows || read.Total > marketSnapshotMaximumRows ||
+		int64(len(read.Rows)) != read.Total {
 		return fmt.Errorf("%w: snapshot row bound", ErrMarketSnapshotInvalid)
 	}
 	seen := make(map[string]struct{}, len(read.Rows))

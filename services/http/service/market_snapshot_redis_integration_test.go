@@ -42,13 +42,20 @@ func (s *snapshotFixtureSource) QueryMarketReadSnapshot(string) (*database.Marke
 }
 
 func frozenMarketFixture(marker string) *database.MarketReadSnapshot {
+	return frozenMarketFixtureRows(marker, 106)
+}
+
+func frozenMarketFixtureRows(marker string, total int) *database.MarketReadSnapshot {
 	asOf := time.Date(2026, 8, 12, 1, 2, 3, 0, time.UTC)
-	rows := make([]database.AssetIndexDashboardRow, 0, marketSnapshotMaximumRows)
-	for index := 0; index < marketSnapshotMaximumRows; index++ {
+	freshCount := min(total, 40)
+	staleCount := min(total-freshCount, 21)
+	unavailableCount := total - freshCount - staleCount
+	rows := make([]database.AssetIndexDashboardRow, 0, total)
+	for index := 0; index < total; index++ {
 		freshness := "unavailable"
-		if index < 40 {
+		if index < freshCount {
 			freshness = "fresh"
-		} else if index < 61 {
+		} else if index < freshCount+staleCount {
 			freshness = "stale"
 		}
 		price := (*string)(nil)
@@ -66,10 +73,12 @@ func frozenMarketFixture(marker string) *database.MarketReadSnapshot {
 	return &database.MarketReadSnapshot{
 		AsOf: asOf,
 		Summary: database.AssetIndexSummary{
-			AssetCount: 106, PricedAssetCount: 61, DisplayedAssetCount: 61, UnpricedAssetCount: 45,
-			SingleVenuePricedAssetCount: 61,
+			AssetCount: int64(total), PricedAssetCount: int64(freshCount + staleCount),
+			DisplayedAssetCount: int64(freshCount + staleCount), UnpricedAssetCount: int64(unavailableCount),
+			SingleVenuePricedAssetCount: int64(freshCount + staleCount),
 		},
-		Rows: rows, Total: 106, FreshAssetCount: 40, StaleAssetCount: 21, UnavailableAssetCount: 45,
+		Rows: rows, Total: int64(total), FreshAssetCount: int64(freshCount),
+		StaleAssetCount: int64(staleCount), UnavailableAssetCount: int64(unavailableCount),
 	}
 }
 
@@ -160,6 +169,31 @@ func TestMarketSnapshotRedisAuthorityAcrossInstances(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, first.ID, readBack.ID)
 	require.Equal(t, first.Contract.ReleaseCommit, readBack.Contract.ReleaseCommit)
+}
+
+func TestMarketSnapshotCardinalityUsesBoundedTop200Union(t *testing.T) {
+	store := newMarketSnapshotStore(
+		&snapshotFixtureSource{marker: "cardinality"}, nil, snapshotFixtureContract(),
+	)
+	now := time.Date(2026, 8, 12, 1, 2, 3, 0, time.UTC)
+	entryFor := func(total int) *marketSnapshot {
+		return &marketSnapshot{
+			ID: "snp_0123456789abcdef0123456789abcdef", Venue: "all",
+			CreatedAt: now, ExpiresAt: now.Add(marketSnapshotTTL), Schema: MarketSnapshotSchema,
+			Contract: snapshotFixtureContract(), Read: frozenMarketFixtureRows("cardinality", total),
+		}
+	}
+
+	for _, total := range []int{106, 109, marketSnapshotMaximumRows} {
+		t.Run(fmt.Sprintf("accepts_%d", total), func(t *testing.T) {
+			require.NoError(t, store.validate(entryFor(total), "all", now))
+		})
+	}
+	for _, total := range []int{0, marketSnapshotMaximumRows + 1} {
+		t.Run(fmt.Sprintf("rejects_%d", total), func(t *testing.T) {
+			require.ErrorIs(t, store.validate(entryFor(total), "all", now), ErrMarketSnapshotInvalid)
+		})
+	}
 }
 
 func TestMarketSnapshotRedisFailsClosedForExpiryCorruptionAndOutage(t *testing.T) {
