@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { LocationQueryRaw } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import AssetLogo from '../components/AssetLogo.vue'
 import StatusBadge from '../components/StatusBadge.vue'
@@ -92,7 +91,6 @@ const REALTIME_VENUES = new Set<MarketVenue>([
 
 const route = useRoute()
 const router = useRouter()
-const marketListControls = ref<HTMLElement | null>(null)
 const fiat = ref<Fiat>('USD')
 const rates = ref<Record<string, number> | null>(null)
 const ratesFailed = ref(false)
@@ -122,26 +120,6 @@ const drawerLastUpdated = ref<Date | null>(null)
 const selectedAssetID = computed(() =>
   typeof route.query.asset === 'string' ? route.query.asset : '',
 )
-
-function venueFromQuery(value: unknown): MarketVenue {
-  return typeof value === 'string' && VALID_VENUES.has(value as MarketVenue)
-    ? value as MarketVenue
-    : 'all'
-}
-
-async function keepActiveVenueVisible(): Promise<void> {
-  await nextTick()
-  const controls = marketListControls.value
-  const activeVenue = controls?.querySelector<HTMLElement>(`[data-market-venue="${venue.value}"]`)
-  if (!controls || !activeVenue) return
-
-  const pageLeft = window.scrollX
-  const pageTop = window.scrollY
-  activeVenue.scrollIntoView({ inline: 'nearest', block: 'nearest' })
-  if (window.scrollX !== pageLeft || window.scrollY !== pageTop) {
-    window.scrollTo({ left: pageLeft, top: pageTop })
-  }
-}
 
 function positiveInt(value: unknown, fallback: number): number {
   const parsed = Number(value)
@@ -546,7 +524,6 @@ onMounted(async () => {
 	dashboardClockTimer = window.setInterval(() => {
 		dashboardClock.value = Date.now()
 	}, 1_000)
-	void keepActiveVenueVisible()
 	void refreshDashboard(true)
   try {
     rates.value = (await getFiatRates()).rates
@@ -579,96 +556,26 @@ const usingFallbackRates = computed(
 )
 
 function syncRoute(): void {
-  void router.replace({ query: queryForCurrentState() })
+  void router.replace({
+    query: {
+      ...(filter.value !== 'assets' ? { filter: filter.value } : {}),
+      ...(venue.value !== 'all' ? { venue: venue.value } : {}),
+      ...(page.value > 1 ? { page: String(page.value) } : {}),
+      ...(pageSize.value !== 50 ? { page_size: String(pageSize.value) } : {}),
+      ...(search.value ? { search: search.value } : {}),
+      ...(sortKey.value !== 'rank' ? { sort_by: sortKey.value } : {}),
+      ...(sortDir.value !== 'desc' ? { sort_direction: sortDir.value } : {}),
+      ...(selectedAssetID.value ? { asset: selectedAssetID.value } : {}),
+    },
+  })
 }
 
-type RouteQueryState = LocationQueryRaw
-
-function setRouteQueryValue(
-  query: RouteQueryState,
-  key: string,
-  value: string,
-  defaultValue: string,
-): void {
-  if (value === defaultValue) delete query[key]
-  else query[key] = value
-}
-
-function queryForCurrentState(): RouteQueryState {
-  const query: RouteQueryState = { ...route.query }
-  setRouteQueryValue(query, 'filter', filter.value, 'assets')
-  setRouteQueryValue(query, 'venue', venue.value, 'all')
-  setRouteQueryValue(query, 'page', String(page.value), '1')
-  setRouteQueryValue(query, 'page_size', String(pageSize.value), '50')
-  setRouteQueryValue(query, 'search', search.value, '')
-  setRouteQueryValue(query, 'sort_by', sortKey.value, 'rank')
-  setRouteQueryValue(query, 'sort_direction', sortDir.value, 'desc')
-  return query
-}
-
-function selectVenue(nextVenue: MarketVenue): void {
-  if (nextVenue === venue.value) {
-    void keepActiveVenueVisible()
-    return
-  }
-  const query = queryForCurrentState()
-  setRouteQueryValue(query, 'venue', nextVenue, 'all')
-  delete query.page
-  void router.push({ query })
-}
-
-function selectFilter(nextFilter: AssetFilter): void {
-  if (nextFilter === filter.value) return
-  const query = queryForCurrentState()
-  setRouteQueryValue(query, 'filter', nextFilter, 'assets')
-  delete query.page
-  void router.push({ query })
-}
-
-let applyingRouteQuery = false
-
-function applyRouteQuery(): void {
-  const nextVenue = venueFromQuery(route.query.venue)
-  const nextFilter: AssetFilter = route.query.filter === 'gainers' || route.query.filter === 'losers'
-    ? route.query.filter
-    : 'assets'
-  const nextPage = positiveInt(route.query.page, 1)
-  const nextPageSize = positiveInt(route.query.page_size, 50)
-  const nextSearch = typeof route.query.search === 'string' ? route.query.search : ''
-  const nextSortKey = typeof route.query.sort_by === 'string' ? route.query.sort_by : 'rank'
-  const nextSortDir: 'asc' | 'desc' = route.query.sort_direction === 'asc' ? 'asc' : 'desc'
-  const changed = venue.value !== nextVenue || filter.value !== nextFilter ||
-    page.value !== nextPage || pageSize.value !== nextPageSize || search.value !== nextSearch ||
-    sortKey.value !== nextSortKey || sortDir.value !== nextSortDir
-
-  if (!changed) {
-    void keepActiveVenueVisible()
-    return
-  }
-
+watch([venue, filter, page, pageSize, sortKey, sortDir], ([nextVenue, nextFilter], [previousVenue, previousFilter]) => {
 	abortDashboardPrefetchForUser()
-  if (searchTimer !== undefined) window.clearTimeout(searchTimer)
-  applyingRouteQuery = true
-  venue.value = nextVenue
-  filter.value = nextFilter
-  page.value = nextPage
-  pageSize.value = nextPageSize
-  search.value = nextSearch
-  sortKey.value = nextSortKey
-  sortDir.value = nextSortDir
-  applyingRouteQuery = false
-  void keepActiveVenueVisible()
-  void refreshDashboard(true)
-}
-
-watch([venue, filter, page, pageSize, sortKey, sortDir], () => {
-	if (applyingRouteQuery) return
-	abortDashboardPrefetchForUser()
+	  if (nextVenue !== previousVenue || nextFilter !== previousFilter) page.value = 1
   syncRoute()
 	  void refreshDashboard(true)
 }, { flush: 'sync' })
-
-watch(() => route.query, applyRouteQuery, { flush: 'post' })
 
 watch(
   currentPriceTickQueryKey,
@@ -682,7 +589,6 @@ watch(
 
 let searchTimer: number | undefined
 watch(search, () => {
-	if (applyingRouteQuery) return
 	abortDashboardPrefetchForUser()
   page.value = 1
   syncRoute()
@@ -695,7 +601,7 @@ watch(search, () => {
 	dashboardRefreshing.value = false
   if (searchTimer !== undefined) window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => void refreshDashboard(true), 250)
-}, { flush: 'sync' })
+})
 
 watch(selectedAssetID, (assetID, _previousAssetID, onCleanup) => {
   let active = true
@@ -1197,12 +1103,7 @@ function coverageReasonLabel(reason: string): string {
     </div>
 
     <div class="market-list card">
-      <div
-        ref="marketListControls"
-        class="market-list-controls"
-        data-testid="market-list-controls"
-        aria-label="Market list controls"
-      >
+      <div class="venue-switcher" aria-label="Market venue">
         <div v-for="group in VENUE_GROUPS" :key="group.label" class="venue-group">
           <span>{{ group.label }}</span>
           <div class="segmented">
@@ -1211,22 +1112,21 @@ function coverageReasonLabel(reason: string): string {
               :key="option.value"
               type="button"
               :class="{ active: venue === option.value }"
-              :data-market-venue="option.value"
-              :aria-pressed="venue === option.value"
-              @click="selectVenue(option.value)"
+              @click="venue = option.value"
             >
               {{ option.label }}
             </button>
           </div>
         </div>
+      </div>
+      <div class="market-list-toolbar">
         <div class="segmented asset-filter" role="group" aria-label="Asset filter">
           <button
             v-for="option in FILTERS"
             :key="option.value"
             type="button"
             :class="{ active: filter === option.value }"
-            :aria-pressed="filter === option.value"
-            @click="selectFilter(option.value)"
+            @click="filter = option.value"
           >
             {{ option.label }}
           </button>
@@ -1286,7 +1186,7 @@ function coverageReasonLabel(reason: string): string {
       </p>
 
       <div v-else class="table-scroll">
-        <table>
+        <table :class="{ 'dex-market-table': isDexVenue() }">
           <thead>
             <tr>
               <th><button type="button" class="sort-label" @click="setSort('rank')">#</button></th>
@@ -1334,7 +1234,11 @@ function coverageReasonLabel(reason: string): string {
                 </span>
               </td>
               <td class="align-right">
-                <div v-if="isDexVenue()" class="dex-price-lanes">
+                <div
+                  v-if="isDexVenue()"
+                  class="dex-price-lanes"
+                  data-testid="dex-price-lanes"
+                >
                   <span class="dex-price-lane" data-testid="dex-route-price">
                     <small class="dex-lane-label">Route</small>
                     <strong class="num">{{ formatMetricPrice(dexRouteFact(asset).price_usd) }}</strong>
@@ -1409,7 +1313,11 @@ function coverageReasonLabel(reason: string): string {
                 </button>
               </td>
               <td class="align-center">
-                <div v-if="isDexVenue()" class="dex-quality-lanes">
+                <div
+                  v-if="isDexVenue()"
+                  class="dex-quality-lanes"
+                  data-testid="dex-quality-lanes"
+                >
                   <StatusBadge
                     data-testid="dex-route-quality"
                     :variant="dashboardRouteValidationVariant(dexRouteFact(asset))"
@@ -1669,26 +1577,19 @@ function coverageReasonLabel(reason: string): string {
   letter-spacing: -.025em;
 }
 .market-list { overflow: hidden; }
-.market-list-controls {
+.venue-switcher {
   display: flex;
   align-items: center;
   gap: 18px;
   padding: 16px 20px;
   overflow-x: auto;
-  overflow-y: hidden;
   border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-  overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch;
 }
-.market-list-controls::-webkit-scrollbar { display: none; }
 .venue-group {
   display: flex;
-  flex: 0 0 auto;
   align-items: center;
   gap: 7px;
+  white-space: nowrap;
 }
 .venue-group > span {
   color: var(--text-3);
@@ -1697,16 +1598,19 @@ function coverageReasonLabel(reason: string): string {
   letter-spacing: .08em;
   text-transform: uppercase;
 }
-.market-list-controls .segmented,
-.market-list-controls .segmented button { flex: 0 0 auto; }
-.asset-filter { margin-left: 2px; }
+.market-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+}
 .table-search {
   display: flex;
-  flex: 0 0 clamp(220px, 24vw, 340px);
   align-items: center;
   gap: 8px;
-  width: clamp(220px, 24vw, 340px);
-  min-height: 44px;
+  width: min(360px, 44vw);
   padding: 0 12px;
   color: var(--text-3);
   background: var(--bg-panel-2);
@@ -1719,6 +1623,7 @@ function coverageReasonLabel(reason: string): string {
   padding: 8px 16px;
   color: var(--text-3);
   background: var(--bg-panel-2);
+  border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   font-size: 10px;
 }
@@ -1736,7 +1641,6 @@ function coverageReasonLabel(reason: string): string {
 }
 .table-search input {
   width: 100%;
-  min-height: 44px;
   padding: 8px 0;
   color: var(--text-1);
   background: transparent;
@@ -1747,6 +1651,7 @@ function coverageReasonLabel(reason: string): string {
 }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; min-width: 920px; border-collapse: collapse; font-size: 13px; }
+.dex-market-table { min-width: 1460px; }
 th, td { padding: 11px 13px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th {
   color: var(--text-3);
@@ -1779,25 +1684,36 @@ th {
 .dex-price-lanes,
 .dex-change-lanes,
 .dex-quality-lanes {
-  display: inline-grid;
-  gap: 6px;
-}
-.dex-price-lanes { min-width: 200px; }
-.dex-price-lane {
-  display: grid;
-  grid-template-columns: 58px minmax(110px, 1fr);
-  align-items: baseline;
-  gap: 1px 8px;
-}
-.dex-price-lane .contributors { grid-column: 1 / -1; }
-.dex-change-lane {
-  display: grid;
-  grid-template-columns: 58px minmax(64px, auto);
+  display: inline-flex;
   align-items: center;
-  justify-content: end;
-  gap: 7px;
+  flex-wrap: nowrap;
+  gap: 12px;
+  width: max-content;
 }
-.dex-quality-lanes { justify-items: stretch; }
+.dex-price-lanes { min-width: max-content; }
+.dex-price-lane {
+  display: inline-flex;
+  align-items: baseline;
+  flex: none;
+  gap: 6px;
+  white-space: nowrap;
+}
+.dex-price-lane + .dex-price-lane,
+.dex-change-lane + .dex-change-lane,
+.dex-quality-lanes > :deep(.badge) + :deep(.badge) {
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+.dex-price-lane .contributors { display: inline; }
+.dex-change-lane {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 7px;
+  white-space: nowrap;
+}
+.dex-quality-lanes { justify-content: flex-end; }
+.dex-quality-lanes > :deep(.badge) { flex: none; }
 .drawer-market-statuses { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .dex-lane-label {
   color: var(--text-3);
@@ -2016,5 +1932,7 @@ th {
   .market-overview-strip { grid-template-columns: 1fr 1fr; }
   .market-overview-strip article:nth-child(2) { border-right: 0; }
   .market-overview-strip article:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .market-list-toolbar { align-items: stretch; flex-direction: column; }
+  .table-search { width: 100%; }
 }
 </style>

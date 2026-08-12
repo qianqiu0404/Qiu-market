@@ -56,8 +56,10 @@ contributor count/list 和 version。DEX 页面可以同时展示 route 与 refe
 不能把 reference 写回 route，也不能让过期 route 的 change/source 标签附着到
 reference。旧 `price_usd/display_price_usd` 暂时只为旧调用方保留；新前端状态以
 price fact 为准。API 类型化与解析、Markets tick 代次/乱序保护已经完成。DEX
-表格的 Price、24h 与验证状态永久拆成 Route / Reference 两行；Route 只显示
-Verified/Unavailable，Reference 才按 CEX contributor 显示 High/Medium/Low；Venue Volume
+表格的 Price、24h 与验证状态永久保持 Route / Reference 两个独立事实，但在同一资产行内
+横向并列为一行；价格事实完整保留 value、unavailable reason 或 source/freshness，两个
+Quality badge 也不折叠或上下堆叠。Route 只显示 Verified/Unavailable，Reference 才按 CEX
+contributor 显示 High/Medium/Low；Venue Volume
 在 DEX tab 明确改为 Route Volume，不拿 composite turnover 冒充链上成交额。
 
 Markets 按 Owner 的视觉偏好显示 `High / Medium / Low / Unavailable`。等级只表达当前
@@ -225,18 +227,6 @@ promotion 是否启用必须以真实 Mac mini 配置和公开响应为准，moc
 
 ## 交互与信息层级
 
-Markets 的 venue groups、Assets/Gainers/Losers 与搜索框固定在同一个
-`market-list-controls` 单行控制带中。控制带是这一组控件唯一的横向滚动容器：按钮保持
-44px 点击高度且不压缩，搜索框保持有界固定宽度；窄屏隐藏视觉滚动条，但键盘、触控板和
-触摸横滑仍可滚动。页面本身不产生横向溢出，数据表继续使用它自己已有的表格滚动边界。
-
-venue 与 filter 的用户点击使用 history push，搜索、分页和排序继续 replace。直接打开
-Uniswap/PancakeSwap、浏览器前进后退或点击 venue 后，Vue 等待 DOM 更新，再只把 active
-venue 按钮滚到控制带的最近可见位置；页面滚动坐标保持不变，程序不会把整页拉回控制条。
-稳定的 `data-market-venue` 只表达 UI 身份，不改变 API venue、查询 generation 或行情数据
-逻辑。被拒绝的方案是手机端继续拆成两排或压缩按钮：前者重复分隔并占用首屏，后者会破坏
-44px 触控目标；代价是手机上搜索框需要在同一控制带内横滑到达。
-
 资产行固定为 Rank、Asset、Price、24h、Market Cap、Venue Volume、Markets/Routes、Quality。All 的 Price 是 CEX 综合 Spot；CEX tab 是 venue Spot。Quality 显示 High/Medium/Low/Unavailable，freshness 则由价格说明独立表达；DEX tab 的 Route 只显示验证状态，Reference 才显示 CEX 来源等级。All 标题展示 `N/并集数 fresh`；CEX 标题展示 `N/50 fresh · selection vX`。24h 缺失不再只有无解释横杠，而是显示 `24h reference missing`、Stale 或 Source unavailable。无论从哪个 tab 打开资产，右侧报价板都展示全部七个 provider rows；当前部署未发布的来源保留 unavailable 行。1180/1280/1440 不改变核心字段。
 
 资产行与 market identity 不互换：
@@ -281,7 +271,7 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 6. **DEX selection 固定 50，但不伪造 50 条报价。** listed membership 来自 reviewed chain contract 和链上 V2/V3 pool identity；询价按 `$10K → $1K → $100` 逐级尝试，路线最多两跳且可混合协议，仍使用 TVL、成交量、新鲜度、冲击和 spread 门槛。小金额成功必须显示实际金额并降为 Low。代价是 DEX 页仍会同时出现可询价行和 `Not covered` 行，但产品覆盖与价格质量不再互相污染。
 7. **价格事实不在组件内重新拼装。** 被拒绝的是让 `Markets.vue` 从 price/source/time 多个字段猜当前语义；响应稍大，但旧缓存、乱序响应和 route/reference 切换都有同一校验单位。
 8. **generation + 单调事实门，而不是只看 query key。** 被拒绝的是 A→B→A 时复用同 key，也拒绝“最后返回者获胜”；代价是保存一个小型 venue+asset last-good map，但请求竞态不会改写来源。
-9. **DEX 永久双栏，而不是选一个“最好看的价格”。** 被拒绝的是 route 新鲜时覆盖 reference、route 过期时再把 reference 改名为 route。代价是 DEX 行更高、字段更多，但链上指示价与市场参考永远不会静默换口径。
+9. **DEX 永久双事实横排，而不是选一个“最好看的价格”。** 被拒绝的是 route 新鲜时覆盖 reference、route 过期时再把 reference 改名为 route。桌面完整横排，窄屏由既有 table-scroll 横滑；代价是 DEX 表格更宽，但资产行更矮，链上指示价与市场参考也永远不会静默换口径。
 10. **Quality 等级与 freshness 分维展示。** Owner 选择保留 `High/Medium/Low` 作为视觉等级；等级严格映射独立报价数并在表头解释，stale/last-good 仍只出现在 freshness。代价是必须持续解释两维，收益是保留用户熟悉的视觉语言。
 11. **报价板固定七行。** 被拒绝的是只渲染 API 已返回的市场，因为这会让断线 provider 悄悄消失。缺失来源合成 unavailable 行；Hyperliquid 固定标 Perpetual，两家 AMM 固定标 Public preview，不能假装 Spot。
 12. **使用小型、类型化的本地语言状态，不引入完整翻译框架。** 当前只有两种语言和
@@ -500,4 +490,3 @@ Preview 与本机 runtime 使用同一 exact SHA 并停在用户验收点；Prod
 25. 为什么前端必须拒绝超过 JS 安全整数范围的 `runtime_sequence/version` number？
 26. 为什么 High 不能同时解释为 fresh，也不能解释为网站已完成？
 27. 为什么报价板必须保留当前部署 unavailable 的交易所行？
-28. 为什么 Markets 控制带允许局部横滑，但不能让 venue 按钮压缩或让页面整体横向滚动？
