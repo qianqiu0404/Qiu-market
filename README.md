@@ -492,6 +492,7 @@ README 全局架构
 | [docs/coinglass-derivatives-provider.md](docs/coinglass-derivatives-provider.md) | Q-M4B 默认关闭的 CoinGlass BTCUSD_PERP OI/清算 adapter、secret/套餐/单位与许可门 |
 | [docs/market-service-interview.md](docs/market-service-interview.md) | 围绕当前项目的面试讲解与追问扩展 |
 | [docs/project-go-interview-bagua.md](docs/project-go-interview-bagua.md) | Go 工程知识与当前项目代码映射 |
+| [docs/research-market-snapshot.md](docs/research-market-snapshot.md) | M2 研究行情的 21 资产原子合同、确定性身份、签名发布和 Preview 边界 |
 
 ## 工程边界与后续优化方向
 
