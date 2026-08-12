@@ -24,6 +24,7 @@ const marketPriceFact = (
   kind: string,
   source: string,
   observedAt = Date.now(),
+  contributors = [source],
 ) => ({
   price_usd: available(value),
   change_24h_pct: available('1.25'),
@@ -36,9 +37,9 @@ const marketPriceFact = (
   last_success_at: observedAt,
   freshness_status: 'fresh',
   freshness_age_seconds: 0,
-  quality: 'low',
-  contributor_count: 1,
-  contributors: [source],
+  quality: contributors.length >= 3 ? 'high' : contributors.length === 2 ? 'medium' : 'low',
+  contributor_count: contributors.length,
+  contributors,
   version: 10,
 })
 
@@ -250,6 +251,8 @@ test.beforeEach(async ({ page }) => {
                   liveBTCPrices[venue] ?? '64200',
                   priceKind,
                   source,
+                  Date.now(),
+                  ['binance', 'coinbase', 'bybit', 'okx'],
                 ),
               }
             : {}),
@@ -338,6 +341,11 @@ test('composite asset drawer is URL-addressable and keeps perpetuals out of the 
   await page.goto('/markets')
   await expect(page.getByRole('heading', { name: 'Market Overview' })).toBeVisible()
   await expect(page.getByText('$64,203.13')).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: 'Sources' })).toBeVisible()
+  const bitcoinRow = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
+  await expect(bitcoinRow).toContainText('3+ sources')
+  await expect(bitcoinRow).not.toContainText(/\b(high|medium|low)\b/i)
+  await expect(page.getByText(/Freshness is a separate dimension/)).toBeVisible()
   await page.getByRole('button', { name: 'Open BTC markets' }).click()
 
   await expect(page).toHaveURL(/asset=asset-btc/)
@@ -361,7 +369,9 @@ test('venue selection is URL-addressable without changing asset row grain', asyn
   await page.getByRole('button', { name: 'Coinbase', exact: true }).click()
   expect(JSON.parse((await coinbaseRequest).postData() ?? '{}').include_uncovered).toBe(true)
   await expect(page).toHaveURL(/venue=coinbase/)
-  await expect(page.locator('tbody tr').filter({ hasText: 'Bitcoin' })).toHaveCount(1)
+  const coinbaseBitcoinRow = page.locator('tbody tr').filter({ hasText: 'Bitcoin' })
+  await expect(coinbaseBitcoinRow).toHaveCount(1)
+  await expect(coinbaseBitcoinRow).toContainText('1 source')
 
   await page.getByRole('button', { name: 'Uniswap', exact: true }).click()
   await expect(page).toHaveURL(/venue=uniswap/)
@@ -952,6 +962,8 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
   await expect(freshRow.getByTestId('dex-reference-price')).toContainText('CEX composite')
   await expect(freshRow.getByTestId('dex-route-change')).toContainText('0.42%')
   await expect(freshRow.getByTestId('dex-reference-change')).toContainText('1.25%')
+  await expect(freshRow.getByTestId('dex-route-quality')).toContainText('Route · 1 source')
+  await expect(freshRow.getByTestId('dex-reference-quality')).toContainText('Reference · 1 source')
 
   const expiredRow = page.locator('tbody tr').filter({ hasText: 'Expired Route' })
   await expect(expiredRow.getByTestId('dex-route-price')).toContainText('Route unavailable')
@@ -964,7 +976,7 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
     'CoinGecko market reference',
   )
   await expect(expiredRow.getByTestId('dex-reference-quality')).toContainText(
-    'Reference · reference',
+    'Reference · 1 source',
   )
 })
 

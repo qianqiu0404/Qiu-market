@@ -100,6 +100,12 @@ Overview 与 dashboard 必须从同一 selection union 对账：display predicat
 
 R2E 把公开 overview/dashboard 固定到同一个不可变行情快照：PostgreSQL 在一次 read-only `REPEATABLE READ` 事务中使用同一 `CURRENT_TIMESTAMP` 读取 summary、global metric 与完整资产行，Redis 再以 15 秒 bucket、5 分钟 TTL、最多 64 个完整值做跨 API 实例的单一 authority。响应必须携带 `snapshot_id`、`snapshot_as_of`、`qiu.market-snapshot.v1`，当前 All universe 还必须满足 `106 = fresh + stale + unavailable` 与 `priced = fresh + stale`；显式 snapshot dashboard 不进入 BFF cache，ticks 继续实时且不缓存。BFF 同时核对 backend/edge exact release SHA、`data_mode=live`、`restricted-no-bypass.v1`、contract/snapshot schema 与本次 nonce；wrong SHA、旧 deterministic replay、direct `18080`、损坏或过期 snapshot 都 fail closed，不能回退 stale cache。Mac live lane 固定经独立 `com.qiu-market.d1r1.frontdoor` 的 pure frontdoor `18084 -> 18080`，business stack 仍由 `com.qiu-market.d1r1.stack` 管理；selector、tunnel、Redis generation owner 与失败回滚流程见 [Vercel + Mac mini 上线手册](docs/qiu-market-vercel-mac.md#r2e-行情读取合同与原子切换)。
 
+本机优先运行还必须显式安装登录恢复与防空闲睡眠：
+`ops/macos/manage-live-user-runtime.sh install` 将八个精确、owner-only LaunchAgent
+清单同步到 `~/Library/LaunchAgents`，并用系统 `/usr/bin/caffeinate -i` 在用户已登录时
+阻止 idle system sleep；屏幕仍可熄灭，手动睡眠、合盖、关机与注销不会被绕过。这个
+用户级边界不等于“断电后无人登录恢复”；该能力仍需机器所有者单独批准 LaunchDaemon。
+
 四家 CEX 实时 feed 都是 **WebSocket primary + REST reconcile**：Binance/Bybit/OKX 订阅 ticker stream，Coinbase 订阅 `ticker_batch`；高频事件只更新内存 latest map，每约 5 秒合并提交一次。REST 每 30 秒对账安静、漏消息或断线资产。每家由独立 supervisor 隔离失败。正式环境中，CEX 在 shadow/paused 时只探测审核资产，不发布快照；canary/enabled 才进入正式 writer。本地 `make dev` 默认开启 Local Preview，但使用 preview source，不改变正式 mode、Canary 清单或 readiness。所有行情经 `marketdata.SnapshotWriter` 先提交 PostgreSQL，再派生 Redis。writer 保留最后成功值：30 秒内 Fresh，30 秒到 5 分钟 Stale（可展示但不参与综合价和涨跌排名），超过 5 分钟 Unavailable。规范 ticker 分开保存 `open_24h` 与可空 `change_24h_pct`；Binance 协议同时声明小写 `o` 开盘价和大写 `O` 窗口开始时间，防止 Go JSON 大小写不敏感把时间戳覆盖价格。综合价每 5 秒只使用 30 秒内的新鲜 CEX Spot，要求 10 分钟内 USD-family 汇率、剔除 3% 中位数离群报价，并在三个以上 contributor 时限制单 venue 权重不超过 40%。Perp/DEX 只扩展 All 成员，永不贡献综合现货价。
 
 K 线另有独立的 `provider_kline_selection`：四家各把当前 50 资产 selection version 固定到一个具体 USD-family Spot market，只采 provider 原生 1m，再在分钟严格连续时确定性汇总 15m/1h/1d。worker 只产缺口任务，crawler 必须回原 provider 修复；不能用另一家交易所填洞，也不能用 ticker 目录顺序静默换 K 线来源。

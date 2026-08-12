@@ -177,6 +177,30 @@ bash ops/macos/manage-live-log-rotation.sh install
 bash ops/macos/manage-live-log-rotation.sh status
 ```
 
+仅把 plist 放在私有 runtime 目录并手工 `launchctl bootstrap`，只能证明当前登录会话
+已加载，不能证明下次登录会自动恢复。本机优先 lane 因此还要安装用户级启动清单与
+防空闲睡眠断言：
+
+```bash
+bash ops/macos/manage-live-user-runtime.sh install
+bash ops/macos/manage-live-user-runtime.sh status
+```
+
+脚本逐项验证 frontdoor、business stack、crawler、dex、worker、API tunnel、日志轮转
+和 keep-awake 八个 owner-only plist，再原子同步到 `~/Library/LaunchAgents`。新增的
+`com.qiu-market.live.keepawake` 只执行系统 `/usr/bin/caffeinate -i`：用户登录期间阻止
+idle system sleep，但不阻止屏幕休眠，也不绕过手动睡眠、合盖、注销或关机。选择这个
+用户级、可卸载方案而不是直接改全局 `pmset`，是为了不静默改变整台电脑的电源策略；
+代价是断电重启后仍要先登录用户。真正“无人登录也恢复”必须由机器所有者另行批准并
+安装 LaunchDaemon，不能把本步骤描述成已经完成。
+
+`uninstall` 只移除 `~/Library/LaunchAgents` 中这八个精确登记，并停止 keep-awake；
+已运行的行情角色、私有配置、selector、数据库和日志都保留。隔离 fixture 为：
+
+```bash
+bash ops/macos/test-live-user-runtime.sh
+```
+
 `com.qiu-market.live.log-rotation` 每 60 秒只检查 D1 `logs/live-*.out.log` 与
 `logs/live-*.err.log`。单文件超过 50 MiB 时做 copy-truncate：归档保留最近 50 MiB，
 原 inode 留最近 10 MiB，并最多保留两代归档。保留原 inode 是因为 launchd 子进程已打开
@@ -196,7 +220,8 @@ freshness 在有界时间内回到 fresh，并跨至少两个 30 秒 reconcile �
 
 Owner 60 秒说明：轮转器只看 D1 live 的八类 stdout/stderr 文件，每分钟有界
 copy-truncate，保持 launchd 已打开的 inode；配置和 secret 不进入 argv、日志或工作树。
-重启前保存 PID/health/freshness，exact-SHA 切换失败就恢复旧 selector/LaunchAgent；恢复后
+用户级运行安装器把八个精确 plist 放入标准登录扫描目录，并只在登录期间阻止空闲睡眠；
+它不等于无人登录 LaunchDaemon。重启前保存 PID/health/freshness，exact-SHA 切换失败就恢复旧 selector/LaunchAgent；恢复后
 既要健康 200，也要等两个 reconcile 周期验证没有重复内部错误。
 
 闭卷检查：
@@ -206,6 +231,7 @@ copy-truncate，保持 launchd 已打开的 inode；配置和 secret 不进入 a
 - uninstall 会删除哪些东西、明确保留哪些东西？
 - 为什么 `healthz=200` 仍不能替代 freshness 与 30 秒 reconcile 观察？
 - restart 失败时 exact selector、PID 和 tunnel 应如何回滚？
+- 为什么当前登录恢复不能被描述成断电后无人登录恢复？
 
 ### R2E 行情读取合同与原子切换
 

@@ -31,6 +31,7 @@ import {
   type Paged,
 } from '../api/market'
 import { formatAbbr, formatPercent, formatPrice, providerFreshnessVariant } from '../utils/format'
+import { sourceCountBadge, type SourceCountBadge } from '../features/markets/source-count'
 
 type Fiat = 'USD' | 'CNY' | 'HKD'
 
@@ -519,12 +520,6 @@ function formatMetricPrice(metric: AvailableDecimal): string {
   return `${FIAT_SYMBOLS[fiat.value]}${formatPrice(metric.value * rate.value)}`
 }
 
-function confidenceVariant(confidence: string): 'live' | 'delayed' | 'accent' {
-  if (confidence === 'high') return 'live'
-  if (confidence === 'medium') return 'delayed'
-  return 'accent'
-}
-
 function dexRouteFact(asset: AssetDashboardV2Item): MarketPriceFact {
   if (!isDexVenue()) return unavailableMarketPriceFact()
   return validatedDexRoutePriceFact(asset.dex_route_price, venue.value)
@@ -535,39 +530,16 @@ function dexReferenceFact(asset: AssetDashboardV2Item): MarketPriceFact {
   return validatedDisplayReferencePriceFact(asset.display_price)
 }
 
-function priceFactQualityLabel(fact: MarketPriceFact): string {
-  if (!fact.available) return 'unavailable'
-  return fact.quality || 'unknown'
+function priceFactSourceBadge(fact: MarketPriceFact): SourceCountBadge {
+  return sourceCountBadge(fact)
 }
 
-function priceFactQualityVariant(
-  fact: MarketPriceFact,
-): 'live' | 'delayed' | 'accent' {
-  if (!fact.available) return 'accent'
-  if (fact.freshness_status === 'stale') return 'delayed'
-  return confidenceVariant(fact.quality)
-}
-
-function assetQualityLabel(asset: AssetDashboardV2Item): string {
+function assetSourceBadge(asset: AssetDashboardV2Item): SourceCountBadge {
   if (REALTIME_VENUES.has(venue.value)) {
     const resolved = resolveRealtimePrice(asset)
-    if (resolved.mode === 'last_good') return 'last-good'
-    if (resolved.mode === 'unavailable') return 'unavailable'
-    return resolved.fact.quality || asset.quality || asset.confidence || 'unknown'
+    return sourceCountBadge(resolved.fact)
   }
-  if (asset.freshness_status === 'stale') return 'stale'
-  if (asset.freshness_status === 'unavailable') return 'unavailable'
-  return asset.quality || asset.confidence || 'unknown'
-}
-
-function assetQualityVariant(asset: AssetDashboardV2Item): 'live' | 'delayed' | 'accent' {
-  if (REALTIME_VENUES.has(venue.value)) {
-    const resolved = resolveRealtimePrice(asset)
-    if (resolved.mode === 'last_good' || resolved.mode === 'dashboard') return 'delayed'
-    if (resolved.mode === 'unavailable') return 'accent'
-    return confidenceVariant(resolved.fact.quality)
-  }
-  return confidenceVariant(asset.confidence)
+  return sourceCountBadge(asset.display_price)
 }
 
 function isDexVenue(): boolean {
@@ -884,6 +856,10 @@ function coverageReasonLabel(reason: string): string {
         </label>
       </div>
 
+      <p class="source-freshness-note">
+        Source count shows independent price contributors. Freshness is a separate dimension shown with each price.
+      </p>
+
       <ErrorState
         v-if="currentDashboardError && assets.length === 0"
         :message="currentDashboardError"
@@ -934,7 +910,7 @@ function coverageReasonLabel(reason: string): string {
                 </button>
               </th>
               <th class="align-center">Markets / Routes</th>
-              <th class="align-center">{{ isDexVenue() ? 'Route / Ref Quality' : 'Quality' }}</th>
+              <th class="align-center">{{ isDexVenue() ? 'Route / Ref Sources' : 'Sources' }}</th>
             </tr>
           </thead>
           <tbody v-if="assets.length">
@@ -1038,19 +1014,19 @@ function coverageReasonLabel(reason: string): string {
                 <div v-if="isDexVenue()" class="dex-quality-lanes">
                   <StatusBadge
                     data-testid="dex-route-quality"
-                    :variant="priceFactQualityVariant(dexRouteFact(asset))"
-                    :label="`Route · ${priceFactQualityLabel(dexRouteFact(asset))}`"
+                    :variant="priceFactSourceBadge(dexRouteFact(asset)).variant"
+                    :label="`Route · ${priceFactSourceBadge(dexRouteFact(asset)).label}`"
                   />
                   <StatusBadge
                     data-testid="dex-reference-quality"
-                    :variant="priceFactQualityVariant(dexReferenceFact(asset))"
-                    :label="`Reference · ${priceFactQualityLabel(dexReferenceFact(asset))}`"
+                    :variant="priceFactSourceBadge(dexReferenceFact(asset)).variant"
+                    :label="`Reference · ${priceFactSourceBadge(dexReferenceFact(asset)).label}`"
                   />
                 </div>
                 <StatusBadge
                   v-else
-                  :variant="assetQualityVariant(asset)"
-                  :label="assetQualityLabel(asset)"
+                  :variant="assetSourceBadge(asset).variant"
+                  :label="assetSourceBadge(asset).label"
                 />
               </td>
             </tr>
@@ -1179,10 +1155,17 @@ function coverageReasonLabel(reason: string): string {
                 <strong>{{ market.provider }} · {{ market.chain }}</strong>
                 <small>{{ market.symbol }}</small>
               </span>
-              <StatusBadge
-                :variant="market.available ? providerFreshnessVariant(market.freshness_status) : 'offline'"
-                :label="market.available ? (market.quality || market.freshness_status) : 'Unavailable'"
-              />
+              <span class="drawer-market-statuses">
+                <StatusBadge
+                  :variant="market.available ? 'accent' : 'offline'"
+                  :label="market.available ? '1 route source' : 'Unavailable'"
+                />
+                <StatusBadge
+                  v-if="market.available"
+                  :variant="providerFreshnessVariant(market.freshness_status)"
+                  :label="market.freshness_status || 'Unknown freshness'"
+                />
+              </span>
             </div>
             <dl>
               <div><dt>{{ quoteNotionalLabel(market) }}</dt><dd class="num">{{ market.price.available ? `$${formatPrice(market.price.value ?? 0)}` : '—' }}</dd></div>
@@ -1278,6 +1261,15 @@ function coverageReasonLabel(reason: string): string {
   border-radius: var(--radius-sm);
 }
 .table-search:focus-within { border-color: var(--accent); }
+.source-freshness-note {
+  margin: 0;
+  padding: 8px 16px;
+  color: var(--text-3);
+  background: var(--bg-panel-2);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+}
 .table-search input {
   width: 100%;
   padding: 8px 0;
@@ -1341,6 +1333,7 @@ th {
   gap: 7px;
 }
 .dex-quality-lanes { justify-items: stretch; }
+.drawer-market-statuses { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .dex-lane-label {
   color: var(--text-3);
   font-size: 9px;
