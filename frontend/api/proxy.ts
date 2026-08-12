@@ -16,6 +16,7 @@ const MAX_BODY_BYTES = 1 << 20
 const MAX_PROXY_PATH_BYTES = 1_024
 const TOTAL_UPSTREAM_TIMEOUT_MS = 8_000
 const FIRST_READ_ATTEMPT_TIMEOUT_MS = 3_500
+const MARKET_READ_HEDGE_DELAY_MS = 2_500
 const RUNTIME_CACHE_TIMEOUT_MS = 250
 const PUBLIC_CACHE_CONTROL =
 	'public, max-age=0, s-maxage=15, stale-while-revalidate=240, stale-if-error=240'
@@ -34,6 +35,11 @@ const RETRYABLE_GET_PATHS = [
   /^\/api\/v1\/trading\/trades$/,
   /^\/api\/v1\/trading\/balances$/,
 ]
+const HEDGED_MARKET_READ_PATHS = new Set([
+  '/api/v2/get_market_overview',
+  '/api/v2/get_asset_dashboard',
+  '/api/v2/get_market_price_ticks',
+])
 
 const cacheGlobal = globalThis as typeof globalThis & {
   qiuMarketPublicReadCache?: PublicReadCache
@@ -260,6 +266,7 @@ interface UpstreamFetchOptions {
   digest: string
   secret: string
   retryable: boolean
+  hedged: boolean
   deadline: number
 }
 
@@ -285,6 +292,116 @@ export function publicProxyCanonical(
   ].join('\n')
 }
 
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null &&
+    'name' in error && error.name === 'AbortError'
+}
+
+function isRetryableUpstreamStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504
+}
+
+async function fetchUpstreamAttempt(
+  options: Omit<UpstreamFetchOptions, 'retryable' | 'hedged'>,
+  controller: AbortController,
+): Promise<UpstreamFetchResult> {
+  const remaining = options.deadline - Date.now()
+  if (remaining <= 0) {
+    throw new DOMException('upstream deadline exceeded', 'AbortError')
+  }
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const nonce = randomBytes(16).toString('hex')
+  const canonical = publicProxyCanonical(
+    timestamp,
+    nonce,
+    options.method,
+    options.url,
+    options.digest,
+  )
+  const signature = createHmac('sha256', options.secret).update(canonical).digest('hex')
+  const headers = new Headers(options.headers)
+  headers.set('X-Qiu-Market-Timestamp', timestamp)
+  headers.set('X-Qiu-Market-Nonce', nonce)
+  headers.set('X-Qiu-Market-Content-SHA256', options.digest)
+  headers.set('X-Qiu-Market-Signature', signature)
+  const timeout = setTimeout(() => controller.abort(), remaining)
+  try {
+    const response = await fetch(options.url, {
+      method: options.method,
+      headers,
+      body: options.method === 'GET' || options.method === 'HEAD'
+        ? undefined
+        : options.body,
+      redirect: 'manual',
+      signal: controller.signal,
+    })
+    const responseBody = Buffer.from(await response.arrayBuffer())
+    return { response, body: responseBody, requestNonce: nonce }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function fetchHedgedMarketRead(
+  options: Omit<UpstreamFetchOptions, 'retryable' | 'hedged'>,
+): Promise<UpstreamFetchResult> {
+  type SettledAttempt =
+    | { index: number; result: UpstreamFetchResult }
+    | { index: number; error: unknown }
+  const controllers: AbortController[] = []
+  let triggerHedge = () => {}
+  const hedgeTrigger = new Promise<void>((resolve) => {
+    triggerHedge = resolve
+  })
+  const hedgeTimer = setTimeout(triggerHedge, Math.min(
+    MARKET_READ_HEDGE_DELAY_MS,
+    Math.max(0, options.deadline - Date.now()),
+  ))
+  const attempt = () => {
+    const controller = new AbortController()
+    controllers.push(controller)
+    return fetchUpstreamAttempt(options, controller)
+  }
+  const primary = attempt().then(
+    (result) => {
+      if (isRetryableUpstreamStatus(result.response.status)) triggerHedge()
+      return result
+    },
+    (error: unknown) => {
+      triggerHedge()
+      throw error
+    },
+  )
+  const hedge = hedgeTrigger.then(attempt)
+  const settle = (promise: Promise<UpstreamFetchResult>, index: number): Promise<SettledAttempt> =>
+    promise.then(
+      (result) => ({ index, result }),
+      (error: unknown) => ({ index, error }),
+    )
+  const primarySettled = settle(primary, 0)
+  const hedgeSettled = settle(hedge, 1)
+  try {
+    const first = await Promise.race([primarySettled, hedgeSettled])
+    if ('result' in first && !isRetryableUpstreamStatus(first.result.response.status)) {
+      return first.result
+    }
+    const second = await (first.index === 0 ? hedgeSettled : primarySettled)
+    if ('result' in second && !isRetryableUpstreamStatus(second.result.response.status)) {
+      return second.result
+    }
+    const attemptsByIndex = [first, second].sort((left, right) => left.index - right.index)
+    const primaryAttempt = attemptsByIndex[0]
+    const hedgeAttempt = attemptsByIndex[1]
+    if ('result' in hedgeAttempt) return hedgeAttempt.result
+    if (isAbortError(hedgeAttempt.error)) throw hedgeAttempt.error
+    if ('result' in primaryAttempt) return primaryAttempt.result
+    throw 'error' in second ? second.error : hedgeAttempt.error
+  } finally {
+    clearTimeout(hedgeTimer)
+    for (const controller of controllers) controller.abort()
+  }
+}
+
 async function fetchUpstream({
   url,
   method,
@@ -293,8 +410,21 @@ async function fetchUpstream({
   digest,
   secret,
   retryable,
+  hedged,
   deadline,
 }: UpstreamFetchOptions): Promise<UpstreamFetchResult> {
+  const attemptOptions = {
+    url,
+    method,
+    headers: forwardedHeaders,
+    body,
+    digest,
+    secret,
+    deadline,
+  }
+  if (retryable && hedged) {
+    return fetchHedgedMarketRead(attemptOptions)
+  }
   let lastError: unknown
   const attempts = retryable ? 2 : 1
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -303,45 +433,23 @@ async function fetchUpstream({
     const timeoutMs = attempt === 0 && retryable
       ? Math.min(FIRST_READ_ATTEMPT_TIMEOUT_MS, remaining)
       : remaining
-    const timestamp = Math.floor(Date.now() / 1000).toString()
-    const nonce = randomBytes(16).toString('hex')
-    const canonical = publicProxyCanonical(
-      timestamp,
-      nonce,
-      method,
-      url,
-      digest,
-    )
-    const signature = createHmac('sha256', secret).update(canonical).digest('hex')
-    const headers = new Headers(forwardedHeaders)
-    headers.set('X-Qiu-Market-Timestamp', timestamp)
-    headers.set('X-Qiu-Market-Nonce', nonce)
-    headers.set('X-Qiu-Market-Content-SHA256', digest)
-    headers.set('X-Qiu-Market-Signature', signature)
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const response = await fetch(url, {
-        method,
-        headers,
-        body: method === 'GET' || method === 'HEAD' ? undefined : body,
-        redirect: 'manual',
-        signal: controller.signal,
-      })
-      const responseBody = Buffer.from(await response.arrayBuffer())
+      const result = await fetchUpstreamAttempt(
+        { ...attemptOptions, deadline: Date.now() + timeoutMs },
+        controller,
+      )
       if (
         retryable &&
         attempt === 0 &&
-        [502, 503, 504].includes(response.status)
+        isRetryableUpstreamStatus(result.response.status)
       ) {
-        lastError = new Error(`retryable upstream HTTP ${response.status}`)
+        lastError = new Error(`retryable upstream HTTP ${result.response.status}`)
         continue
       }
-      return { response, body: responseBody, requestNonce: nonce }
+      return result
     } catch (error) {
       lastError = error
-    } finally {
-      clearTimeout(timeout)
     }
   }
   throw lastError ?? new DOMException('upstream deadline exceeded', 'AbortError')
@@ -528,6 +636,13 @@ export function isRetryableUpstreamRequest(
   return RETRYABLE_GET_PATHS.some((pattern) => pattern.test(pathname))
 }
 
+export function isHedgedMarketRead(
+  method: string,
+  pathname: string,
+): boolean {
+  return method === 'POST' && HEDGED_MARKET_READ_PATHS.has(pathname)
+}
+
 export default async function handler(
   request: QiuProxyRequest,
   response: QiuProxyResponse,
@@ -681,6 +796,7 @@ export default async function handler(
       digest,
       secret,
       retryable: retryableRead,
+      hedged: isHedgedMarketRead(method, upstreamURL.pathname),
     }
     tunnelStartedAt = Date.now()
     const {
@@ -761,7 +877,7 @@ export default async function handler(
       }
       return
     }
-    const timeout = error instanceof Error && error.name === 'AbortError'
+    const timeout = isAbortError(error)
     const status = timeout ? 504 : 502
     response.status(status).json({
       code: timeout ? 'backend_timeout' : 'backend_unavailable',

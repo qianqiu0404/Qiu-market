@@ -32,6 +32,7 @@ vi.mock('@vercel/functions', () => ({
 }))
 
 import handler, {
+  isHedgedMarketRead,
   isRetryableUpstreamRequest,
   publicProxyCanonical,
 	requiresBackendMarketContract,
@@ -270,6 +271,18 @@ describe('isRetryableUpstreamRequest', () => {
     expect(isRetryableUpstreamRequest('POST', '/api/v1/trading/orders')).toBe(false)
 		expect(isRetryableUpstreamRequest('POST', '/api/v1/trading/fund')).toBe(false)
   })
+
+	it('hedges only the three latency-critical read-only market POSTs', () => {
+		for (const path of [
+			'/api/v2/get_market_overview',
+			'/api/v2/get_asset_dashboard',
+			'/api/v2/get_market_price_ticks',
+		]) {
+			expect(isHedgedMarketRead('POST', path)).toBe(true)
+		}
+		expect(isHedgedMarketRead('POST', '/api/v1/get_support_assets')).toBe(false)
+		expect(isHedgedMarketRead('GET', '/api/v2/get_asset_dashboard')).toBe(false)
+	})
 })
 
 describe('upstream HMAC replay protection', () => {
@@ -368,6 +381,188 @@ describe('upstream HMAC replay protection', () => {
 		expect(nonces[0]).toMatch(/^[0-9a-f]{32}$/)
 		expect(nonces[1]).toMatch(/^[0-9a-f]{32}$/)
 		expect(nonces[0]).not.toBe(nonces[1])
+	})
+
+	it('hedges a slow read-only market POST before the 8 second deadline', async () => {
+		vi.useFakeTimers()
+		const payload = JSON.stringify({
+			code: 2000, result: [], total: 0, overview: {
+				venue: 'all', asset_count: 1, priced_asset_count: 0,
+				fresh_asset_count: 0, stale_asset_count: 0, unavailable_asset_count: 1,
+			},
+			snapshot_id: 'snp_00000000000000000000000000000001',
+			snapshot_as_of: 1785196800000,
+			snapshot_schema: 'qiu.market-snapshot.v1',
+		})
+		const fetchMock = vi.fn()
+			.mockImplementationOnce((_url: URL, request: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					request.signal?.addEventListener('abort', () =>
+						reject(new DOMException('aborted', 'AbortError')))
+				}))
+			.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+				contractedResponse(payload, request))
+		vi.stubGlobal('fetch', fetchMock)
+
+		const proxied = proxyResponse()
+		const pending = handler(proxyRequest(90) as never, proxied.response as never)
+		await vi.advanceTimersByTimeAsync(2_499)
+		expect(fetchMock).toHaveBeenCalledTimes(1)
+		await vi.advanceTimersByTimeAsync(1)
+		await pending
+
+		expect(proxied.result.statusCode).toBe(200)
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		const requests = fetchMock.mock.calls.map(([, request]) => request as RequestInit)
+		const nonces = requests.map((request) =>
+			new Headers(request.headers).get('X-Qiu-Market-Nonce'))
+		expect(nonces[0]).toMatch(/^[0-9a-f]{32}$/)
+		expect(nonces[1]).toMatch(/^[0-9a-f]{32}$/)
+		expect(nonces[0]).not.toBe(nonces[1])
+		expect(requests[0].signal?.aborted).toBe(true)
+	})
+
+	it('aborts a stalled hedge when the primary returns a complete winner', async () => {
+		vi.useFakeTimers()
+		const payload = JSON.stringify({
+			code: 2000, result: [], total: 0, overview: {
+				venue: 'all', asset_count: 1, priced_asset_count: 0,
+				fresh_asset_count: 0, stale_asset_count: 0, unavailable_asset_count: 1,
+			},
+			snapshot_id: 'snp_00000000000000000000000000000001',
+			snapshot_as_of: 1785196800000,
+			snapshot_schema: 'qiu.market-snapshot.v1',
+		})
+		let resolvePrimary: ((response: Response) => void) | undefined
+		const fetchMock = vi.fn()
+			.mockImplementationOnce((_url: URL, request: RequestInit) =>
+				new Promise<Response>((resolve, reject) => {
+					resolvePrimary = (response) => resolve(response)
+					request.signal?.addEventListener('abort', () =>
+						reject(new DOMException('aborted', 'AbortError')))
+				}))
+			.mockImplementationOnce((_url: URL, request: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					request.signal?.addEventListener('abort', () =>
+						reject(new DOMException('aborted', 'AbortError')))
+				}))
+		vi.stubGlobal('fetch', fetchMock)
+
+		const proxied = proxyResponse()
+		const pending = handler(proxyRequest(98) as never, proxied.response as never)
+		await vi.advanceTimersByTimeAsync(2_500)
+		const primaryRequest = fetchMock.mock.calls[0][1] as RequestInit
+		const hedgeRequest = fetchMock.mock.calls[1][1] as RequestInit
+		resolvePrimary?.(contractedResponse(payload, primaryRequest))
+		await pending
+
+		expect(proxied.result.statusCode).toBe(200)
+		expect(hedgeRequest.signal?.aborted).toBe(true)
+	})
+
+	it.each([503, 504])('preserves the second complete HTTP %d response', async (status) => {
+		const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
+			contractedResponse('{}', request, {}, status))
+		vi.stubGlobal('fetch', fetchMock)
+		const proxied = proxyResponse()
+		await handler(proxyRequest(99 + status) as never, proxied.response as never)
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(proxied.result.statusCode).toBe(status)
+	})
+
+	it('keeps the hedge deadline as typed 504 after a primary 503', async () => {
+		vi.useFakeTimers()
+		const fetchMock = vi.fn()
+			.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+				contractedResponse('{}', request, {}, 503))
+			.mockImplementationOnce((_url: URL, request: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					request.signal?.addEventListener('abort', () =>
+						reject(new DOMException('aborted', 'AbortError')))
+				}))
+		vi.stubGlobal('fetch', fetchMock)
+		const proxied = proxyResponse()
+		const pending = handler(proxyRequest(100) as never, proxied.response as never)
+		await vi.advanceTimersByTimeAsync(8_000)
+		await pending
+		expect(proxied.result.statusCode).toBe(504)
+		expect(JSON.parse(proxied.result.body.toString())).toMatchObject({
+			code: 'backend_timeout',
+		})
+	})
+
+	it('returns the hedge HTTP 504 after a primary transport failure', async () => {
+		const fetchMock = vi.fn()
+			.mockRejectedValueOnce(new Error('primary transport failed'))
+			.mockImplementationOnce(async (_url: URL, request: RequestInit) =>
+				contractedResponse('{}', request, {}, 504))
+		vi.stubGlobal('fetch', fetchMock)
+		const proxied = proxyResponse()
+		await handler(proxyRequest(101) as never, proxied.response as never)
+		expect(proxied.result.statusCode).toBe(504)
+	})
+
+	it('fails within the original 8 second budget when both market hedges stall', async () => {
+		vi.useFakeTimers()
+		const fetchMock = vi.fn((_url: URL, request: RequestInit) =>
+			new Promise<Response>((_resolve, reject) => {
+				request.signal?.addEventListener('abort', () =>
+					reject(new DOMException('aborted', 'AbortError')))
+			}))
+		vi.stubGlobal('fetch', fetchMock)
+
+		const proxied = proxyResponse()
+		const pending = handler(proxyRequest(96) as never, proxied.response as never)
+		await vi.advanceTimersByTimeAsync(7_999)
+		expect(proxied.result.statusCode).toBe(200)
+		await vi.advanceTimersByTimeAsync(1)
+		await pending
+
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(proxied.result.statusCode).toBe(504)
+		expect(proxied.result.headers.get('cache-control')).toBe('no-store')
+		expect(JSON.parse(proxied.result.body.toString())).toMatchObject({
+			code: 'backend_timeout',
+		})
+	})
+
+	it('keeps other safe public POSTs on serial retry without a hedge', async () => {
+		vi.useFakeTimers()
+		const fetchMock = vi.fn()
+			.mockImplementationOnce((_url: URL, request: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					request.signal?.addEventListener('abort', () =>
+						reject(new DOMException('aborted', 'AbortError')))
+				}))
+			.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+		vi.stubGlobal('fetch', fetchMock)
+		const request = {
+			...proxyRequest(),
+			url: '/api/proxy?path=v1/get_support_assets',
+			query: { path: 'v1/get_support_assets' },
+			body: {},
+		}
+		const proxied = proxyResponse()
+		const pending = handler(request as never, proxied.response as never)
+		await vi.advanceTimersByTimeAsync(2_500)
+		expect(fetchMock).toHaveBeenCalledTimes(1)
+		await vi.advanceTimersByTimeAsync(1_000)
+		await pending
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+	})
+
+	it('sends a write upstream exactly once even when it returns 503', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 503 }))
+		vi.stubGlobal('fetch', fetchMock)
+		const request = {
+			...proxyRequest(),
+			url: '/api/proxy?path=v1/trading/fund',
+			query: { path: 'v1/trading/fund' },
+		}
+		const proxied = proxyResponse()
+		await handler(request as never, proxied.response as never)
+		expect(fetchMock).toHaveBeenCalledTimes(1)
+		expect(proxied.result.statusCode).toBe(503)
 	})
 
   it('keeps upstream failures non-cacheable', async () => {
@@ -495,6 +690,24 @@ describe('public cache contract boundary', () => {
     expect(stale.result.statusCode).toBe(200)
     expect(stale.result.headers.get('x-qiu-market-cache')).toBe('STALE')
   })
+
+	it('does not replace a complete hedged HTTP 504 with stale cache', async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date('2026-07-28T03:00:00Z'))
+		vi.stubGlobal('fetch', vi.fn(async (_url: URL, request: RequestInit) =>
+			contractedResponse(payload, request)))
+		await handler(proxyRequest(97) as never, proxyResponse().response as never)
+		await Promise.all([...vercelFunctions.waitTasks])
+		vi.setSystemTime(new Date('2026-07-28T03:00:16Z'))
+		const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
+			contractedResponse('{}', request, {}, 504))
+		vi.stubGlobal('fetch', fetchMock)
+		const response = proxyResponse()
+		await handler(proxyRequest(97) as never, response.response as never)
+		expect(fetchMock).toHaveBeenCalledTimes(2)
+		expect(response.result.statusCode).toBe(504)
+		expect(response.result.headers.get('x-qiu-market-cache')).toBeUndefined()
+	})
 })
 
 describe('uncached ticks contract boundary', () => {
