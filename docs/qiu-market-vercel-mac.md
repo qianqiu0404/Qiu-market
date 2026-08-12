@@ -383,6 +383,8 @@ upstream 截止时间为 8 秒；仅只读请求可重试一次，交易写请�
 公开行情 POST 的每次尝试都使用新的 HMAC nonce，首轮最多 3.5 秒，两轮共享同一
 8 秒截止。日志只记录 request ID、route、cache state、Function region 与 cache、
 tunnel、frontdoor、Redis、PostgreSQL 分段耗时，不记录签名、secret 或完整私有配置。
+API 对客户端声明支持 gzip 的 JSON 响应做有界压缩，字段和事实合同保持完整；这是为了
+降低 50 行 dashboard/ticks 经过 tunnel 的传输字节，不是删除 provenance 或延长超时。
 若当前 Vercel 套餐拒绝 `hkg1`，部署必须停止并保留旧 Preview，不自动购买或切换
 付费能力；不得用延长 Function 超时掩盖 tunnel 传输错误。
 项目必须启用 Vercel 的 System Environment Variables。`VERCEL_DEPLOYMENT_ID` 和

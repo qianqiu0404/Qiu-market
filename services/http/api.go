@@ -207,6 +207,7 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 
 	apiRouter.Use(middleware.Recoverer)
 	apiRouter.Use(middleware.Heartbeat(HealthPath))
+	apiRouter.Use(marketJSONCompressionMiddleware)
 	apiRouter.Use(publicProxyHMACMiddleware(cfg.PublicProxyHMACSecret))
 	apiRouter.Use(marketReadContractMiddleware(a.marketContract))
 	researchReader, err := researchsignal.New(researchsignal.Config{Enabled: cfg.ResearchSignals.Enabled})
@@ -249,6 +250,10 @@ func (a *API) initRouter(conf config.ServerConfig, cfg *config.Config) {
 	mountTradingRoutes(apiRouter, a.tradingHandler)
 
 	a.router = apiRouter
+}
+
+func marketJSONCompressionMiddleware(next http.Handler) http.Handler {
+	return middleware.Compress(5, "application/json")(next)
 }
 
 func mountTradingRoutes(router chi.Router, handler http.Handler) {
