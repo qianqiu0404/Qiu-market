@@ -403,15 +403,16 @@ Playwright 31/31、Vue production build 与 `git diff --check` 通过。测试�
 fixture，只属于 `build-verified`；本轮没有开启 Mac mini recovery gate、没有推进真实
  epoch，也没有新增 `integration-verified` 或 Production 结论。
 
-2026-08-12 的本机 Quality / venue quote board 专项执行：Vitest 22 files / 220
+2026-08-12 的本机 Quality / venue quote board 专项执行：Vitest 22 files / 221
 tests、Markets Playwright 21/21、Vue production build、Go build/vet/test、四项安全
 门禁与 `git diff --check` 通过。新前端通过只读代理连接当前 live runtime，在
 1440×1000、390×844、320×844 验证 50 行资产、固定七源报价板、页面无横向溢出，
-console/page error/request failure/5xx 均为 0。Coinbase、OKX、Hyperliquid 返回可发布
-报价；Binance、Bybit 仍没有可发布 selection，页面诚实保留 unavailable；Uniswap、
-PancakeSwap 的正式 route endpoint 仍为 unconfigured。本轮只属于本机
-`build-verified` 加受保护只读 runtime 的 `integration-verified`，没有更新 Preview，
-没有提交或切换 Production。
+最近五分钟 Preview 请求无 5xx。四家 CEX Spot 与 Hyperliquid 均有版本化 50 资产
+selection；Binance/Bybit 在 local Preview 读取官方公开行情但正式 rollout 继续 shadow。
+Uniswap/PancakeSwap 公共只读 RPC 已产生带 chain、protocol、pool、route、实际询价档位
+与 block time 的报价；七源报价板把 60 秒至五分钟的身份已验证路线显示为 `Stale`，
+五分钟后才 `Unavailable`，而首页 `dex_route_price` 兼容栏仍保持 60 秒边界。受保护
+Preview 与本机 runtime 使用同一 exact SHA 并停在用户验收点；Production 未切换。
 
 ## Owner 60 秒解释
 
