@@ -576,6 +576,24 @@ function requestedSnapshotID(body: Buffer): string {
 	}
 }
 
+function isDefaultDashboardBody(pathname: string, body: Buffer): boolean {
+	if (pathname !== '/api/v2/get_asset_dashboard') return true
+	try {
+		const value = JSON.parse(body.toString()) as Record<string, unknown>
+		const venue = typeof value.venue === 'string' ? value.venue : 'all'
+		const universe = venue === 'all' ? 'provider_union' : 'provider_top50'
+		return ['all', 'binance', 'coinbase', 'bybit', 'okx', 'hyperliquid', 'uniswap', 'pancakeswap'].includes(venue) &&
+			['assets', 'gainers', 'losers'].includes(String(value.filter ?? 'assets')) &&
+			Number(value.page ?? 1) === 1 && Number(value.page_size ?? 50) === 50 &&
+			String(value.search ?? '') === '' && String(value.sort_by ?? 'rank') === 'rank' &&
+			String(value.sort_direction ?? 'desc') === 'desc' &&
+			(value.include_uncovered ?? true) === true &&
+			String(value.universe ?? universe) === universe && String(value.snapshot_id ?? '') === ''
+	} catch {
+		return false
+	}
+}
+
 function validateSnapshotEnvelope(
 	pathname: string,
 	requestBodyValue: Buffer,
@@ -711,8 +729,8 @@ export default async function handler(
 			const contractRequired = requiresBackendMarketContract(method, upstreamURL.pathname)
 			marketRead = contractRequired
 		const explicitSnapshotID = requestedSnapshotID(body)
-		const cacheablePublicRead = isPublicMarketRead(method, upstreamURL.pathname) &&
-			explicitSnapshotID === ''
+		const cacheablePublicRead = isPublicMarketRead(method, upstreamURL.pathname) && explicitSnapshotID === '' &&
+			isDefaultDashboardBody(upstreamURL.pathname, body)
 		const expectedContract = contractRequired
       ? expectedBackendContract()
       : undefined

@@ -285,9 +285,16 @@ repo-tracked pure passthrough frontdoor，禁止旧 replay body rewrite。
 受控切换入口是：
 
 ```bash
-bash ops/macos/live-cutover.sh preflight /private/path/to/candidate-active-release.json
-bash ops/macos/live-cutover.sh cutover /private/path/to/candidate-active-release.json --execute
+bash ops/macos/live-cutover.sh prepare-rollback --execute
+bash ops/macos/live-cutover.sh preflight /private/path/to/candidate.json /private/path/to/sealed-backup
+bash ops/macos/live-cutover.sh cutover /private/path/to/candidate.json /private/path/to/sealed-backup --execute
 ```
+
+`prepare-rollback` 只在当前 selector、activation snapshot、direct/edge contract、LaunchAgent
+和 Redis owner/state 全部有效时生成自包含 sealed backup；不暂停、不重启、不清理 Redis。
+seal 固定 selector、generation 和五个 wrapper 的 SHA256。cutover 加锁后冻结并重验候选与
+显式 rollback authority，任何漂移都在 pause 前失败。committed-generation 只是一轮成功
+激活的 PID/readiness 快照，不是单独可用的 rollback authority。
 
 preflight 会先核对现役六个 LaunchAgent 的 Program 精确指向受管 runtime：独立
 `com.qiu-market.d1r1.frontdoor`、business `com.qiu-market.d1r1.stack`、三个只读 role
@@ -338,6 +345,7 @@ Top20/50/106 覆盖与 freshness，使总数变化不会被误读为既有范围
 - 为什么带显式 snapshot ID 的 dashboard 不进入 BFF stale cache？
 - Redis cleanup 的 PID、listener、owner token 三门分别防哪一种竞态？
 - cutover 为什么必须先看到 edge drain 503，再提交 `ready=true` 和恢复 tunnel？
+- 为什么 committed-generation 只能作为 activation snapshot，不能单独证明可回滚？
 
 ## 3. Tailscale Funnel
 

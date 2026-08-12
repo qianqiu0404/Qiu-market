@@ -286,6 +286,37 @@ describe('isRetryableUpstreamRequest', () => {
 })
 
 describe('upstream HMAC replay protection', () => {
+	it('keeps every dynamic dashboard POST no-store and outside the shared body cache', async () => {
+		const snapshotID = 'snp_00000000000000000000000000000001'
+		const fetchMock = vi.fn(async (_url: URL, init: RequestInit) => {
+			const requestBody = JSON.parse(String(init.body)) as { snapshot_id?: string }
+			return contractedResponse(JSON.stringify({
+				code: 2000, result: [], total: 0, overview: {
+					venue: 'all', asset_count: 1, priced_asset_count: 0,
+					fresh_asset_count: 0, stale_asset_count: 0, unavailable_asset_count: 1,
+				}, snapshot_id: requestBody.snapshot_id || snapshotID,
+				snapshot_as_of: 1785196800000, snapshot_schema: 'qiu.market-snapshot.v1',
+			}), init)
+		})
+		vi.stubGlobal('fetch', fetchMock)
+		const base = {
+			...proxyRequest(50).body, venue: 'all', page: 1, page_size: 50,
+			filter: 'assets', search: '', sort_by: 'rank', sort_direction: 'desc',
+			include_uncovered: true, universe: 'provider_union', snapshot_id: '',
+		}
+		for (const override of [
+			{ search: 'btc' }, { page: 2 }, { sort_by: 'price' }, { snapshot_id: snapshotID },
+		]) {
+			for (let index = 0; index < 2; index += 1) {
+				const proxied = proxyResponse()
+				await handler({ ...proxyRequest(50), body: { ...base, ...override } } as never, proxied.response as never)
+				expect(proxied.result.statusCode).toBe(200)
+				expect(proxied.result.headers.get('cache-control')).toBe('no-store')
+			}
+		}
+		expect(fetchMock).toHaveBeenCalledTimes(8)
+	})
+
   it('shares exact path and query canonicalization with the Go verifier', () => {
     expect(canonicalFixtures).toHaveLength(3)
     for (const [index, fixture] of canonicalFixtures.entries()) {
@@ -634,12 +665,12 @@ describe('public cache contract boundary', () => {
       contractedResponse(payload, request))
     vi.stubGlobal('fetch', fetchMock)
     const primed = proxyResponse()
-    await handler(proxyRequest(91) as never, primed.response as never)
+    await handler(proxyRequest(50) as never, primed.response as never)
     await Promise.all([...vercelFunctions.waitTasks])
 
     vi.setSystemTime(new Date('2026-07-28T00:00:10Z'))
     const cached = proxyResponse()
-    await handler(proxyRequest(91) as never, cached.response as never)
+    await handler(proxyRequest(50) as never, cached.response as never)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(cached.result.headers.get('x-qiu-market-cache')).toBe('FRESH')
     expect(cached.result.headers.get('x-qiu-market-backend-release-commit')).toBe(
@@ -695,12 +726,12 @@ describe('public cache contract boundary', () => {
     const fetchMock = vi.fn(async (_url: URL, request: RequestInit) =>
       contractedResponse(payload, request))
     vi.stubGlobal('fetch', fetchMock)
-    await handler(proxyRequest(94) as never, proxyResponse().response as never)
+    await handler(proxyRequest(50) as never, proxyResponse().response as never)
     await Promise.all([...vercelFunctions.waitTasks])
     vi.setSystemTime(new Date('2026-07-28T02:00:16Z'))
     fetchMock.mockRejectedValue(new Error('transport down'))
     const stale = proxyResponse()
-    await handler(proxyRequest(94) as never, stale.response as never)
+    await handler(proxyRequest(50) as never, stale.response as never)
     expect(stale.result.statusCode).toBe(200)
     expect(stale.result.headers.get('x-qiu-market-cache')).toBe('STALE')
   })
@@ -728,7 +759,7 @@ describe('public cache contract boundary', () => {
 		vi.setSystemTime(new Date('2026-07-28T04:00:00Z'))
 		vi.stubGlobal('fetch', vi.fn(async (_url: URL, request: RequestInit) =>
 			contractedResponse(payload, request)))
-		await handler(proxyRequest(103) as never, proxyResponse().response as never)
+		await handler(proxyRequest(50) as never, proxyResponse().response as never)
 		await Promise.all([...vercelFunctions.waitTasks])
 		vi.setSystemTime(new Date('2026-07-28T04:00:16Z'))
 		const fetchMock = vi.fn()
@@ -737,7 +768,7 @@ describe('public cache contract boundary', () => {
 			.mockRejectedValueOnce(new Error('hedge transport failed'))
 		vi.stubGlobal('fetch', fetchMock)
 		const response = proxyResponse()
-		await handler(proxyRequest(103) as never, response.response as never)
+  await handler(proxyRequest(50) as never, response.response as never)
 		expect(response.result.statusCode).toBe(200)
 		expect(response.result.headers.get('x-qiu-market-cache')).toBe('STALE')
 	})

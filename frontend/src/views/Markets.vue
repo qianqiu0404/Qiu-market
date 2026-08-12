@@ -12,6 +12,7 @@ import {
   getAssetVenuesV2,
   getFiatRates,
   getMarketPriceTicks,
+  marketClientReleaseConfigured,
   marketTickCacheKey,
   mergeMarketPriceTickSnapshot,
   unavailableMarketPriceFact,
@@ -39,9 +40,17 @@ import {
   isDashboardLastGoodCurrent,
   isCurrentDashboardRequest,
   readDashboardLastGood,
+  readPersistedDashboard,
   writeDashboardLastGood,
+  writePersistedDashboard,
   type DashboardLastGood,
 } from '../features/markets/dashboard-cache'
+import {
+  otherMarketVenues,
+  runSequentialDashboardPrefetch,
+  shouldContinueDashboardPrefetch,
+} from '../features/markets/dashboard-prefetch'
+import { applyLateDashboardRestore } from '../features/markets/dashboard-restore'
 
 type Fiat = 'USD' | 'CNY' | 'HKD'
 
@@ -169,6 +178,13 @@ let dashboardController: AbortController | null = null
 let dashboardGeneration = 0
 let dashboardPollTimer: number | undefined
 let dashboardClockTimer: number | undefined
+let dashboardPrefetchController: AbortController | null = null
+let dashboardPrefetchIdle: number | undefined
+let dashboardPrefetchTimeout: ReturnType<typeof setTimeout> | undefined
+let dashboardPrefetchResumeTimer: ReturnType<typeof setTimeout> | undefined
+let dashboardPrefetchInteracted = false
+let dashboardPrefetchRunActive = false
+const dashboardPrefetchedVenues = new Set<MarketVenue>()
 
 function restoreDashboardLastGood(queryKey: string): boolean {
   const cached = readDashboardLastGood(dashboardCache, queryKey)
@@ -198,6 +214,24 @@ async function refreshDashboard(restoreLastGood = false): Promise<void> {
   dashboardRefreshError.value = ''
   dashboardLoading.value = !hasLastGood
   dashboardRefreshing.value = hasLastGood
+  let networkSettled = false
+  let networkError = ''
+  if (restoreLastGood && !hasLastGood) {
+    void readPersistedDashboard<DashboardSnapshot>(queryKey, query.venue).then((persisted) => {
+      if (!persisted || !isCurrentDashboardRequest(
+        generation, dashboardGeneration, queryKey, currentDashboardQueryKey.value,
+      ) || dashboardData.value?.queryKey === queryKey) return
+      writeDashboardLastGood(dashboardCache, queryKey, persisted.value, persisted.storedAt)
+      dashboardData.value = persisted.value
+      dashboardLastUpdated.value = new Date(persisted.storedAt)
+      dashboardCacheStoredAt.value = persisted.storedAt
+      const presentation = applyLateDashboardRestore(networkSettled, networkError)
+      dashboardLoading.value = presentation.loading
+      dashboardRefreshing.value = presentation.refreshing
+      dashboardFailure.value = presentation.failure
+      dashboardRefreshError.value = presentation.refreshError
+    })
+  }
   try {
     const data = await getAssetDashboardV2(query.page, query.pageSize, {
       venue: query.venue,
@@ -220,6 +254,11 @@ async function refreshDashboard(restoreLastGood = false): Promise<void> {
     dashboardData.value = snapshot
     dashboardLastUpdated.value = new Date(cached.storedAt)
     dashboardCacheStoredAt.value = cached.storedAt
+    void writePersistedDashboard(queryKey, query.venue, snapshot, cached.storedAt)
+    if (query.page === 1 && query.pageSize === 50 && query.search === '' &&
+      query.filter === 'assets' && query.sortBy === 'rank' && query.sortDirection === 'desc') {
+      scheduleDashboardPrefetch(query.venue)
+    }
   } catch (error) {
     if (controller.signal.aborted) return
     if (!isCurrentDashboardRequest(
@@ -229,15 +268,86 @@ async function refreshDashboard(restoreLastGood = false): Promise<void> {
       currentDashboardQueryKey.value,
     )) return
     const message = error instanceof Error ? error.message : 'Unable to load market results'
+    networkError = message
     if (dashboardData.value?.queryKey === queryKey) dashboardRefreshError.value = message
     else dashboardFailure.value = message
   } finally {
+    networkSettled = true
     if (generation === dashboardGeneration) {
       dashboardLoading.value = false
       dashboardRefreshing.value = false
       if (dashboardController === controller) dashboardController = null
     }
   }
+}
+
+function prefetchEnvironment() {
+  const connection = navigator as Navigator & { connection?: { saveData?: boolean } }
+  return {
+    hidden: document.hidden,
+    online: navigator.onLine,
+    saveData: connection.connection?.saveData === true,
+    interacted: dashboardPrefetchInteracted,
+  }
+}
+
+function scheduleDashboardPrefetch(currentVenue: MarketVenue): void {
+  if (!marketClientReleaseConfigured() || dashboardPrefetchInteracted) return
+  const remaining = otherMarketVenues(currentVenue).filter((item) =>
+    !dashboardPrefetchedVenues.has(item))
+  if (dashboardPrefetchRunActive || remaining.length === 0) return
+  dashboardPrefetchController?.abort()
+  if (dashboardPrefetchIdle !== undefined && 'cancelIdleCallback' in window) {
+    window.cancelIdleCallback(dashboardPrefetchIdle)
+  }
+  if (dashboardPrefetchTimeout !== undefined) clearTimeout(dashboardPrefetchTimeout)
+  dashboardPrefetchRunActive = true
+  dashboardPrefetchController = new AbortController()
+  const controller = dashboardPrefetchController
+  const run = async (): Promise<void> => {
+    try {
+      const completed = await runSequentialDashboardPrefetch(remaining, {
+        signal: controller.signal,
+        shouldContinue: () => shouldContinueDashboardPrefetch(prefetchEnvironment()),
+        load: async (targetVenue, signal) => {
+          const query: DashboardQuery = {
+            venue: targetVenue, page: 1, pageSize: 50, search: '', filter: 'assets',
+            sortBy: 'rank', sortDirection: 'desc',
+            universe: targetVenue === 'all' ? 'provider_union' : 'provider_top50',
+          }
+          const data = await getAssetDashboardV2(1, 50, {
+            venue: targetVenue, filter: 'assets', includeUncovered: true,
+            universe: query.universe, signal,
+          })
+          return { queryKey: dashboardQueryKey(query), data }
+        },
+        persist: (targetVenue, snapshot) =>
+          writePersistedDashboard(snapshot.queryKey, targetVenue, snapshot),
+      })
+      for (const targetVenue of completed) dashboardPrefetchedVenues.add(targetVenue)
+    } finally {
+      dashboardPrefetchRunActive = false
+    }
+  }
+  if ('requestIdleCallback' in window) {
+    dashboardPrefetchIdle = window.requestIdleCallback(() => { void run() }, { timeout: 2_000 })
+  } else {
+    dashboardPrefetchTimeout = globalThis.setTimeout(() => { void run() }, 500)
+  }
+}
+
+function abortDashboardPrefetchForUser(): void {
+  dashboardPrefetchInteracted = true
+  dashboardPrefetchController?.abort()
+  if (dashboardPrefetchResumeTimer !== undefined) clearTimeout(dashboardPrefetchResumeTimer)
+  dashboardPrefetchResumeTimer = globalThis.setTimeout(() => {
+    dashboardPrefetchInteracted = false
+    const query = readDashboardQuery()
+    if (query.page === 1 && query.pageSize === 50 && query.search === '' &&
+      query.filter === 'assets' && query.sortBy === 'rank' && query.sortDirection === 'desc') {
+      scheduleDashboardPrefetch(query.venue)
+    }
+  }, 15_000)
 }
 
 const dashboard = {
@@ -404,6 +514,10 @@ const rangeEnd = computed(() => Math.min(total.value, (page.value - 1) * pageSiz
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
+	window.addEventListener('pointerdown', abortDashboardPrefetchForUser, { passive: true })
+	window.addEventListener('touchstart', abortDashboardPrefetchForUser, { passive: true })
+	window.addEventListener('offline', abortDashboardPrefetchForUser)
+	document.addEventListener('visibilitychange', abortDashboardPrefetchForUser)
 	dashboardPollTimer = window.setInterval(() => {
 		if (!document.hidden) void refreshDashboard(false)
 	}, 15_000)
@@ -420,6 +534,12 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
+	window.removeEventListener('pointerdown', abortDashboardPrefetchForUser)
+	window.removeEventListener('touchstart', abortDashboardPrefetchForUser)
+	window.removeEventListener('offline', abortDashboardPrefetchForUser)
+	document.removeEventListener('visibilitychange', abortDashboardPrefetchForUser)
+	dashboardPrefetchController?.abort()
+  if (dashboardPrefetchResumeTimer !== undefined) clearTimeout(dashboardPrefetchResumeTimer)
   if (searchTimer !== undefined) window.clearTimeout(searchTimer)
 	dashboardController?.abort()
 	if (dashboardPollTimer !== undefined) window.clearInterval(dashboardPollTimer)
@@ -451,6 +571,7 @@ function syncRoute(): void {
 }
 
 watch([venue, filter, page, pageSize, sortKey, sortDir], ([nextVenue, nextFilter], [previousVenue, previousFilter]) => {
+	abortDashboardPrefetchForUser()
 	  if (nextVenue !== previousVenue || nextFilter !== previousFilter) page.value = 1
   syncRoute()
 	  void refreshDashboard(true)
@@ -468,6 +589,7 @@ watch(
 
 let searchTimer: number | undefined
 watch(search, () => {
+	abortDashboardPrefetchForUser()
   page.value = 1
   syncRoute()
 	dashboardController?.abort()

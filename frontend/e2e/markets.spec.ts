@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page, type Request, type Route } from '@playwright/test'
 
 const available = (value: string) => ({ value, available: true })
 const unavailable = { value: null, available: false }
@@ -127,6 +127,25 @@ const dashboardSnapshot = (venue: string, requestedSnapshotID?: string) => ({
   snapshot_id: requestedSnapshotID?.trim() || snapshotForVenue(venue).snapshot_id,
 })
 
+function dashboardRequest(request: Request): {
+  venue?: string
+  snapshot_id?: string
+  page?: number
+  page_size?: number
+  asset_ids?: string[]
+} {
+  if (request.method() === 'GET') {
+    const url = new URL(request.url())
+    return { venue: url.searchParams.get('venue') ?? 'all', page: 1, page_size: 50 }
+  }
+  return JSON.parse(request.postData() ?? '{}')
+}
+
+async function routeDashboard(page: Page, handler: (route: Route) => Promise<void>): Promise<void> {
+  await page.route('**/api/v2/get_asset_dashboard', handler)
+  await page.route('**/api/market/default-dashboard**', handler)
+}
+
 const overviewForVenue = (
   venue: string,
   overrides: Record<string, unknown> = {},
@@ -147,6 +166,8 @@ const overviewForVenue = (
     fresh_asset_count: 1,
     stale_asset_count: 0,
     unavailable_asset_count: universe.length - 1,
+    single_venue_priced_asset_count: 1,
+    multi_venue_priced_asset_count: 0,
     change_available_count: 1,
     coverage_ratio_pct: available(String(100 / universe.length)),
     venue,
@@ -276,15 +297,26 @@ const markets = [
 ]
 
 test.beforeEach(async ({ page }) => {
+  await page.route('**/api/market/default-dashboard**', async (route) => {
+    const request = dashboardRequest(route.request())
+    const venue = request.venue ?? 'all'
+    const universe = providerAssets[venue] ?? assetUniverse
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        code: 2000,
+        ...dashboardSnapshot(venue),
+        overview: overviewForVenue(venue),
+        result: universe.slice(0, 50),
+        total: universe.length,
+        universe: venue === 'all' ? 'provider_union' : 'provider_top50',
+      }),
+    })
+  })
   await page.route('**/api/v2/**', async (route) => {
     const path = new URL(route.request().url()).pathname
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
-      venue?: string
-      snapshot_id?: string
-      page?: number
-      page_size?: number
-      asset_ids?: string[]
-    }
+    const request = dashboardRequest(route.request())
     const venue = request.venue ?? 'all'
     const universe = providerAssets[venue] ?? assetUniverse
     const pageNumber = request.page ?? 1
@@ -475,7 +507,7 @@ test('venue selection is URL-addressable without changing asset row grain', asyn
 test('a disabled provider is explicit instead of looking like an empty search', async ({ page }) => {
   await page.route('**/api/v2/**', async (route) => {
     const path = new URL(route.request().url()).pathname
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+    const request = dashboardRequest(route.request()) as {
       venue?: string
     }
     if (request.venue !== 'binance') {
@@ -548,8 +580,8 @@ test('slow search distinguishes loading from a settled empty result', async ({ p
     asset_name: 'Monero',
   }
 
-  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request()) as {
       search?: string
       snapshot_id?: string
     }
@@ -631,7 +663,7 @@ test('A to B to A switching rejects the old A generation even when the query key
   let coinbaseRequests = 0
 
   await page.route('**/api/v2/get_market_price_ticks', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+    const request = dashboardRequest(route.request()) as {
       venue?: string
       asset_ids?: string[]
     }
@@ -706,8 +738,8 @@ test('a failed live tick keeps the verified venue snapshot without falling back 
       body: JSON.stringify({ code: 5030, message: 'tick feed unavailable' }),
     })
   })
-  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request()) as {
       venue?: string
       snapshot_id?: string
     }
@@ -758,7 +790,7 @@ test('a late lower-version tick preserves the newer cached fact', async ({ page 
   })
 
   await page.route('**/api/v2/get_market_price_ticks', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+    const request = dashboardRequest(route.request()) as {
       venue?: string
       asset_ids?: string[]
     }
@@ -845,8 +877,8 @@ test('one offline asset does not degrade the other assets in the same tick batch
     price_source: 'okx',
   }
 
-  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request()) as {
       venue?: string
       snapshot_id?: string
     }
@@ -879,7 +911,7 @@ test('one offline asset does not degrade the other assets in the same tick batch
     })
   })
   await page.route('**/api/v2/get_market_price_ticks', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+    const request = dashboardRequest(route.request()) as {
       venue?: string
       asset_ids?: string[]
     }
@@ -1002,8 +1034,8 @@ test('DEX route and reference stay in separate lanes after route expiry', async 
     quality: 'reference',
   }
 
-  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request()) as {
       venue?: string
       snapshot_id?: string
     }
@@ -1111,8 +1143,8 @@ test('DEX coverage never reuses a previous search response as the canonical univ
     ),
   })
 
-  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as {
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request()) as {
       search?: string
       snapshot_id?: string
     }
@@ -1165,8 +1197,8 @@ test('DEX coverage never reuses a previous search response as the canonical univ
 })
 
 test('rapid eight-venue switching aborts 3s and 9s responses so the latest click wins', async ({ page }) => {
-	await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-		const request = JSON.parse(route.request().postData() ?? '{}') as { venue?: string }
+	await routeDashboard(page, async (route) => {
+		const request = dashboardRequest(route.request())
 		const requestedVenue = request.venue ?? 'all'
 		const delay = requestedVenue === 'binance' ? 3_000
 			: requestedVenue === 'bybit' ? 9_000
@@ -1201,8 +1233,8 @@ test('rapid eight-venue switching aborts 3s and 9s responses so the latest click
 
 test('revisited venue restores last-good immediately and keeps it after a 504', async ({ page }) => {
 	let binanceRequests = 0
-	await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-		const request = JSON.parse(route.request().postData() ?? '{}') as { venue?: string }
+	await routeDashboard(page, async (route) => {
+		const request = dashboardRequest(route.request())
 		if (request.venue !== 'binance') {
 			await route.fallback()
 			return
@@ -1235,8 +1267,8 @@ test('revisited venue restores last-good immediately and keeps it after a 504', 
 })
 
 test('unknown composite values are rendered as unavailable, never fake zero', async ({ page }) => {
-  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as { snapshot_id?: string }
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request())
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -1255,8 +1287,8 @@ test('unknown composite values are rendered as unavailable, never fake zero', as
 })
 
 test('asset name is not repeated when it equals the symbol', async ({ page }) => {
-  await page.route('**/api/v2/get_asset_dashboard', async (route) => {
-    const request = JSON.parse(route.request().postData() ?? '{}') as { snapshot_id?: string }
+  await routeDashboard(page, async (route) => {
+    const request = dashboardRequest(route.request())
     await route.fulfill({
       status: 200,
       contentType: 'application/json',

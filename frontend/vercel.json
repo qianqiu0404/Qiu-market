@@ -7,6 +7,10 @@
   "regions": ["hkg1"],
   "rewrites": [
     {
+      "source": "/api/market/default-dashboard",
+      "destination": "/api/_default-dashboard"
+    },
+    {
       "source": "/api/:path*",
       "destination": "/api/proxy?path=:path"
     },

@@ -4,7 +4,8 @@ umask 077
 
 action="${1:-status}"
 candidate="${2:-}"
-execute_flag="${3:-}"
+rollback_backup="${3:-}"
+execute_flag="${4:-}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 runtime="${QIU_MARKET_LIVE_RUNTIME:-$HOME/Library/Application Support/Qiu Market/d1-candidate}"
 state_dir="$runtime/run/live-cutover"
@@ -16,7 +17,7 @@ stack_label='com.qiu-market.d1r1.stack'
 owns_lock=false
 
 if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then
-  case "$runtime" in /tmp/qiu-market-live-cutover.*) ;; *) echo 'test mode requires an isolated /tmp runtime' >&2; exit 64 ;; esac
+  case "$runtime" in /tmp/qiu-market-live-cutover.*|/private/tmp/qiu-market-live-cutover.*) ;; *) echo 'test mode requires an isolated /tmp runtime' >&2; exit 64 ;; esac
 fi
 
 cleanup() {
@@ -47,6 +48,231 @@ selector_preflight() {
   verify_launch_contract
   private_runtime_file "$runtime/secrets/public-proxy-hmac" || {
     echo 'public proxy HMAC file ownership or mode is unsafe' >&2
+    return 1
+  }
+}
+
+rollback_preflight() {
+  local backup="$1" kind="${2:-external}" manifest generation seal relative expected actual
+  case "$kind:$backup/" in
+    external:"$state_dir"/backup-*/|frozen:"$state_dir"/rollback-authority-*/) ;;
+    *)
+    echo 'rollback backup must be an explicit live-cutover backup directory' >&2
+    return 1
+    ;;
+  esac
+  [ -d "$backup" ] && [ ! -L "$backup" ] &&
+    [ "$(stat -f '%u:%Lp' "$backup" 2>/dev/null || true)" = "$(id -u):700" ] || {
+      echo 'rollback backup ownership, mode, or type is unsafe' >&2
+      return 1
+    }
+  for relative in config/active-release.json run/committed-generation.json \
+    ops/release-selector ops/live-role ops/live-api-tunnel ops/r1/frontdoor ops/r1/stack; do
+    [ -f "$backup/$relative" ] && [ ! -L "$backup/$relative" ] || {
+      echo "rollback backup is incomplete: $relative" >&2
+      return 1
+    }
+    if [[ "$relative" = ops/* ]]; then
+      [ "$(stat -f '%u:%Lp' "$backup/$relative" 2>/dev/null || true)" = "$(id -u):700" ] &&
+        bash -n "$backup/$relative" || {
+          echo "rollback executable is unsafe or invalid: $relative" >&2
+          return 1
+        }
+    else
+      [ "$(stat -f '%u:%Lp' "$backup/$relative" 2>/dev/null || true)" = "$(id -u):600" ] || {
+        echo "rollback evidence is not private: $relative" >&2
+        return 1
+      }
+    fi
+  done
+  manifest="$backup/config/active-release.json"
+  generation="$backup/run/committed-generation.json"
+  QIU_MARKET_LIVE_RUNTIME="$runtime" \
+    QIU_MARKET_LIVE_CUTOVER_TEST_MODE="${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" \
+    bash -c 'source "$1"; validate_release_selector "$2"' _ \
+    "$repo_root/ops/macos/live-release-selector.sh" "$manifest" || return 1
+  jq -e --arg commit "$(jq -r '.commit' "$manifest")" \
+    --arg generation "$(jq -r '.generation_id' "$manifest")" \
+    --arg owner "$(jq -r '.generation_owner_token' "$manifest")" '
+      .schema_version=="qiu.d1.committed-generation.v2" and
+      .commit==$commit and .generation_id==$generation and .owner_token==$owner and
+      .data_mode=="live" and .frontdoor_port==18084 and .upstream_port==18080 and
+      .tunnel_target=="http://127.0.0.1:18084" and .ready==true and
+      (.processes|type=="object") and
+      (["api","crawler","dex","frontdoor","redis","rpc","stack","trading","tunnel","worker"] - (.processes|keys) | length)==0 and
+      ([.processes[] | type=="number" and .>0] | all)
+    ' "$generation" >/dev/null || {
+      echo 'rollback committed-generation activation snapshot is invalid' >&2
+      return 1
+    }
+  seal="$backup/rollback-authority.json"
+  private_runtime_file "$seal" && jq -e --arg commit "$(jq -r '.commit' "$manifest")" '
+    (keys|sort)==["commit","files","schema_version","sealed_at"] and
+    .schema_version=="qiu.live-cutover.rollback-authority.v1" and .commit==$commit and
+    (.sealed_at|type=="string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")) and
+    (.files|keys|sort)==["config/active-release.json","ops/live-api-tunnel","ops/live-role",
+      "ops/r1/frontdoor","ops/r1/stack","ops/release-selector","run/committed-generation.json"] and
+    ([.files[] | type=="string" and test("^[0-9a-f]{64}$")] | all)
+  ' "$seal" >/dev/null || {
+    echo 'rollback authority seal is missing or invalid' >&2
+    return 1
+  }
+  for relative in config/active-release.json run/committed-generation.json \
+    ops/release-selector ops/live-role ops/live-api-tunnel ops/r1/frontdoor ops/r1/stack; do
+    expected="$(jq -r --arg path "$relative" '.files[$path]' "$seal")"
+    actual="$(shasum -a 256 "$backup/$relative" | awk '{print $1}')"
+    [ "$expected" = "$actual" ] || {
+      echo "rollback authority digest mismatch: $relative" >&2
+      return 1
+    }
+  done
+  verify_rollback_redis_authority "$manifest"
+}
+
+verify_rollback_redis_authority() {
+  local manifest="$1" generation owner expected_state actual_owner actual_state
+  generation="$(jq -r '.redis_generation' "$manifest")"
+  owner="$(jq -r '.redis_owner_token' "$manifest")"
+  expected_state="committed:$(jq -r '.generation_id' "$manifest")"
+  actual_owner="$(redis_command GET "qiu:runtime-generation:$generation:owner")"
+  actual_state="$(redis_command GET "qiu:runtime-generation:$generation:state")"
+  [ -z "$actual_owner" ] || [ "$actual_owner" = "$owner" ] || {
+    echo 'rollback Redis generation owner drifted' >&2
+    return 1
+  }
+  [ -z "$actual_state" ] || [ "$actual_state" = "$expected_state" ] || {
+    echo 'rollback Redis generation state drifted' >&2
+    return 1
+  }
+}
+
+seal_rollback_backup() {
+  local backup="$1" manifest generation source_root relative source_file backup_file temporary
+  backup="$(canonical_rollback_backup "$backup")" || return 1
+  manifest="$backup/config/active-release.json"
+  generation="$backup/run/committed-generation.json"
+  [ ! -e "$backup/rollback-authority.json" ] || {
+    echo 'rollback authority is already sealed' >&2
+    return 1
+  }
+  # Validate the unsealed structure by creating a temporary empty seal only after
+  # every manifest/generation/file mode check below has succeeded.
+  QIU_MARKET_LIVE_RUNTIME="$runtime" QIU_MARKET_LIVE_CUTOVER_TEST_MODE="${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" \
+    bash -c 'source "$1"; validate_release_selector "$2"' _ \
+    "$repo_root/ops/macos/live-release-selector.sh" "$manifest"
+  jq -e --arg commit "$(jq -r '.commit' "$manifest")" \
+    --arg generation "$(jq -r '.generation_id' "$manifest")" \
+    --arg owner "$(jq -r '.generation_owner_token' "$manifest")" '
+      .schema_version=="qiu.d1.committed-generation.v2" and .commit==$commit and
+      .generation_id==$generation and .owner_token==$owner and .ready==true
+    ' "$generation" >/dev/null
+  source_root="$(jq -r '.source_path' "$manifest")"
+  if [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ]; then source_root="$repo_root"; fi
+  [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ] ||
+    [ "$(git -C "$source_root" rev-parse HEAD 2>/dev/null || true)" = "$(jq -r '.commit' "$manifest")" ]
+  for relative in release-selector:live-release-selector.sh live-role:live-role.sh \
+    live-api-tunnel:live-api-tunnel.sh r1/frontdoor:live-frontdoor.sh r1/stack:live-stack.sh; do
+    source_file="$source_root/ops/macos/${relative##*:}"
+    backup_file="$backup/ops/${relative%%:*}"
+    [ -f "$source_file" ] && [ ! -L "$source_file" ] && [ -f "$backup_file" ] && [ ! -L "$backup_file" ]
+    [ "$(shasum -a 256 "$source_file" | awk '{print $1}')" = "$(shasum -a 256 "$backup_file" | awk '{print $1}')" ]
+  done
+  temporary="$backup/rollback-authority.$$.tmp"
+  jq -n --arg commit "$(jq -r '.commit' "$manifest")" --arg sealed "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg root "$backup" '
+      {schema_version:"qiu.live-cutover.rollback-authority.v1",commit:$commit,sealed_at:$sealed,
+       files:{}}
+    ' > "$temporary"
+  for relative in config/active-release.json run/committed-generation.json \
+    ops/release-selector ops/live-role ops/live-api-tunnel ops/r1/frontdoor ops/r1/stack; do
+    jq --arg path "$relative" --arg sha "$(shasum -a 256 "$backup/$relative" | awk '{print $1}')" \
+      '.files[$path]=$sha' "$temporary" > "$temporary.next"
+    mv "$temporary.next" "$temporary"
+  done
+  chmod 600 "$temporary"
+  mv "$temporary" "$backup/rollback-authority.json"
+  rollback_preflight "$backup"
+}
+
+prepare_rollback_authority() {
+  local backup="$state_dir/backup-$(date '+%s')-$$" manifest generation
+  [ "$candidate" = '--execute' ] || {
+    echo 'prepare-rollback requires --execute' >&2
+    return 2
+  }
+  acquire_lock
+  manifest="$runtime/config/active-release.json"
+  generation="$runtime/run/committed-generation.json"
+  selector_preflight "$manifest"
+  jq -e --arg commit "$(jq -r '.commit' "$manifest")" \
+    --arg generation "$(jq -r '.generation_id' "$manifest")" \
+    --arg owner "$(jq -r '.generation_owner_token' "$manifest")" '
+      .schema_version=="qiu.d1.committed-generation.v2" and .commit==$commit and
+      .generation_id==$generation and .owner_token==$owner and .ready==true and
+      .data_mode=="live" and .frontdoor_port==18084 and .upstream_port==18080 and
+      .tunnel_target=="http://127.0.0.1:18084" and
+      (["api","crawler","dex","frontdoor","redis","rpc","stack","trading","tunnel","worker"] - (.processes|keys) | length)==0
+    ' "$generation" >/dev/null || {
+      echo 'current committed-generation is not a valid activation snapshot' >&2
+      return 1
+    }
+  wait_market_health
+  probe_market_contract "$manifest" 18080 false 200
+  probe_market_contract "$manifest" 18084 true 200
+  backup_runtime "$backup"
+  seal_rollback_backup "$backup"
+  printf 'live_cutover_rollback_authority=%s commit=%s\n' "$backup" "$(jq -r '.commit' "$manifest")"
+}
+
+canonical_rollback_backup() {
+  local requested="$1" parent canonical cursor
+  [ -n "$requested" ] && [ -d "$requested" ] || return 1
+  parent="$(cd "$(dirname "$requested")" && pwd -P)" || return 1
+  canonical="$parent/$(basename "$requested")"
+  [ "$requested" = "$canonical" ] || {
+    echo 'rollback backup path must be absolute, canonical, and free of traversal' >&2
+    return 1
+  }
+  cursor="$canonical"
+  while [ "$cursor" != "$state_dir" ]; do
+    [ "$cursor" != / ] && [ ! -L "$cursor" ] || return 1
+    cursor="$(dirname "$cursor")"
+  done
+  [ ! -L "$state_dir" ] || return 1
+  printf '%s\n' "$canonical"
+}
+
+canonical_private_file() {
+  local requested="$1" parent canonical
+  [ -n "$requested" ] && [ -f "$requested" ] && [ ! -L "$requested" ] || return 1
+  parent="$(cd "$(dirname "$requested")" && pwd -P)" || return 1
+  canonical="$parent/$(basename "$requested")"
+  [ "$requested" = "$canonical" ] || {
+    echo 'candidate path must be absolute, canonical, and free of traversal' >&2
+    return 1
+  }
+  printf '%s\n' "$canonical"
+}
+
+freeze_rollback_backup() {
+  local source="$1" destination="$2" relative
+  install -d -m 700 "$destination"
+  for relative in config/active-release.json run/committed-generation.json \
+    ops/release-selector ops/live-role ops/live-api-tunnel ops/r1/frontdoor ops/r1/stack rollback-authority.json; do
+    install -d -m 700 "$destination/$(dirname "$relative")"
+    install -m "$( [[ "$relative" = ops/* ]] && echo 700 || echo 600 )" \
+      "$source/$relative" "$destination/$relative"
+  done
+}
+
+cutover_preflight() {
+  local manifest="$1" backup="$2" kind="${3:-external}" candidate_redis rollback_redis
+  selector_preflight "$manifest"
+  rollback_preflight "$backup" "$kind"
+  candidate_redis="$(jq -r '.redis_generation' "$manifest")"
+  rollback_redis="$(jq -r '.redis_generation' "$backup/config/active-release.json")"
+  [ "$candidate_redis" != "$rollback_redis" ] || {
+    echo 'candidate must use a Redis generation distinct from rollback authority' >&2
     return 1
   }
 }
@@ -480,12 +706,21 @@ stop_candidate_generation() {
 }
 
 perform_cutover() {
-  local manifest="$1" backup="$state_dir/backup-$(date '+%s')-$$" old_manifest old_generation commit
+  local requested_manifest="$1" requested_rollback="$2" backup="$state_dir/backup-$(date '+%s')-$$"
+  local rollback="$state_dir/rollback-authority-$(date '+%s')-$$"
+  local manifest="$state_dir/candidate-authority-$(date '+%s')-$$.json"
+  local old_manifest old_generation rollback_manifest commit canonical_rollback canonical_manifest
   [ "$execute_flag" = '--execute' ] || { echo 'cutover requires --execute' >&2; return 2; }
-  selector_preflight "$manifest"
   acquire_lock
+  canonical_manifest="$(canonical_private_file "$requested_manifest")" || return 1
+  canonical_rollback="$(canonical_rollback_backup "$requested_rollback")" || return 1
+  rollback_preflight "$canonical_rollback" external
+  install -m 600 "$canonical_manifest" "$manifest"
+  freeze_rollback_backup "$canonical_rollback" "$rollback"
+  cutover_preflight "$manifest" "$rollback" frozen
   backup_runtime "$backup"
   old_manifest="$backup/config/active-release.json"; old_generation="$backup/run/committed-generation.json"
+  rollback_manifest="$rollback/config/active-release.json"
   if [ "$(jq -r '.schema_version // empty' "$old_manifest" 2>/dev/null || true)" = 'qiu.d1.active-release.v2' ]; then
     [ "$(jq -r '.redis_generation' "$old_manifest")" != "$(jq -r '.redis_generation' "$manifest")" ] || {
       echo 'candidate must claim a distinct Redis generation' >&2
@@ -501,9 +736,9 @@ perform_cutover() {
     if [ "$rollback_needed" = true ]; then
       rollback_ok=true
       stop_candidate_generation >/dev/null 2>&1 || rollback_ok=false
-      if [ "$rollback_ok" = true ]; then restore_runtime "$backup" || rollback_ok=false; fi
+      if [ "$rollback_ok" = true ]; then restore_runtime "$rollback" || rollback_ok=false; fi
       if [ "$rollback_ok" = true ]; then
-        activate_generation "$old_manifest" >/dev/null 2>&1 || rollback_ok=false
+        activate_generation "$rollback_manifest" >/dev/null 2>&1 || rollback_ok=false
       fi
       if [ "$rollback_ok" = true ]; then
         release_uncommitted_redis_generation "$manifest" >/dev/null 2>&1 || rollback_ok=false
@@ -540,13 +775,22 @@ perform_cutover() {
   printf 'live_cutover=ready commit=%s tunnel_target=http://127.0.0.1:18084 production_promoted=false\n' "$commit"
 }
 
+read_only_preflight() {
+  local manifest rollback
+  manifest="$(canonical_private_file "$1")" || return 1
+  rollback="$(canonical_rollback_backup "$2")" || return 1
+  cutover_preflight "$manifest" "$rollback"
+}
+
 case "$action" in
-  preflight) selector_preflight "$candidate"; echo 'live_cutover_preflight=passed mutated=false' ;;
-  cutover) perform_cutover "$candidate" ;;
+  preflight) read_only_preflight "$candidate" "$rollback_backup"; echo 'live_cutover_preflight=passed mutated=false' ;;
+  cutover) perform_cutover "$candidate" "$rollback_backup" ;;
+  seal-rollback) seal_rollback_backup "$candidate"; echo 'live_cutover_rollback_seal=passed mutated=seal-only' ;;
+  prepare-rollback) prepare_rollback_authority ;;
   pidfile-cleanup)
     [ "${QIU_MARKET_LIVE_CUTOVER_TEST_MODE:-false}" = true ] || { echo 'pidfile cleanup fixture action is test-only' >&2; exit 64; }
-    owner_checked_remove_pidfile "$candidate" "$execute_flag" "${4:-6389}"
+    owner_checked_remove_pidfile "$candidate" "$rollback_backup" "${execute_flag:-6389}"
     ;;
   status) [ -f "$state_file" ] && jq . "$state_file" || echo 'live_cutover_status=inactive' ;;
-  *) echo 'usage: live-cutover.sh preflight <manifest> | cutover <manifest> --execute | status' >&2; exit 64 ;;
+  *) echo 'usage: live-cutover.sh prepare-rollback --execute | preflight <candidate> <rollback-backup> | cutover <candidate> <rollback-backup> --execute | status' >&2; exit 64 ;;
 esac

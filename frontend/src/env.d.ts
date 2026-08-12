@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+declare const __QIU_MARKET_RELEASE_COMMIT__: string
+
 interface ImportMetaEnv {
   readonly VITE_TRADING_WS_ORIGIN?: string
   readonly VITE_TRADING_EVENT_MODE?: 'websocket' | 'polling'

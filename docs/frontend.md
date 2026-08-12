@@ -278,6 +278,22 @@ Apple system stack，Regular/Medium 为主，不用极细字重；颜色不是�
 
 ## 关键代码入口与顺序
 
+R3 Phase 1 只缓存八个 venue 的固定默认查询：Assets/Gainers/Losers、page 1/50、空搜索、
+rank desc。浏览器 GET `/api/market/default-dashboard`，function 翻译为带新 nonce 的既有签名
+POST；仅 200 + VERIFIED contract + MISS/FRESH 且无 Cookie/Vary 才发 CDN fresh15/SWR45，
+BFF STALE、错误与动态查询都 no-store。
+
+网络与 IndexedDB restore 并行。持久化 key 绑定编译期 strict 40-hex release SHA、完整 query
+和 venue，TTL 5 分钟、最多 64 项、单项 1.5MB；读取重验 snapshot/schema、overview/row
+identity、唯一 asset ID 和三态守恒。release 未配置的本地 Vite 保留 POST 与内存 cache。
+默认 Assets 成功后只空闲串行预取其它七个 venue；hidden/offline/Save-Data/交互/查询代次
+变化会 abort，预取只写持久层，不更新可见 refs。
+
+Owner 60 秒说明：固定 GET 让 CDN key 可枚举；动态查询仍 POST/no-store。缓存不绕过 exact
+contract；同 release/query/venue 的五分钟 last-good 也必须重验守恒。恢复和网络并行，只有
+当前 generation 能上屏。闭卷问题：为什么 release 未配置必须禁用 IndexedDB？为什么 BFF
+STALE 不能再被 CDN 缓存？为什么预取不能直接替换当前页面？
+
 1. `frontend/src/router.ts`：资产首页、market 详情、旧地址兼容和 System Catalog。
 2. `frontend/src/api/market.ts`：v1/v2 信封、nullable decimal、三类 `MarketPriceFact`、DEX identity/时间窗校验与类型归一。
 3. `frontend/src/features/markets/quality-grade.ts`：只把独立 CEX contributor evidence 归一为 High/Medium/Low/Unavailable，不读取 route quality 或 freshness。
@@ -365,6 +381,9 @@ npm run dev       # 127.0.0.1:5174；5173 保留给 xiuqiu-site
 npm run test
 npm run build
 npm run test:e2e
+# R3 exact-release GET/IndexedDB/prefetch gate; plain local runs intentionally keep POST fallback.
+QIU_MARKET_RELEASE_COMMIT=<40-hex-exact-sha> S78_E2E_PORT=4197 \
+  npm run test:e2e -- e2e/default-dashboard.spec.ts e2e/markets.spec.ts
 ```
 
 多个 worktree 同时运行 Playwright 时，必须给当前任务选择未占用端口，例如

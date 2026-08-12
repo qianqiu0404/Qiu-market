@@ -4,6 +4,7 @@ umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fixture="$(mktemp -d /tmp/qiu-market-live-cutover.XXXXXX)"
+fixture="$(cd "$fixture" && pwd -P)"
 runtime="$fixture"
 redis_pid=''
 cleanup() {
@@ -161,7 +162,7 @@ generation="$runtime/run/committed-generation.json"
 ready="$(jq -r '.ready' "$generation")"
 has_tunnel="$(jq '(.processes // {}) | has("tunnel")' "$generation")"
 case "$require_edge:$expected_status:$port:$ready:$has_tunnel" in
-  false:200:18080:false:false|true:503:18084:false:false|true:200:18084:true:false|true:200:18084:true:true) ;;
+  false:200:18080:false:false|false:200:18080:true:true|true:503:18084:false:false|true:200:18084:true:false|true:200:18084:true:true) ;;
   *) echo "invalid probe sequence edge=$require_edge status=$expected_status port=$port ready=$ready tunnel=$has_tunnel" >&2; exit 1 ;;
 esac
 printf '%s %s %s %s %s\n' "$require_edge" "$expected_status" "$port" "$ready" "$has_tunnel" >> "$runtime/run/probe-events"
@@ -196,50 +197,97 @@ export QIU_MARKET_LIVE_PROBE_HOOK="$probe_hook"
 export QIU_MARKET_LIVE_HEALTH_HOOK="$health_hook"
 export QIU_MARKET_LIVE_REDIS_PORT="$port"
 cutover="$repo_root/ops/macos/live-cutover.sh"
-"$cutover" preflight "$runtime/new.json" | grep -Fx 'live_cutover_preflight=passed mutated=false' >/dev/null
+
+make_rollback_backup() {
+  local name="$1" destination relative
+  destination="$runtime/run/live-cutover/backup-$name"
+  install -d -m 700 "$destination"
+  for relative in config/active-release.json run/committed-generation.json ops/release-selector \
+    ops/live-role ops/live-api-tunnel ops/r1/frontdoor ops/r1/stack; do
+    install -d -m 700 "$destination/$(dirname "$relative")"
+    install -m "$( [ -x "$runtime/$relative" ] && echo 700 || echo 600 )" \
+      "$runtime/$relative" "$destination/$relative"
+  done
+  printf '%s\n' "$destination"
+}
+
+rollback_authority="$(make_rollback_backup old-known-good)"
+"$cutover" seal-rollback "$rollback_authority" | grep -Fx 'live_cutover_rollback_seal=passed mutated=seal-only' >/dev/null
+"$cutover" preflight "$runtime/new.json" "$rollback_authority" | grep -Fx 'live_cutover_preflight=passed mutated=false' >/dev/null
+
+prepared_output="$("$cutover" prepare-rollback --execute)"
+prepared_authority="${prepared_output#live_cutover_rollback_authority=}"
+prepared_authority="${prepared_authority%% commit=*}"
+[ -f "$prepared_authority/rollback-authority.json" ]
+"$cutover" preflight "$runtime/new.json" "$prepared_authority" >/dev/null
+
+authority_count_before="$(find "$runtime/run/live-cutover" -maxdepth 2 -name rollback-authority.json | wc -l | tr -d ' ')"
+export QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT="$old_commit"
+export QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SECONDS=1
+if "$cutover" prepare-rollback --execute >/dev/null 2>&1; then echo 'unhealthy current generation produced rollback authority' >&2; exit 1; fi
+unset QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SECONDS
+[ "$(find "$runtime/run/live-cutover" -maxdepth 2 -name rollback-authority.json | wc -l | tr -d ' ')" = "$authority_count_before" ]
+
+drifted_rollback="$(make_rollback_backup drifted-wrapper)"
+"$cutover" seal-rollback "$drifted_rollback" >/dev/null
+printf '\n# syntax-valid drift\n' >> "$drifted_rollback/ops/live-role"
+if "$cutover" preflight "$runtime/new.json" "$drifted_rollback" >/dev/null 2>&1; then echo 'digest-drifted rollback wrapper was accepted' >&2; exit 1; fi
+
+restart_event_count() {
+  [ -f "$runtime/run/restart-events" ] && wc -l < "$runtime/run/restart-events" || echo 0
+}
+restart_before_invalid_rollback="$(restart_event_count)"
+invalid_rollback="$(make_rollback_backup invalid)"
+"$cutover" seal-rollback "$invalid_rollback" >/dev/null
+chmod 644 "$invalid_rollback/config/active-release.json"
+if "$cutover" preflight "$runtime/new.json" "$invalid_rollback" >/dev/null 2>&1; then echo 'unsafe rollback authority was accepted' >&2; exit 1; fi
+if "$cutover" cutover "$runtime/new.json" "$invalid_rollback" --execute >/dev/null 2>&1; then echo 'cutover accepted unsafe rollback authority' >&2; exit 1; fi
+[ "$(restart_event_count)" = "$restart_before_invalid_rollback" ]
 
 mv "$runtime/run/test-$frontdoor_label.program" "$runtime/run/test-$frontdoor_label.program.saved"
-if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'missing live frontdoor label was accepted' >&2; exit 1; fi
+if "$cutover" preflight "$runtime/new.json" "$rollback_authority" >/dev/null 2>&1; then echo 'missing live frontdoor label was accepted' >&2; exit 1; fi
 mv "$runtime/run/test-$frontdoor_label.program.saved" "$runtime/run/test-$frontdoor_label.program"
 printf '%s\n' "$runtime/ops/r1/wrong-stack" > "$runtime/run/test-$stack_label.program"
-if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'wrong live stack Program path was accepted' >&2; exit 1; fi
+if "$cutover" preflight "$runtime/new.json" "$rollback_authority" >/dev/null 2>&1; then echo 'wrong live stack Program path was accepted' >&2; exit 1; fi
 printf '%s\n' "$runtime/ops/r1/stack" > "$runtime/run/test-$stack_label.program"
 printf '%s\n' "$runtime/ops/wrong-live-role" > "$runtime/run/test-com.qiu-market.live.dex.program"
-if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'wrong live role Program path was accepted' >&2; exit 1; fi
+if "$cutover" preflight "$runtime/new.json" "$rollback_authority" >/dev/null 2>&1; then echo 'wrong live role Program path was accepted' >&2; exit 1; fi
 printf '%s\n' "$runtime/ops/live-role" > "$runtime/run/test-com.qiu-market.live.dex.program"
 chmod 644 "$runtime/secrets/public-proxy-hmac"
-if "$cutover" preflight "$runtime/new.json" >/dev/null 2>&1; then echo 'world-readable probe secret was accepted' >&2; exit 1; fi
+if "$cutover" preflight "$runtime/new.json" "$rollback_authority" >/dev/null 2>&1; then echo 'world-readable probe secret was accepted' >&2; exit 1; fi
 chmod 600 "$runtime/secrets/public-proxy-hmac"
 
 jq '.tunnel_target="http://127.0.0.1:18080"' "$runtime/new.json" > "$runtime/direct.json"; chmod 600 "$runtime/direct.json"
-if "$cutover" preflight "$runtime/direct.json" >/dev/null 2>&1; then echo 'direct API tunnel target was accepted' >&2; exit 1; fi
+if "$cutover" preflight "$runtime/direct.json" "$rollback_authority" >/dev/null 2>&1; then echo 'direct API tunnel target was accepted' >&2; exit 1; fi
 
 mkdir -p "$runtime/run/live-cutover/lock"; printf '999\n' > "$runtime/run/live-cutover/lock/owner"; chmod 600 "$runtime/run/live-cutover/lock/owner"
-if "$cutover" cutover "$runtime/new.json" --execute >/dev/null 2>&1; then echo 'concurrent cutover lock was ignored' >&2; exit 1; fi
+if "$cutover" cutover "$runtime/new.json" "$rollback_authority" --execute >/dev/null 2>&1; then echo 'concurrent cutover lock was ignored' >&2; exit 1; fi
 find "$runtime/run/live-cutover/lock/owner" -maxdepth 0 -type f -delete; rmdir "$runtime/run/live-cutover/lock"
 
 redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:old-redis:owner "$old_owner" >/dev/null
-redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:old-redis:state old >/dev/null
+redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:old-redis:state committed:old-generation >/dev/null
 redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:new-redis:sentinel new-only >/dev/null
-"$cutover" cutover "$runtime/new.json" --execute | grep -F "live_cutover=ready commit=$new_commit tunnel_target=http://127.0.0.1:18084 production_promoted=false" >/dev/null
+cutover_first_line="$(( $(wc -l < "$runtime/run/restart-events") + 1 ))"
+probe_first_line="$(( $(wc -l < "$runtime/run/probe-events") + 1 ))"
+"$cutover" cutover "$runtime/new.json" "$rollback_authority" --execute | grep -F "live_cutover=ready commit=$new_commit tunnel_target=http://127.0.0.1:18084 production_promoted=false" >/dev/null
 [ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$new_commit" ]
 [ "$(stat -f '%Lp' "$runtime/releases/$new_commit/release.json")" = 600 ]
 [ "$(jq -r '.commit' "$runtime/releases/$new_commit/release.json")" = "$new_commit" ]
 [ "$(<"$runtime/run/tunnel-state")" = resumed ]
 [ "$(jq -r '.processes.frontdoor' "$runtime/run/committed-generation.json")" = 88001 ]
 [ "$(jq -r '.processes.stack' "$runtime/run/committed-generation.json")" = 88002 ]
-[ "$(sed -n '2p' "$runtime/run/restart-events")" = "start $frontdoor_label" ]
-[ "$(sed -n '3p' "$runtime/run/restart-events")" = "start $stack_label" ]
+[ "$(sed -n "$((cutover_first_line + 1))p" "$runtime/run/restart-events")" = "start $frontdoor_label" ]
+[ "$(sed -n "$((cutover_first_line + 2))p" "$runtime/run/restart-events")" = "start $stack_label" ]
 [ "$(awk -v commit="$new_commit" '$1=="health" && $2==commit {print $3}' "$runtime/run/restart-events" | sed -n '1,4p')" = $'503\n503\n503\n200' ]
 health_ready_line="$(grep -n -m1 "health $new_commit 200" "$runtime/run/restart-events" | cut -d: -f1)"
 crawler_start_line="$(grep -n -m1 'start com.qiu-market.live.crawler' "$runtime/run/restart-events" | cut -d: -f1)"
 [ "$health_ready_line" -lt "$crawler_start_line" ]
 [ "$(jq -r '.ready' "$runtime/run/committed-generation.json")" = true ]
 [ "$(jq -r '.processes | has("tunnel")' "$runtime/run/committed-generation.json")" = true ]
-[ "$(sed -n '1p' "$runtime/run/probe-events")" = 'false 200 18080 false false' ]
-[ "$(sed -n '2p' "$runtime/run/probe-events")" = 'true 503 18084 false false' ]
-[ "$(sed -n '3p' "$runtime/run/probe-events")" = 'true 200 18084 true false' ]
-[ "$(sed -n '4p' "$runtime/run/probe-events")" = 'true 200 18084 true true' ]
+[ "$(sed -n "${probe_first_line}p" "$runtime/run/probe-events")" = 'false 200 18080 false false' ]
+[ "$(sed -n "$((probe_first_line + 1))p" "$runtime/run/probe-events")" = 'true 503 18084 false false' ]
+[ "$(sed -n "$((probe_first_line + 2))p" "$runtime/run/probe-events")" = 'true 200 18084 true false' ]
+[ "$(sed -n "$((probe_first_line + 3))p" "$runtime/run/probe-events")" = 'true 200 18084 true true' ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw EXISTS qiu:runtime-generation:old-redis:owner)" = 0 ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:new-redis:owner)" = "$new_owner" ]
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:new-redis:state)" = committed:new-generation ]
@@ -251,13 +299,24 @@ done
 "$runtime/ops/r1/frontdoor" | grep -F 'listen=127.0.0.1:18084 upstream=http://127.0.0.1:18080 generation=new-generation' >/dev/null
 "$runtime/ops/r1/stack" | grep -F 'business_stack=true' >/dev/null
 
+rollback_authority="$(make_rollback_backup new-known-good)"
+"$cutover" seal-rollback "$rollback_authority" >/dev/null
+
+pause_before_owner_drift="$(restart_event_count)"
+redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:new-redis:owner "$failed_owner" >/dev/null
+if "$cutover" cutover "$runtime/failed.json" "$rollback_authority" --execute >/dev/null 2>&1; then echo 'rollback Redis owner drift was accepted' >&2; exit 1; fi
+[ "$(restart_event_count)" = "$pause_before_owner_drift" ]
+[ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:new-redis:owner)" = "$failed_owner" ]
+[ "$(redis-cli -h 127.0.0.1 -p "$port" --raw GET qiu:runtime-generation:new-redis:state)" = committed:new-generation ]
+redis-cli -h 127.0.0.1 -p "$port" SET qiu:runtime-generation:new-redis:owner "$new_owner" >/dev/null
+
 printf '22222\n' > "$runtime/run/redis.pid"; chmod 600 "$runtime/run/redis.pid"
 "$cutover" pidfile-cleanup "$runtime/run/redis.pid" 11111 "$port"
 [ "$(<"$runtime/run/redis.pid")" = 22222 ]
 
 export QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT="$failed_commit"
 export QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SECONDS=1
-if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'business API health timeout was accepted' >&2; exit 1; fi
+if "$cutover" cutover "$runtime/failed.json" "$rollback_authority" --execute >/dev/null 2>&1; then echo 'business API health timeout was accepted' >&2; exit 1; fi
 unset QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SECONDS
 [ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$new_commit" ]
 [ "$(jq -r '.generation_id' "$runtime/run/committed-generation.json")" = new-generation ]
@@ -266,7 +325,7 @@ unset QIU_MARKET_LIVE_FAIL_HEALTH_COMMIT QIU_MARKET_LIVE_TEST_HEALTH_TIMEOUT_SEC
 [ "$(redis-cli -h 127.0.0.1 -p "$port" --raw EXISTS qiu:runtime-generation:failed-redis:owner)" = 0 ]
 
 export QIU_MARKET_LIVE_CUTOVER_FAIL_AT=after_restart
-if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'injected cutover failure did not fail' >&2; exit 1; fi
+if "$cutover" cutover "$runtime/failed.json" "$rollback_authority" --execute >/dev/null 2>&1; then echo 'injected cutover failure did not fail' >&2; exit 1; fi
 unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT
 [ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$new_commit" ]
 [ "$(jq -r '.generation_id' "$runtime/run/committed-generation.json")" = new-generation ]
@@ -277,7 +336,7 @@ unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT
 
 export QIU_MARKET_LIVE_CUTOVER_FAIL_AT=after_restart
 export QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT="$new_commit"
-if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'rollback failure injection did not fail' >&2; exit 1; fi
+if "$cutover" cutover "$runtime/failed.json" "$rollback_authority" --execute >/dev/null 2>&1; then echo 'rollback failure injection did not fail' >&2; exit 1; fi
 unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT QIU_MARKET_LIVE_FAIL_RESTORE_COMMIT
 [ "$(jq -r '.phase' "$runtime/run/live-cutover/current.json")" = rollback-failed ]
 [ "$(jq -r '.commit' "$runtime/config/active-release.json")" = "$new_commit" ]
@@ -290,7 +349,7 @@ redis-cli -h 127.0.0.1 -p "$port" DEL qiu:runtime-generation:failed-redis:owner 
 pause_test_first_line="$(( $(wc -l < "$runtime/run/restart-events") + 1 ))"
 export QIU_MARKET_LIVE_CUTOVER_FAIL_AT=after_restart
 export QIU_MARKET_LIVE_FAIL_PAUSE_LABEL=com.qiu-market.live.api-tunnel
-if "$cutover" cutover "$runtime/failed.json" --execute >/dev/null 2>&1; then echo 'pause failure injection did not fail' >&2; exit 1; fi
+if "$cutover" cutover "$runtime/failed.json" "$rollback_authority" --execute >/dev/null 2>&1; then echo 'pause failure injection did not fail' >&2; exit 1; fi
 unset QIU_MARKET_LIVE_CUTOVER_FAIL_AT QIU_MARKET_LIVE_FAIL_PAUSE_LABEL
 pause_failure_events="$(tail -n "+$pause_test_first_line" "$runtime/run/restart-events")"
 for label in com.qiu-market.live.api-tunnel com.qiu-market.live.crawler com.qiu-market.live.dex \

@@ -1,6 +1,13 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+const releaseCommitCandidate = (
+  process.env.QIU_MARKET_RELEASE_COMMIT ?? process.env.VERCEL_GIT_COMMIT_SHA ?? ''
+).trim().toLowerCase()
+const releaseCommit = /^[0-9a-f]{40}$/.test(releaseCommitCandidate)
+  ? releaseCommitCandidate
+  : ''
+
 // https://vite.dev/config/
 const apiProxy = {
   '/api': {
@@ -12,6 +19,9 @@ const apiProxy = {
 
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    __QIU_MARKET_RELEASE_COMMIT__: JSON.stringify(releaseCommit),
+  },
   build: {
     chunkSizeWarningLimit: 1300,
   },

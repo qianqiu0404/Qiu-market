@@ -100,6 +100,12 @@ Overview 与 dashboard 必须从同一 selection union 对账：display predicat
 
 R2E 把公开 overview/dashboard 固定到同一个不可变行情快照：PostgreSQL 在一次 read-only `REPEATABLE READ` 事务中使用同一 `CURRENT_TIMESTAMP` 读取 summary、global metric 与完整资产行，Redis 再以 15 秒 bucket、5 分钟 TTL、最多 64 个完整值做跨 API 实例的单一 authority。`get_asset_dashboard` 的同一响应直接携带 `overview` 与 rows，二者共享 `snapshot_id`、`snapshot_as_of` 和 `qiu.market-snapshot.v1`，首屏不再串行调用 overview；All universe 是七家 provider 选择的 canonical union，cardinality 会随合法 selection 变化，但必须在 Top-200 边界内满足 `1 <= asset_count <= 200`、`asset_count = fresh + stale + unavailable` 与 `priced = fresh + stale`。`106 / 61 / 45` 是 R2I 历史验收切片，不是永久 API 合同；覆盖验收仍分别报告 Top20/50/106，避免 universe 扩大掩盖原有资产质量。未指定 snapshot 的 dashboard 可在 BFF 缓存 15 秒、传输故障最多回退 240 秒；显式 snapshot dashboard 不缓存，ticks 继续实时且不缓存。BFF 同时核对 backend/edge exact release SHA、`data_mode=live`、`restricted-no-bypass.v1`、contract/snapshot schema 与本次 nonce；wrong SHA、旧 deterministic replay、direct `18080`、损坏或过期 snapshot 都 fail closed，不能回退 stale cache。Mac live lane 固定经独立 `com.qiu-market.d1r1.frontdoor` 的 pure frontdoor `18084 -> 18080`，business stack 仍由 `com.qiu-market.d1r1.stack` 管理；selector、tunnel、Redis generation owner 与失败回滚流程见 [Vercel + Mac mini 上线手册](docs/qiu-market-vercel-mac.md#r2e-行情读取合同与原子切换)。
 
+R3 Phase 1 只把八个 venue 的 page1/50、空搜索、default sort 查询暴露为
+`/api/market/default-dashboard` GET；exact contract 的 MISS/FRESH 才允许 CDN
+fresh15/SWR45。动态搜索、分页、自定义排序和显式 snapshot 继续 POST/no-store。浏览器
+last-good 绑定 exact release/query/venue、TTL 5 分钟，并在空闲时串行预取其它七个默认
+Assets；hidden/offline/Save-Data/交互或 query generation 变化立即中止。
+
 本机优先运行还必须显式安装登录恢复与防空闲睡眠：
 `ops/macos/manage-live-user-runtime.sh install` 将八个精确、owner-only LaunchAgent
 清单同步到 `~/Library/LaunchAgents`，并用系统 `/usr/bin/caffeinate -i` 在用户已登录时
@@ -485,7 +491,7 @@ README 全局架构
 |---|---|
 | [docs/local-development.md](docs/local-development.md) | 日常一键启动、八终端角色、停止、日志与常见故障 |
 | [docs/sensitive-files.md](docs/sensitive-files.md) | dotenv、私钥、wallet/TSS 与数据库状态的本地边界、CI 路径门和事故响应 |
-| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX 双栏、六类行情竞态回归和响应式验收 |
+| [docs/frontend.md](docs/frontend.md) | 资产首页与虚拟交易页、三类价格事实、DEX 双栏、R3 CDN/IndexedDB 分层恢复、行情竞态回归和响应式验收 |
 | [docs/trading-system.md](docs/trading-system.md) | BTC/USDT 撮合、账本、submitted/unknown、fill/cancel 竞态、cursor reconcile、崩溃恢复、鉴权和验收边界 |
 | [docs/prd-qm-trade-001.md](docs/prd-qm-trade-001.md) | Trade Product V1 用户主流程、页面范围、P0/P1、非目标、验收与并行所有权 |
 | [docs/contracts/qm-trade-v1-api.md](docs/contracts/qm-trade-v1-api.md) | Trade Product V1 cursor、订单时间线、账本、账户摘要和 Cancel All 冻结 API Schema |

@@ -1,7 +1,14 @@
-import { ApiError, request } from './common'
+import { ApiError, request, requestGET } from './common'
 
 const MARKET_SNAPSHOT_SCHEMA = 'qiu.market-snapshot.v1'
 const MARKET_SNAPSHOT_ID_PATTERN = /^snp_[0-9a-f]{32}$/
+
+export function marketClientReleaseConfigured(explicit?: string): boolean {
+  const value = explicit ?? (typeof __QIU_MARKET_RELEASE_COMMIT__ === 'string'
+    ? __QIU_MARKET_RELEASE_COMMIT__
+    : '')
+  return /^[0-9a-f]{40}$/.test(value)
+}
 
 /* ===== Response types ===== */
 
@@ -974,7 +981,19 @@ export async function getAssetDashboardV2(
   const requestedVenue = options.venue ?? 'all'
   const strictDexDisplay =
     requestedVenue === 'uniswap' || requestedVenue === 'pancakeswap'
-	const response = await request<unknown>('/api/v2/get_asset_dashboard', {
+  const defaultUniverse = requestedVenue === 'all' ? 'provider_union' : 'provider_top50'
+  const isDefaultDashboard = marketClientReleaseConfigured() && page === 1 && pageSize === 50 &&
+    (options.search ?? '') === '' && (options.filter ?? 'assets') !== undefined &&
+    (options.sortBy ?? 'rank') === 'rank' && (options.sortDirection ?? 'desc') === 'desc' &&
+    (options.includeUncovered ?? true) === true &&
+    (options.universe ?? defaultUniverse) === defaultUniverse && !options.snapshotID
+  const response = isDefaultDashboard
+    ? await requestGET<unknown>(
+        `/api/market/default-dashboard?venue=${encodeURIComponent(requestedVenue)}` +
+          `&filter=${encodeURIComponent(options.filter ?? 'assets')}`,
+        { signal: options.signal },
+      )
+    : await request<unknown>('/api/v2/get_asset_dashboard', {
     page,
     page_size: pageSize,
     venue: requestedVenue,

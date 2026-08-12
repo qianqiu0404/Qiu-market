@@ -9,6 +9,7 @@ import {
   isMarketPriceFactMonotonic,
   marketTickCacheKey,
   mergeMarketPriceTickSnapshot,
+  marketClientReleaseConfigured,
   unavailableMarketPriceFact,
   validatedDexRoutePriceFact,
   validatedDisplayReferencePriceFact,
@@ -129,6 +130,30 @@ describe('getAssetVenuesV2', () => {
 })
 
 describe('getAssetDashboardV2', () => {
+  it('uses exact release gating so unconfigured local development stays on POST', async () => {
+    expect(marketClientReleaseConfigured('')).toBe(false)
+    expect(marketClientReleaseConfigured('1'.repeat(40))).toBe(true)
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ...SNAPSHOT_META, code: 2000, result: [], total: 0 }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await getAssetDashboardV2(1, 50, { venue: 'all', filter: 'assets' })
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
+  })
+  it('uses the cacheable GET for an exact-release default dashboard query', async () => {
+    vi.stubGlobal('__QIU_MARKET_RELEASE_COMMIT__', '1'.repeat(40))
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ ...SNAPSHOT_META, code: 2000, result: [], total: 0 }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await getAssetDashboardV2(1, 50, { venue: 'okx', filter: 'gainers' })
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/api/market/default-dashboard?venue=okx&filter=gainers',
+    )
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('GET')
+  })
   it('preserves nullable composite fields and does not inflate the response with markets', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(JSON.parse(String(init?.body))).toMatchObject({ include_uncovered: false, venue: 'binance' })
